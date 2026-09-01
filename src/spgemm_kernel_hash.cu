@@ -661,6 +661,62 @@ __global__ void hash_dense_window_kernel(
 // 免窗口免每窗 per-k lower_bound 重搜(旧窗式的税 = 窗数×num_k×2×log 探测/行,Ga41 ≈16.5 万/行)。
 // SMEM = span/32 字(dynamic,~220KB 档位 → span≤1.76M 全覆盖);QUERY_BITMAP 先读后 or
 // 降争用(gupta3 教训);upper_tri 过滤同口径。BCNT=1 启用,span 超帽回退旧窗式。
+// docs/70 §6 阶梯②:hash 行(bin 1-10)的位图 count —— 替 D5H 的 MODE=1(hash 表计数)
+// 为位图置位+popcount(免 CAS 探测),复活 D5H 经济学。行级门 span ≤ 8×est ∧ 位图装得下
+// (成本律:位图 O(span/32) vs 表 O(est),宽 span 低 est 行位图反亏 38×,in-2004 教训);
+// 不合格行由 hash_spa<1> 双 launch 各司其职(bcnt_mode=1 只处理合格行,=0 只处理其余)。
+__global__ void hash_row_bcnt_kernel(
+    const int *A_row_ptr, const int *A_col_idx,
+    const int *B_row_ptr, const int *B_col_idx,
+    int upper_tri, int A_rows, int n,
+    const int *bucket_rows, int n_in_bucket,
+    const int *est, const int *span_lo, const int *span_len,
+    int *row_nnz,
+    int bcnt_mode = 0,        // 1=只处理 span≤8×est 行;0=其余(早退)
+    int smem_words = 0)
+{
+    int idx = blockIdx.x;
+    if (idx >= n_in_bucket) return;
+    int i = bucket_rows[idx];
+    int lo0 = span_lo ? span_lo[i] : 0;
+    int span = span_len ? span_len[i] : (n - lo0);
+    bool eligible = (8LL * est[i] >= (long long)span) && (span <= (long long)smem_words * 32);
+    if (bcnt_mode == 1 ? !eligible : eligible) return;
+    if (bcnt_mode == 0) return;   // 本 launch 只负责位图侧;hash 侧由 hash_spa<1>(带跳过谓词)跑
+    int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, nw = blockDim.x >> 5;
+    extern __shared__ __align__(8) uint32_t bmp[];
+    int words = (span + 31) >> 5;
+    for (int w = tid; w < words; w += blockDim.x) bmp[w] = 0;
+    __syncthreads();
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    for (int p = rs + warp; p < re; p += nw) {
+        int k = A_col_idx[p];
+        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
+        for (int q = ks + lane; q < ke; q += 32) {
+            int col = B_col_idx[q];
+            if (col < lo0 || col >= lo0 + span) continue;
+            if (upper_tri && col < i) continue;
+            int bit = col - lo0;
+            uint32_t m = 1u << (bit & 31);
+            if ((bmp[bit >> 5] & m) == 0) atomicOr(&bmp[bit >> 5], m);
+        }
+    }
+    __syncthreads();
+    __shared__ int wcnt[32];
+    int cnt = 0;
+    int w4 = words & ~3;
+    const uint4 *b4 = (const uint4*)bmp;
+    for (int j4 = tid; j4 < (w4 >> 2); j4 += blockDim.x) {
+        uint4 v = b4[j4];
+        cnt += __popc(v.x) + __popc(v.y) + __popc(v.z) + __popc(v.w);
+    }
+    for (int w = w4 + tid; w < words; w += blockDim.x) cnt += __popc(bmp[w]);
+    for (int off = 16; off; off >>= 1) cnt += __shfl_down_sync(0xffffffff, cnt, off);
+    if (lane == 0) wcnt[warp] = cnt;
+    __syncthreads();
+    if (tid == 0) { int s = 0; for (int x = 0; x < nw; x++) s += wcnt[x]; row_nnz[i] = s; }
+}
+
 __global__ void hash_dense_bcnt_kernel(
     const int *A_row_ptr, const int *A_col_idx,
     const int *B_row_ptr, const int *B_col_idx,
@@ -777,6 +833,17 @@ __global__ void hash_dense_count_kernel(
 __global__ void span_gather_kernel(const int *rows, int nr, const int *span_len, int *out) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j < nr) out[j] = span_len[rows[j]];   // docs/70 BCNT:dense 行 span 收集
+}
+
+// docs/70 §6②:合格行(span≤8×est ∧ ≤cap)的 span,否则 0 —— 供 host 定位图 SMEM 上限
+__global__ void elig_span_kernel(const int *rows, int nr, const int *est, const int *span_len,
+                                 long long cap, int *out) {
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j < nr) {
+        int i = rows[j];
+        long long s = span_len[i];
+        out[j] = (8LL * est[i] >= s && s <= cap) ? (int)s : 0;
+    }
 }
 
 __global__ void alen_gather_kernel(const int *rows, int nr, const int *A_rp, int *alen) {
@@ -1335,11 +1402,15 @@ __global__ void hash_spa_kernel(
     const int *row_maxbl = nullptr,     // 行 k 集内 B 行最大长;null=旧静态 G
     int llb = 0,                        // LLB=1:按行动态 G(docs/27 §4.2)
     const int *exact_rp = nullptr, int *dC_ci = nullptr, double *dC_val = nullptr,   // MODE=2
-    unsigned long long *rowtime = nullptr)   // HASH_ROWTIME:逐行执行周期(docs/66;周期对 DVFS 免疫)
+    unsigned long long *rowtime = nullptr,   // HASH_ROWTIME:逐行执行周期(docs/66;周期对 DVFS 免疫)
+    const int *d5b_skip_est = nullptr,       // docs/70 §6②:MODE=1 跳过位图-合格行(交 hash_row_bcnt)
+    const int *d5b_skip_span = nullptr)
 {
     int idx = blockIdx.x;
     if (idx >= n_in_bucket) return;
     int i = bucket_rows[idx];                  // 实际行号
+    if (MODE == 1 && d5b_skip_est && 8LL * d5b_skip_est[i] >= (long long)d5b_skip_span[i]
+        && d5b_skip_span[i] <= 1600000) return;   // span ≤ 8×est ∧ ≤1.6M bit 位图装得下
     if (MODE == 2 && row_ovf[i]) return;       // count pass 溢出行已由 retry 处理(compact 末段拷)
     int tid = threadIdx.x;
     unsigned long long rt0 = rowtime ? clock64() : 0;   // 未处理行保持 0(标记区分)
@@ -2917,11 +2988,33 @@ static void hash_product(
                         done1 = true;
                     }
                 }
+                // docs/70 §6②(D5B=1 ∧ D5H=1):合格行(span≤8×est ∧ 位图装得下)的 count 走
+                // 位图(免 CAS 探测),其余行仍 hash_spa<1>(带跳过谓词)。逐 bin 双 launch 各司其职。
+                static int g_d5b = -1;
+                if (g_d5b < 0) { const char *e = getenv("D5B"); g_d5b = (e && *e) ? atoi(e) : 0; }
+                const int *skip_e = nullptr, *skip_s = nullptr;
+                if (g_d5b) {
+                    skip_e = d_est; skip_s = d_span_len;
+                    int *d_es = decltype(d_es)(dev_alloc(n * sizeof(int)));
+                    elig_span_kernel<<<(n + 255) / 256, 256>>>(rows_ptr, n, d_est, d_span_len, 1600000, d_es);
+                    int hmax = 0;
+                    auto mx = thrust::max_element(thrust::device_ptr<int>(d_es), thrust::device_ptr<int>(d_es + n));
+                    CHECK_CUDA(cudaMemcpy(&hmax, mx.get(), sizeof(int), cudaMemcpyDeviceToHost));
+                    dev_free(d_es);
+                    if (hmax > 0) {
+                        size_t bsm = (size_t)((hmax + 31) / 32) * 4 + 8;
+                        CHECK_CUDA(cudaFuncSetAttribute(hash_row_bcnt_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bsm));
+                        hash_row_bcnt_kernel<<<n, 256, bsm>>>(   // 小行位图:256T 块(1024T 的块开销反主导,首测 +7~18% 教训)
+                            dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows, A_cols,
+                            rows_ptr, n, d_est, d_span_lo, d_span_len, d_row_nnz, 1, (int)(bsm / 4));
+                        CHECK_CUDA(cudaGetLastError());
+                    }
+                }
                 hash_spa_kernel<1><<<n, HASH_BLOCK, smem_flat>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                     rows_ptr, n, ht, d_off,
                     d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                    d_flop, d_maxbl, 0, nullptr, nullptr, nullptr, d_rt);
+                    d_flop, d_maxbl, 0, nullptr, nullptr, nullptr, d_rt, skip_e, skip_s);
                 d5h_rows += n;
                 CHECK_CUDA(cudaGetLastError());
             }
