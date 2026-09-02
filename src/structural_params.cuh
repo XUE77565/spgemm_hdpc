@@ -286,3 +286,15 @@ constexpr int BATCH_S_HT_STRUCT = WARP_SIZE * 2; // 64 槽表(α=0.5;清表/扫�
 
 // ── Ocean-D largest 层(docs/74;straggler 行位图窗)───────────────────────────
 constexpr int LARGEST_SMEM_BUDGET = 200 * 1024;   // 位图+前缀 SMEM 预算(opt-in 227K − 27K 驱动保留,同 BCNT)
+
+// ── 小行线程纂层(docs/13 v2 续;用户铁律:新参数零裸数字)──────────────────────
+constexpr int TINY_ROW_MAX_LEN = WARP_SIZE / 4;   // 8:线程纂行内串行访存上限(warp/4 次,MLP 由 64 行/warp 在飞补)
+constexpr int SMEM_ALIGN_SLACK = 64;              // 动态 SMEM 布局对齐余量(双数组 8B 对齐 + 字边界安全垫)
+
+// ── largest 字节模型层(docs/74;毫字节定点 ×1000,与 SROUTE 同式)──────────────
+//   dense_bytes = span×0.25B(位图 1/8 + 前缀 1/8)+ est×16B(tmp_key 8 + tmp_val 8 经全局)
+//   hash_bytes  = ht×12B(表)+ est×24B(compact 税)
+//   路由判据 = dense ≤ hash(全部具名毫字节常数,零裸系数)
+constexpr int LARGEST_COL_MILLI         = (int)((1.0 / 8.0 + 1.0 / 8.0) * 1000);  // 250:位图+前缀
+constexpr int LARGEST_VAL_PER_EST_MILLI = (8 + 8) * 1000;                          // 16000:val 经 tmp 全局
+// hash 侧复用 HASH_BYTES_PER_SLOT_MILLI(12000)与 COMPACT_BYTES_PER_EST_MILLI(24000)

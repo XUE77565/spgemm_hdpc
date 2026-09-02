@@ -2267,12 +2267,13 @@ __global__ void compute_bucket_kernel(
     // Ocean 数据驱动窗口本就处理大 span,护栏对 DIM2-s 分支放宽到 span≤n(hash_bin 侧自然限流)。
     bool dim2 = (dense_bin <= hash_bin) && sl0 > 0 && n_cols > 0 && (long long)sl0 <= (long long)n_cols;
     // Ocean-D largest(docs/74):straggler 行(超 SMEM-val dense 档 ∧ 字节模型赢 hash)→ BIN_LARGEST。
-    //   字节模型(×4 定点):span ≤ 48×ht + 32×est ⟺ span×0.25B + est×16B ≤ ht×12B + est×24B
-    //   (位图+前缀 SMEM 0.25B/列;val/emit 经 tmp 全局 est×16B;hash = 表 12B/槽 + compact 24B/est)
+    //   判据(毫字节,全具名):span×LARGEST_COL + est×LARGEST_VAL ≤ ht×HASH_SLOT + est×COMPACT
+    //   (dense = 位图+前缀 0.25B/列 + val 经 tmp 16B/est;hash = 表 12B/槽 + compact 24B/est)
     const bool largest_ok = largest_on && sl0 > 0 && n_cols > 0
         && (long long)sl0 > (long long)dense_numeric_bin(4)
         && flop[i] >= EST_DENSE_MIN && e <= HASH_CAP
-        && (long long)sl0 <= 48LL * ht + 32LL * e;
+        && ((long long)sl0 * LARGEST_COL_MILLI + (long long)e * LARGEST_VAL_PER_EST_MILLI
+            <= (long long)ht * HASH_BYTES_PER_SLOT_MILLI + (long long)e * COMPACT_BYTES_PER_EST_MILLI);
     // 门 v2(333SP +160%/F2 +13% 教训:窄跨度但 est 小的行在 batched/hash 本来就快,勿偷):
     // 极窄 span≤512:数组比任何 hash 表都小,只要 e>64 就值得;中段 512<span≤2048:须 est≥2048
     // (= v4 门的"hash 伺候不了的大表行")。两档都要求 est≥span/2(数组利用率)。
@@ -2855,7 +2856,7 @@ static void hash_product(
     prof("count_flop", [&]{
         static int g_count_tiny = -1;   // docs/13 v2:avg row ≤ 8 阵的 count 线程纂(声明在此 = count 相位先于 binning)
         if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 0; }
-        if (!att && g_count_tiny && A_rows > 0 && A_nnz <= 8 * A_rows)
+        if (!att && g_count_tiny && A_rows > 0 && A_nnz <= TINY_ROW_MAX_LEN * A_rows)
             count_flop_tiny_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
                 dA_rp, dA_ci, A_rows, dB_rp, dB_ci, d_flop, d_span_lo, d_span_len, d_maxbl);
         else if (!att)
@@ -3557,7 +3558,7 @@ static void hash_product(
                     d_ovf_rows, d_ovf_cnt, d_row_ovf);
             } else if (bi == BIN_LARGEST) {   // docs/74:1 CTA/行,SMEM = 0.25B/列 × win
                 const int win_l = (int)((size_t)LARGEST_SMEM_BUDGET * 4);   // 列/窗 = 预算÷0.25B
-                size_t lsm = (size_t)((win_l + 31) >> 5) * sizeof(unsigned) * 2 + 64;
+                size_t lsm = (size_t)((win_l + 31) >> 5) * sizeof(unsigned) * 2 + SMEM_ALIGN_SLACK;
                 static bool lattr = false;
                 if (!lattr) {
                     CHECK_CUDA(cudaFuncSetAttribute(dense_largest_numeric_kernel,
