@@ -2273,6 +2273,8 @@ __global__ void compute_bucket_kernel(
     //   cap 后的 ht 把 19491 条 c-big straggler 行挡在门外 —— 2026-09-03 BINS_DBG 实证修正)
     const long long ht_eff = (e <= HASH_CAP) ? (long long)ht : 2LL * e;
     const bool largest_ok = largest_on && sl0 > 0 && n_cols > 0
+        && e > HASH_CAP                                   // ⚠只路由 heavy 行:est≤HASH_CAP 走 SMEM 梯表(4-20× 便宜),
+                                                          // 字节模型 1:1 计价漏此差 → c-64+169/F2+62/3Dspec+25 实证
         && (long long)sl0 > (long long)dense_numeric_bin(4)
         && sl0 >= LARGEST_MIN_SPAN                        // 位图字 ≥ 2×块宽(atomicOr 摊薄;守卫电池实证)
         && flop[i] >= EST_DENSE_MIN

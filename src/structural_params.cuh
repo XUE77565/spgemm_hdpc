@@ -301,4 +301,5 @@ constexpr int LARGEST_VAL_PER_EST_MILLI = (8 + 8) * 1000;                       
 
 // ── largest 路由守卫(docs/74 守卫电池实证:c-64 +170/nd24k +137/crankseg +140 教训)──
 constexpr int LARGEST_MIN_SPAN = 2 * HASH_BLOCK_STRUCT * WARP_SIZE;  // 16384 列:位图字 ≥ 2×块宽 → 原子摊薄
-constexpr int DUP_LARGEST_MAX  = 8;  // dup ≤ DUP_LIGHT:重乘积行 2×flop 重走 + 全局 atomicAdd 反劣于 SMEM CAS
+constexpr int DUP_LARGEST_MAX  = 2;  // dup ≤ 2 = 真 straggler 形态(flop≈est,c-big 实测 dup=1);>2 时
+                                       // hash 全局 CAS 与 largest 的 2×flop 读 + fp64 原子打平 → 失去稳定优势(c-64 +12.8% 实证)
