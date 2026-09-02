@@ -32,6 +32,15 @@ extern __global__ void dense_struct_count_kernel(
     const int *bucket_rows, const int *span_lo, const int *span_len,
     int win_cols, int *row_nnz);
 
+// docs/72 Phase 1b:numeric 直写(位图字级 popcount 前缀发射,无 warp0 串行)
+extern __global__ void dense_struct_numeric_kernel(
+    const int *A_rp, const int *A_ci, const double *A_val,
+    const int *B_rp, const int *B_ci, const double *B_val,
+    int upper_tri, int A_rows,
+    const int *bucket_rows, const int *span_lo, const int *span_len,
+    int win_cols,
+    const int *exact_rp, int *out_col, double *out_val, int *row_nnz);
+
 // 二分:返回 [lo,hi) 内第一个 arr[idx] >= val 的下标(与 spgemm_merge.cu 同款,跨 TU 内联用本地拷贝)
 __device__ __forceinline__ int dev_lower_bound(const int *arr, int lo, int hi, int val) {
     while (lo < hi) { int mid = (lo + hi) >> 1; if (arr[mid] < val) lo = mid + 1; else hi = mid; }
@@ -3553,6 +3562,27 @@ static void hash_product(
             int uc = (g_pb2cur == 0) ? 0 : 1;
             static int g_pb2avgb = -1;   // docs/66 §8 复审:avgB<64→search 门(docs/39 v3 遗产)
             if (g_pb2avgb < 0) { const char *e = getenv("PB2_AVGB"); g_pb2avgb = (e && *e) ? atoi(e) : 0; }
+            // docs/72 Phase 1b:DSTRUCT=2 时 numeric 也走结构内核(位图字级前缀,无 warp0 串行)
+            static int g_dstr2 = -1;
+            if (g_dstr2 < 0) { const char *e = getenv("DSTRUCT"); g_dstr2 = (e && *e) ? atoi(e) : 0; }
+            if (g_dstr2 >= 2 && dense_rows) {
+                int *d_sp = decltype(d_sp)(dev_alloc(dense_nr * sizeof(int)));
+                span_gather_kernel<<<(dense_nr + 255) / 256, 256>>>(dense_rows, dense_nr, d_span_len, d_sp);
+                int hmax_span2 = 0;
+                {   auto mx = thrust::max_element(thrust::device_ptr<int>(d_sp), thrust::device_ptr<int>(d_sp + dense_nr));
+                  CHECK_CUDA(cudaMemcpy(&hmax_span2, mx.get(), sizeof(int), cudaMemcpyDeviceToHost)); }
+                dev_free(d_sp);
+                // numeric 档 = val(8B)+bitmap(1/8B)+prefix(1/8B) ≈ 8.25B/列 → 半 SM 预算推导
+                const int nwin_cols = (int)((double)SMEM_BUDGET_2BLK() / (8.0 + 0.25)) - 32;
+                const int uwin = hmax_span2 < nwin_cols ? hmax_span2 : nwin_cols;
+                size_t nsm = (size_t)uwin * 8 + (size_t)((uwin + 31) >> 5) * 4 * 2 + 64;
+                CHECK_CUDA(cudaFuncSetAttribute(dense_struct_numeric_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)nsm));
+                dbg("[%s] DSTRUCT-numeric: max_span=%d win=%d smem=%zuKB\n", tag, hmax_span2, uwin, nsm / 1024);
+                dense_struct_numeric_kernel<<<dense_nr, 256, nsm>>>(
+                    dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows,
+                    dense_rows, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
+                CHECK_CUDA(cudaGetLastError());
+            } else
             hash_dense_direct_kernel<<<dense_nr, 1024, wsm>>>(
                 dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, A_cols,
                 dC_rp, dC_ci, d_val, d_row_nnz, dense_rows, dense_rows ? d_span_lo : nullptr,
