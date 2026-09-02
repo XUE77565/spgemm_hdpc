@@ -150,3 +150,18 @@ nnz ✓。完整电池(Ga41/crankseg/brainpc2/c-64/c-58/in-2004/c-73)被环境�
 Phase 1a 的 span_gather+D2H 同步税(~1-2ms)抵消了路由赢面。
 **论文策略定案**:SROUTE v3(结构路由)+ 旧内核(常数有注释)= 发表系统。
 结构内核(DSTRUCT)是 nice-to-have,不是必需品;同步税可后续消(per-block device 推导)。
+
+## 最终状态(09-03 凌晨,compact 前定格)
+
+**全库调优参数零裸数字完成**(055870a + a6c67cb):
+- 20 个 #define → structural_params.cuh 公式 constexpr
+- 15 处路由内联数字 → 具名常数(EST_DENSE_MIN/SPANF_COEFF/DUP_LIGHT/DUP_HEAVY 等)
+- 剩余 ~100 个数字 = 算法/硬件常数(butterfly/MurmurHash/数组维度),非调优参数
+
+**SROUTE bug 修复**(7b18cb9):SROUTE 替换误删 v4 门 → 已恢复 v4 为默认,SROUTE 为替代路径。
+
+**v29 刷新中**(compare/v29_refresh.log,77/337+@compact 时):OCCGATE 默认开(5f19f62),
+10 阵 DNF 需补跑(配方:CM.run_spgemm_method(timeout=1800, exp_cnnz=CSV值))。
+
+**SROUTE v1-v4 完整迭代记录**(docs/72 §SROUTE):v3(含 compact)= 最佳,c-64 −15.4%;
+Ga41/in-2004/brainpc2 回归(争用动态不可纯字节化)。论文 = SROUTE 理论 + fitted 附推导。
