@@ -120,3 +120,9 @@ c-64/c-58/nd24k 赢面保持(它们的行 dup 低,争用项小)。
 - 16flop≥span ⟺ dense_bytes ≤ hash_bytes 在 dup=16 时求解
 - dup<8/64 ⟺ 争用字节 ≤ compact 字节求解
 这样发表时每个常数都有推导出处,不暴露为"魔法数字"。
+
+## Phase 1b-v2 正确性验证(09-02,nnz 对拍,load 24 窗)
+
+c-58 40461781✓ / Ga41 231455088✓ / brainpc2 190743619✓ / crankseg_2 104590168✓ 全一致。
+G-group 继承(G 从 avg_B 推导,上限 warp_size=5=硬件量)+ 位图字级前缀发射。
+性能电池待净窗。
