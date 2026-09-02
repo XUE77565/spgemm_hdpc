@@ -102,3 +102,31 @@ nnz 全一致 ✓ 路由确定性成立):
 c-big straggler 的真解仍是 docs/63 touched-reset 类窗口经济学改造,非路由。
 新序:**B(残余 retry 阀,低优先)→ C(Ana2 统计安全系数)→ D**;主线让位 merge3/
 长尾(docs/66)。
+
+## 8. 机制 C v1 实测否决(08-31 晚,b0866a7 + 交替 A/B)
+
+实现:oc_sample(S=64 行 SMEM 精确计数,est∈[512,4096] 中段)→ est/exact q05 → 数据驱动
+expand(clamp [1.02,1.5],弃样回 1.15 当量);mh_merge 侧 expand=1.0,est_scan 前统一缩放。
+
+**交替 A/B(负载 ~27)**:目标类 4/6 阵恶化 —— bcsstk30 +20%(10.7 vs 8.9)/
+**Ga3As3H12 +26%**(109.1 vs 86.5)/c-62 +13%/pwtk +12%;c-64/brainpc2 −8~9%(expand
+不敏感域,噪声内)。nnz 全对。
+
+**机理(语义错位)**:64 样本的 q05 度量【中位人口】的估计精度,而 retry 代价由
+【未采样尾部】的罕见欠估行驱动 —— 5% 分位 × 64 样本 ≈ 最小值,覆盖不了 3 万行的尾。
+Ocean 的 Ana2 compaction 统计喂的是【工作流选择】(precise vs est),不是逐行 sizing 界;
+我们把它当 expand 用 = 用错了变量。**结论:OCEAN_C 永久默认关(留档 env 门,同 DIM2
+先例);est 定径维持 1.15 + harness 双 expand。**
+
+## 9. 移植战役总账(08-31 收官)
+
+| 机制 | 结局 |
+|---|---|
+| A 双梯相对路由 | ✗ F2 +85%(双梯只比尺寸不模 dup 不对称,docs/64 §6) |
+| B 逃逸阀 | 惰性(retry 风暴已被 harness 双 expand 吃掉,ROI 无) |
+| C Ana2 统计 | ✗ v1 目标类 +12-26%(§8 语义错位) |
+| D symbolic/per-bin | 前提已证伪(D5H = precise 用在高 dup 域);仅存 per-bin 模板 = 自家性能工程 |
+
+**总判:Ocean 的机制层不可直接移植 —— 两家的窗口/表经济学不同构。可移植的已经移植
+完毕(localLoadBalance=MHSAMP 哲学、binning 结构、单发无 warmup 口径)。剩余差距
+(1.4651×)是自家实现经济学问题:三簇解剖(docs/66 §9 任务)= 新主线。**
