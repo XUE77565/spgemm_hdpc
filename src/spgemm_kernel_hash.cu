@@ -2204,16 +2204,18 @@ __global__ void compute_bucket_kernel(
         long long th = 811LL * ht_l / 100 + 1038LL * kc_n + 189LL * fl64 / 100 - 50225LL;
         ladder_dense_ok = (td <= th);   // dense 便宜才进窗;否则留 hash 梯
     }
-    // docs/72 Phase 2 路由字节比较(SROUTE=1):删全部拟合门,结构化成本比较。
-    //   进 dense ⟺ span×8.125B ≤ ht_row×12B(数组不比表贵;ht_row = 该行实际会拿到的表,由 est 推)
-    //   比较的是【该行的表】不是最大表 —— brainpc2/mult_dcop 用 max 表会误判 est 小行进窗
-    // SROUTE=2 时叠加 est≥2048 保底(hash 端超小表行本来快,docs/24 实证)
+    // docs/72 Phase 2 路由字节比较(SROUTE=1/3):结构化成本比较。
+    //   SROUTE=1(纯表):span×8.125B ≤ ht_row×12B
+    //   SROUTE=3(含 compact):span×8.125B ≤ ht_row×12B + est×24B(hash 行 gapped→exact 的读+写交通)
+    // compact 项的结构推导:hash 行写 gapped tmp(12B/entry)+ compact 读 gapped 写 exact(12B×2)
+    //   = 24B/distinct;dense 直写免付。这是 v2 的 brainpc2/mult_dcop 回归根因(表字节不含 epilogue)。
     if (false) {}
     else if (sroute > 0 && diter_thr > 0 && dup_ok) {
-        // 该行实际表槽(与 hash 梯同式:est→2× 松弛(α=0.5)→pow2 对齐)
         int tgt_sr = (e <= 4096) ? 2 * e : e;
         int ht_row = 32; while (ht_row < tgt_sr && ht_row < HASH_CAP) ht_row <<= 1;
-        if ((long long)sl0 * 8125 <= (long long)ht_row * 12000 &&   // 字节比较:span×8.125B ≤ ht_row×12B
+        // hash 字节 = 表(ht×12) + compact est×24(SROUTE≥3 含;数据布局层推导)
+        long long hash_bytes = (long long)ht_row * 12000 + (sroute >= 3 ? (long long)e * 24000 : 0);
+        if ((long long)sl0 * 8125 <= hash_bytes &&
             flop[i] >= diter_thr &&
             (sroute < 2 || e >= 2048)) bid = BIN_DITER;
         else if (e > HASH_CAP) bid = BIN_HEAVY;
