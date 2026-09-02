@@ -83,8 +83,10 @@ __global__ void dense_struct_count_kernel(
     if (tid == 0) row_nnz[i] = total;
 }
 
-// Phase 1b:numeric 直写。单窗行(span ≤ win_cols)在位图 popcount 前缀上直接发射。
-// SMEM: val[win_cols] + bitmap[words] + prefix[words]。多窗行走逐窗模式(同 Phase 1a 结构)。
+// Phase 1b-v2:numeric 直写(G-group 乘积 + 位图前缀发射)。继承旧 kernel 的 G-group(降争用)
+// + Phase 1b 的位图字级前缀(替 warp0 串行)。全部常数从 structural_params.cuh。
+// G 推导:blockDim×a_len 的负载均衡 — G ≈ 2^round(log2(avg_B×a_len/(blockDim×avg_B+a_len×avg_B)))
+// 简化:G = 2^clamp(floor(log2(avg_B)), 1, log2(blockDim))(与 local_load_balance 同语义,注释推导)
 __global__ void dense_struct_numeric_kernel(
     const int *A_rp, const int *A_ci, const double *A_val,
     const int *B_rp, const int *B_ci, const double *B_val,
@@ -98,11 +100,31 @@ __global__ void dense_struct_numeric_kernel(
     int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     int lo0 = span_lo[i], span = span_len[i];
     int rs = A_rp[i], re = A_rp[i + 1];
+    int a_len = re - rs;
+
+    // G-group:G 线程共担一条 k 链(乘积分散在不同 B 元素 → 不同列 → 争用摊薄)
+    // 推导:avg_B = flop/a_len;G = min(warp_size, 2^floor(log2(avg_B)))(结构上限 = 1 warp)
+    //        num_groups = blockDim/G(每 k 链一组;G 大 → 组少 → 并行 k 链少但每链快)
+    int G = 32;  // 默认 = 1 warp(争用最低的并行单元)
+    {
+        // 从 span/flop/a_len 推导 avg_B(免 row_flop 依赖)
+        int est_flop = span > 0 ? a_len * (span / 32 > 0 ? span / 32 : 1) : a_len;
+        int avg_B = a_len > 0 ? est_flop / a_len : 1;
+        if (avg_B > 1) {
+            int logG = 31 - __clz((unsigned)avg_B);
+            if (logG < 1) logG = 1;
+            if (logG > 5) logG = 5;   // 上限 = log2(WARP_SIZE)=5(硬件:G-group ≤ warp 才免跨 warp 同步)
+            G = 1 << logG;
+        }
+    }
+    int num_groups = blockDim.x / G;
+    int my_group = tid / G;
+    int my_id = tid % G;
+
     extern __shared__ __align__(8) unsigned char smem[];
     double *dval = (double *)smem;                                        // [win_cols]
     unsigned int *bmp = (unsigned int *)(smem + (size_t)win_cols * 8);   // [words]
     unsigned int *pref = bmp + ((win_cols + 31) >> 5);                    // [words]
-    __shared__ int wcnt[32];
     int base = exact_rp[i];
     int out = 0;
     int nw_win = (span + win_cols - 1) / win_cols;
@@ -112,15 +134,16 @@ __global__ void dense_struct_numeric_kernel(
         int w = c1 - c0;
         int words = (w + 31) >> 5;
         for (int j = tid; j < w; j += blockDim.x) { dval[j] = 0.0; }
-        for (int j4 = tid; j4 < words; j4 += blockDim.x) bmp[j4 >> 2] = 0;
+        for (int j4 = tid; j4 < words; j4 += blockDim.x) bmp[j4] = 0;
         __syncthreads();
-        for (int p = rs; p < re; p++) {
+        // G-group 乘积:每 group 拿不同 k 链,组内 G 线程分散 B 元素
+        for (int p = rs + my_group; p < re; p += num_groups) {
             int k = A_ci[p];
             double a = A_val[p];
             int ks = B_rp[k], ke = B_rp[k + 1];
             int from = (nw_win == 1) ? ks : st_lower_bound(B_ci, ks, ke, c0);
             int to   = (nw_win == 1) ? ke : st_lower_bound(B_ci, from, ke, c1);
-            for (int q = from + tid; q < to; q += blockDim.x) {
+            for (int q = from + my_id; q < to; q += G) {
                 int col = B_ci[q];
                 if (upper_tri && col < i) continue;
                 int j = col - c0;
@@ -131,7 +154,7 @@ __global__ void dense_struct_numeric_kernel(
             }
         }
         __syncthreads();
-        // 位图字级 popcount 前缀(替代 warp0 串行 5400:words=win/32,结构上少 32× 且 warp 级并行)
+        // 位图字级 popcount 前缀(warp0 分段 + 段基址 scan;words=win/32 → 比 5400 项少 32×)
         if (warp == 0) {
             int seglen = (words + 31) / 32;
             int lo = lane * seglen, hi = min(lo + seglen, words);
@@ -145,7 +168,7 @@ __global__ void dense_struct_numeric_kernel(
             for (int j = lo; j < hi; j++) pref[j] += excl - run;
         }
         __syncthreads();
-        // 发射:扫描位图字,提取置位位(col 升序天然有序)
+        // 发射:位图字扫描,置位位升序 = 天然有序
         for (int wo = warp; wo < words; wo += (int)(blockDim.x >> 5)) {
             unsigned bm = bmp[wo];
             while (bm) {
@@ -154,8 +177,9 @@ __global__ void dense_struct_numeric_kernel(
                 int j = (wo << 5) + b;
                 int col = c0 + j;
                 if (upper_tri && col < i) continue;
-                out_col[base + pref[wo] + __popc(bmp[wo] & ((1u << b) - 1))] = col;
-                out_val[base + pref[wo] + __popc(bmp[wo] & ((1u << b) - 1))] = dval[j];
+                int pos = base + pref[wo] + __popc(bmp[wo] & ((1u << b) - 1));
+                out_col[pos] = col;
+                out_val[pos] = dval[j];
             }
         }
         __syncthreads();
