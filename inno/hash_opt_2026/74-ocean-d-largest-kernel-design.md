@@ -57,3 +57,30 @@ Ga41 est/span?occ 3.6% → span×0.25 = 28×est×0.25 = 7×est SMEM 字节 vs ha
 ## 排队
 
 优先级 = 三件套电池之后(road 族 ~10 阵 > c-big 1 阵);工程量 ≈ DSTRUCT Phase 1b 同级(~2h)。
+
+---
+
+## 首战战报(2026-09-03 凌晨,净窗电池)
+
+**c-big −60.5%**(289.4→114.4ms;ratio 4.76×→1.91×),26453 行进 BIN_LARGEST(straggler 全捕获),
+nnz 447991461 逐位一致。
+
+### 实现三坑(全部 BINS_DBG/诊断打印实证定位)
+
+1. **heavy 字节模型**:首版 ht 被 HASH_CAP cap(16384)→ hash 代价被低估;heavy 行真表 =
+   全局 2×est 槽(α=0.5)→ `ht_eff = e ≤ HASH_CAP ? ht : 2e`
+2. **n_cols 传参**:首版沿用 dim2 的守卫 `n_cols > 0`,而 host 只在 DIM2=1 时传 A_cols
+   (默认关)→ 门恒假;改 `(g_dim2 || g_largest) ? A_cols : 0`
+3. **路由链覆写**:largest_ok 置 bid 后,第二路由链(`if(false){} else if v4...else if
+   e>HASH_CAP→HEAVY`)无条件覆写;链头改 `if (bid == BIN_LARGEST) {}` 跳过
+
+### 字节模型终版(毫字节,全具名)
+
+```
+dense: span×250 + est×16000 ≤ hash: ht_eff×12000 + est×24000
+其中 ht_eff = e≤HASH_CAP ? SMEM梯表 : 2×est(heavy 全局表)
+⟺ 常规档 span ≤ 48ht+32est;heavy 档 span ≤ 128×est(密度 ≥ 1/128 即赢)
+```
+
+cage15 类 est 欠估族:走 flop-retry 兜底(正确但吃内存;精确管线集成 = 下一步)。
+守卫电池(OCCGATE 族)在跑。
