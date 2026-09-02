@@ -28,3 +28,27 @@
 ## 排队
 
 复验/v28 终审期间禁止编译 → 本项 = v28 后第一优先(预计 2-4h 工程)。
+
+---
+
+## docs/13 v2 数据(2026-09-03,同窗口采集;road/OSM 族 = 最大系统性缺口 ~10 阵 @~3×)
+
+**相位(road_usa,compute-only 41.7ms,HashProf GPU 流计时抗 CPU 争用)**:
+| 相位 | ms | 占比 | 主因 |
+|---|---|---|---|
+| accumulate | 21.5 | 52% | 896ns/行;bin0 表 128 槽,est~23 利用率 18%,清表+扫描 6.7× 超配 |
+| compact+sort | 10.6 | 25% | 440ns/行;warp-per-row 8 行/CTA = 3M CTA;5-nnz 行 27/32 lane 闲 |
+| count_flop | 7.6 | 18% | warp-per-row 4.8-entry 行 = 27/32 lane 闲 |
+| binning+est+cnnz | 2.1 | 5% | 正常 |
+
+**bin 分布(BINS_DBG)**:road_usa 24M 行 / germany_osm 11.5M 行 **100% 落 bin[0]**;
+web-Google 分散(bin0 740K/bin3 137K/…)——小行族专用档只影响 road 类,零外溢风险。
+
+**三件套(375d9d0 后 commit,env 门控默认关)**:
+1. BATCH_S=1:est≤32 ∧ kc≤32 → BIN_BATCH_S(64 槽表 = 2×32,α=0.5;清/扫税 −50%)
+2. COMPACT_T=1:bin0/BATCH_S compact 线程纂(CTA 3M→94K,0 闲 lane)
+3. COUNT_TINY=1:avg row≤8 阵 count 线程纂(MLP 64 行/warp 在飞)
+正确性:三阵 nnz 逐位一致 ✓;净窗电池 = `scripts/ab_env.py "BATCH_S=1 COMPACT_T=1 COUNT_TINY=1" road_usa germany_osm hugetrace-00010 hugebubbles-00000 web-Google pre2 bcsstk30 pwtk F2 Ga3As3H12 nd24k`
+
+**预期**:accumulate −30~50% + compact −50% + count −40% → road_usa 41.7 → ~26ms(3.49×→2.2×);
+家族 ~10 阵同步受益,geomean 估 −1.5~2%。
