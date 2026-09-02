@@ -2241,7 +2241,9 @@ __global__ void compute_bucket_kernel(
     int sroute = 0,       // docs/72 Phase 2:结构化字节路由(span×8.125B ≤ ht×12B;2=叠加 est≥2048 保底)
     int ht_l_sroute = 0,  // SROUTE 用的 hash 表大小(host 预算的表槽)
     int batch_s_max = 0,  // docs/13 v2:est≤此值 ∧ kc≤warp → BIN_BATCH_S(64 槽表;0=关)
-    int largest_on = 0)   // docs/74:Ocean-D straggler 行位图窗(0=关)
+    int largest_on = 0,   // docs/74:Ocean-D straggler 行位图窗(0=关)
+    int dim2_on = 0)      // DIM2 独立门(n_cols 传参只为 largest 的 span 护栏;误点亮 dim2 曾把
+                          // bcsstk30 642 行送 BIN_DITER → +24.8%,2026-09-03 惊吓扫实证)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= A_rows) return;
@@ -2265,7 +2267,7 @@ __global__ void compute_bucket_kernel(
                   : (sl0 <= dense_numeric_bin(3)) ? 3 : (sl0 <= dense_numeric_bin(4)) ? 4 : 5;
     // ⚠ CPU 逐行分析(08-30):c-big 全部 straggler 行卡在 span≤n/4 护栏(其余门全过)——
     // Ocean 数据驱动窗口本就处理大 span,护栏对 DIM2-s 分支放宽到 span≤n(hash_bin 侧自然限流)。
-    bool dim2 = (dense_bin <= hash_bin) && sl0 > 0 && n_cols > 0 && (long long)sl0 <= (long long)n_cols;
+    bool dim2 = dim2_on && (dense_bin <= hash_bin) && sl0 > 0 && n_cols > 0 && (long long)sl0 <= (long long)n_cols;
     // Ocean-D largest(docs/74):straggler 行(超 SMEM-val dense 档 ∧ 字节模型赢 hash)→ BIN_LARGEST。
     //   判据(毫字节,全具名):span×LARGEST_COL + est×LARGEST_VAL ≤ ht_eff×HASH_SLOT + est×COMPACT
     //   (dense = 位图+前缀 0.25B/列 + val 经 tmp 16B/est;hash = 表 12B/槽 + compact 24B/est)
@@ -3118,7 +3120,7 @@ static void hash_product(
         if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 1; }
         // SROUTE 用的 hash 表槽 = 半 SM 预算÷12B(结构推导,与 est 无关的物理上界;行内再按 est 选小表)
         const int ht_sroute = g_sroute > 0 ? hash_slots_pow2(SMEM_BUDGET_2BLK()) : 0;
-        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest);
+        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_dim2);
         if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
