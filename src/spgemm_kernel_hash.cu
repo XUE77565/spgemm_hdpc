@@ -2277,6 +2277,7 @@ __global__ void compute_bucket_kernel(
                                                           // 字节模型 1:1 计价漏此差 → c-64+169/F2+62/3Dspec+25 实证
         && (long long)sl0 > (long long)dense_numeric_bin(4)
         && sl0 >= LARGEST_MIN_SPAN                        // 位图字 ≥ 2×块宽(atomicOr 摊薄;守卫电池实证)
+        && (long long)LARGEST_SPARSE_DEN * e <= (long long)sl0   // 输出稀疏:每字置位 ≤ 4(c-big 1/17 vs c-64 1/2.5)
         && flop[i] >= EST_DENSE_MIN
         && flop[i] <= DUP_LARGEST_MAX * e                 // dup ≤ 8:重乘积行 2×flop 重走反劣(同实证)
         && ((long long)sl0 * LARGEST_COL_MILLI + (long long)e * LARGEST_VAL_PER_EST_MILLI

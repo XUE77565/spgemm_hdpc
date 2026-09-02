@@ -303,3 +303,5 @@ constexpr int LARGEST_VAL_PER_EST_MILLI = (8 + 8) * 1000;                       
 constexpr int LARGEST_MIN_SPAN = 2 * HASH_BLOCK_STRUCT * WARP_SIZE;  // 16384 列:位图字 ≥ 2×块宽 → 原子摊薄
 constexpr int DUP_LARGEST_MAX  = 2;  // dup ≤ 2 = 真 straggler 形态(flop≈est,c-big 实测 dup=1);>2 时
                                        // hash 全局 CAS 与 largest 的 2×flop 读 + fp64 原子打平 → 失去稳定优势(c-64 +12.8% 实证)
+constexpr int LARGEST_SPARSE_DEN = 8;  // est/span ≤ 1/8 才进 largest:每字期望置位 ≤ 4(32/8)→ 原子冲突
+                                       // 与清字税同界;c-big 1/17 ✓ vs c-64 1/2.5 ✗(守卫电池终判据)
