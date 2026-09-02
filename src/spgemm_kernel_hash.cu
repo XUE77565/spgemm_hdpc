@@ -4032,13 +4032,18 @@ static void hash_product(
                 CHECK_CUDA(cudaGetLastError());
                 continue;
             }
-            if (bi == 0 || bi == BIN_BATCH_S) {
-                // 批量行(est≤64 且 k≤32):warp-per-row copy;COMPACT_T=1 → 线程纂(0 闲 lane,docs/13 v2)
+            if (bi == 0) {
+                // bin0(est≤64):warp-per-row(输出可达 64/行,warp 协作最稳;线程纂在 est 33-64 行
+                // 是 32-64 次串行拷贝 → web-Google +13.6% 教训,线程纂只给 nnz≤32 的 BATCH_S 行)
+                hash_compact_copy_warp_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                CHECK_CUDA(cudaGetLastError());   // TEMP:定位
+            } else if (bi == BIN_BATCH_S) {
+                // BATCH_S 行 est≤32(distinct ≤ 32 上界):串行 ≤32 次 = 0 闲 lane,CTA 3M→94K
                 if (g_compact_t)
                     hash_compact_copy_thread_kernel<<<(n + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 else
                     hash_compact_copy_warp_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
-                CHECK_CUDA(cudaGetLastError());   // TEMP:定位
+                CHECK_CUDA(cudaGetLastError());
             } else if (bi <= ilog2c(CSORT_HT / WARP_SIZE)) {
                 // 小行(ht≤CSORT_HT):accumulate 已 count-sort,这里只 compact_copy(tmp→CSR)
                 // Fix#11(审查):warp-per-row(8 行/CTA)替 1CTA/行 —— 万行级 bin 的 CTA 数砍 8×
