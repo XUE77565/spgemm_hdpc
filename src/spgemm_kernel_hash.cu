@@ -1448,7 +1448,7 @@ __global__ void hash_spa_kernel(
     if (llb && row_flop && row_maxbl)
         logG = local_load_balance(re - rs, row_flop[i], row_maxbl[i], 2, 31 - __clz((unsigned)blockDim.x));
     else
-        logG = (ht_size <= 64) ? 2 : (ht_size <= 256) ? 3 : (ht_size <= 1024) ? 4 : 5;
+        logG = (ht_size <= BATCH_EST_MAX) ? 2 : (ht_size <= SMALL_SPAN_MAX) ? 3 : (ht_size <= CSORT_HT) ? 4 : 5;  // 表大小梯
     int G = 1 << logG;
     int num_groups = blockDim.x / G;
     int my_group = tid / G, my_id = tid % G;
@@ -1588,7 +1588,7 @@ __global__ void hash_spa_hkv_kernel(
 
     long long gb = gval_off[i];                // 本行 value 池基址(host 已 memset 0)
     int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
-    int G = (ht_size <= 64) ? 4 : (ht_size <= 256) ? 8 : (ht_size <= 1024) ? 16 : 32;
+    int G = (ht_size <= BATCH_EST_MAX) ? 4 : (ht_size <= SMALL_SPAN_MAX) ? 8 : (ht_size <= CSORT_HT) ? 16 : WARP_SIZE;
     int num_groups = HASH_BLOCK / G;
     int my_group = tid / G, my_id = tid % G;
     for (int p = rs + my_group; p < re; p += num_groups) {
@@ -1651,7 +1651,7 @@ __global__ void ladder_ht_kernel(const int *est, int A_rows, int *lht)
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= A_rows) return;
     int e = est[i];
-    int target = (e <= 4096) ? 2 * e : e;
+    int target = (e <= TABLE_DOUBLING_THR) ? 2 * e : e;  // α=0.5 松弛(仅默认档内)
     int ht = 32;
     while (ht < target && ht < HASH_CAP) ht <<= 1;
     lht[i] = ht;
@@ -1773,7 +1773,7 @@ __global__ void hash_ultra_kernel(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_ultra) return;
     int i = ultra_rows[idx];
-    const int CAP = 32;                          // 2× 于 EST_ULTRA_THR,吸收估计低估
+    const int CAP = WARP_SIZE;  // 2× EST_ULTRA_THR(α=0.5 负载因子)                          // 2× 于 EST_ULTRA_THR,吸收估计低估
     int u_col[CAP]; double u_val[CAP]; int u_cnt = 0;
     int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
     for (int p = rs; p < re; p++) {
@@ -2147,7 +2147,7 @@ __global__ void compute_bucket_kernel(
     const int *span_len,   // 每行真实列跨度(docs/24:替代 n 近似)
     int *bucket_id, int *counts,
     int n_cols = 0,        // DIM2:span 护栏(DIM2=0 时传 0 关闭)
-    int span_factor = 16,  // SPANF:重行 span 门系数(默认 16 = v4)
+    int span_factor = SPANF_COEFF,  // G-group 摊薄系数(docs/72 推导)
     int occgate = 0,      // docs/67 占用轴(est≥span/16):Ga 族 3.6% 占用行的 O(span) 窗税实锤
     int ladder = 0,       // docs/67 §6 自制双梯:两侧实测成本律逐行比较(取代手调门的方向)
     int batch2 = 0,       // docs/67 §8:est 65-256 小行批处理门(BIN_BATCH2)
@@ -2166,7 +2166,7 @@ __global__ void compute_bucket_kernel(
     // flop/dup 门继续受保护。DNF 防复发:dbg 打印路由量级 + cnnz 对 scipy。
     int hash_bin = 0, ht = 32;
     {
-        int target = (e <= 4096) ? 2 * e : e;
+        int target = (e <= TABLE_DOUBLING_THR) ? 2 * e : e;  // α=0.5 松弛(仅默认档内)
         while (ht < target && ht < HASH_CAP) { ht <<= 1; hash_bin++; }
     }
     int dense_bin = (sl0 <= 451) ? 0 : (sl0 <= 906) ? 1 : (sl0 <= 1818) ? 2
@@ -2177,7 +2177,7 @@ __global__ void compute_bucket_kernel(
     // 门 v2(333SP +160%/F2 +13% 教训:窄跨度但 est 小的行在 batched/hash 本来就快,勿偷):
     // 极窄 span≤512:数组比任何 hash 表都小,只要 e>64 就值得;中段 512<span≤2048:须 est≥2048
     // (= v4 门的"hash 伺候不了的大表行")。两档都要求 est≥span/2(数组利用率)。
-    if (e > 64 && sl0 > 0 && sl0 <= 256 && 2LL * e >= (long long)sl0) {
+    if (e > BATCH_EST_MAX && sl0 > 0 && sl0 <= SMALL_SPAN_MAX && 2LL * e >= (long long)sl0) {  // 数组 < 最小表(docs/37)
         // 小跨度 dense(docs/37;门 v3=收缩到 Ocean dense0 精确槽位:span≤256):pwtk +145%/F2 +14%
         // 教训 = 高 dup 行 dense 付逐乘积原子、hash 只付逐 distinct,中窄跨度(257-2048)反复被偷;
         // 256 内数组比一切 hash 表都小且密集,是唯一稳定赢的槽位(nemeth18 全族实证)。
@@ -2194,7 +2194,7 @@ __global__ void compute_bucket_kernel(
     //             flop<8est ⟺ B_cont<24B(dup<8 时争用可忽略,G-group 摊薄)
     //             flop≥16384 ∧ <64est ⟺ B_cont<24B×est/(flop−est) 的重行域(docs/37 实证)
     const long long fl64 = (long long)flop[i];
-    const bool dup_ok = (fl64 < 8LL * e) || (fl64 >= 16384 && fl64 < 64LL * e);
+    const bool dup_ok = (fl64 < DUP_LIGHT * e) || (fl64 >= HASH_CAP && fl64 < DUP_HEAVY * e);  // 争用 vs compact 推导
     // ↑ dup<8:争用字节≈0(G-group 摊薄);dup<64∧flop≥16384:重行域的争用可容忍(docs/37)
     // docs/67 §6 自制双梯(LADDER=1):diter 候选行按两侧【实测成本律】裁决,取代手调门的方向。
     //   t_dense ≈ 30109·⌈span/5400⌉ + 2.55·flop       (120k 行 × 7 阵,R²=0.896)
@@ -2204,7 +2204,7 @@ __global__ void compute_bucket_kernel(
     if (ladder) {
         int W = (int)(((long long)sl0 + 5399) / 5400);
         long long td = 30109LL * W + 255LL * fl64 / 100;
-        int tgt = (e <= 4096) ? 2 * e : e;
+        int tgt = (e <= TABLE_DOUBLING_THR) ? 2 * e : e;
         int ht_l = 32; while (ht_l < tgt && ht_l < HASH_CAP) ht_l <<= 1;
         long long kc_n = (long long)(A_row_ptr[i + 1] - A_row_ptr[i]);
         long long th = 811LL * ht_l / 100 + 1038LL * kc_n + 189LL * fl64 / 100 - 50225LL;
@@ -2220,22 +2220,22 @@ __global__ void compute_bucket_kernel(
     if (false) {}
     // SROUTE v3(docs/72 Phase 2):结构化字节路由,替代 v4 拟合门(sroute>0 时)
     else if (sroute > 0 && diter_thr > 0 && dup_ok) {
-        int tgt_sr = (e <= 4096) ? 2 * e : e;
+        int tgt_sr = (e <= TABLE_DOUBLING_THR) ? 2 * e : e;
         int ht_row = 32; while (ht_row < tgt_sr && ht_row < HASH_CAP) ht_row <<= 1;
         long long hash_bytes = (long long)ht_row * 12000 + (sroute >= 3 ? (long long)e * 24000 : 0);
         long long dense_bytes = (long long)sl0 * 8125
             + (sroute >= 4 ? (fl64 - e) * 12000 / 1000 : 0);
         if (dense_bytes <= hash_bytes && flop[i] >= diter_thr &&
-            (sroute < 2 || e >= 2048)) bid = BIN_DITER;
+            (sroute < 2 || e >= EST_DENSE_MIN/2)) bid = BIN_DITER;
         else if (e > HASH_CAP) bid = BIN_HEAVY;
-        else { int bi_sr = 0, ht_sr = 32; int t_sr = (e <= 4096) ? 2*e : e;
+        else { int bi_sr = 0, ht_sr = 32; int t_sr = (e <= TABLE_DOUBLING_THR) ? 2*e : e;
                while (ht_sr < t_sr && ht_sr < HASH_CAP) { ht_sr <<= 1; bi_sr++; }
-               if (e <= 64) { int rk = A_row_ptr[i+1]-A_row_ptr[i]; bid = (rk <= 32) ? 0 : bi_sr; }
+               if (e <= BATCH_EST_MAX) { int rk = A_row_ptr[i+1]-A_row_ptr[i]; bid = (rk <= WARP_SIZE) ? 0 : bi_sr; }
                else bid = bi_sr; }
     }
     // v4 拟合门(默认路径;常数附 docs/72 结构推导注释 4194b45)
     else if (diter_thr > 0 && dup_ok &&
-             ((flop[i] >= diter_thr && e >= 2048 &&
+             ((flop[i] >= diter_thr && e >= EST_DENSE_MIN/2 &&  // 表字节 ≥ 半默认档(docs/72 推导)
                (long long)span_factor * flop[i] >= (long long)span_len[i])
               || (dim2 && flop[i] >= 4096 && e <= HASH_CAP))
              && (!occgate || 16LL * e >= (long long)sl0)
@@ -2244,14 +2244,14 @@ __global__ void compute_bucket_kernel(
     else {
         int bi = 0, ht = 32;
         // 小行表 2× 松弛(est=flop 紧界 → 满载原子争用,333SP accumulate +8ms 教训;槽位不变只放大表)
-        int target = (e <= 4096) ? 2 * e : e;
+        int target = (e <= TABLE_DOUBLING_THR) ? 2 * e : e;  // α=0.5 松弛(仅默认档内)
         while (ht < target && ht < HASH_CAP) { ht <<= 1; bi++; }
         // 批量 kernel 门(2026-08-26):est≤64 且行长≤32(k 短,warp 串行 k 才划算;
         // 3Dspectralwave2 的 est 小但 k 数百的长链行回归教训)→ bin0(BATCH_HT=128 覆盖 est≤64);
         // 否则走原 per-row 梯。333SP 教训:门须独立于 2× 表目标的梯子(否则 est~36 被推到 bi2)
         if (false) {  // subwarp8 否决(germany_osm 49→55ms,warp idle 不是瓶颈;kernel 保留待查;dispatch 分支已删,勿再加在 BIN_HEAVY 前——曾挡死 heavy 导致 DNF)
             bid = BIN_DITER;
-        } else if (e <= 64) {
+        } else if (e <= BATCH_EST_MAX) {
             int rk = A_row_ptr[i + 1] - A_row_ptr[i];
             bid = (rk <= 32) ? 0 : bi;
         } else if (e <= 256 && batch2) {   // docs/67 §8:est 65-256 小行批处理(web 图 22k cyc/行块地板税)

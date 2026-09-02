@@ -84,8 +84,30 @@ constexpr int GLOBAL_HT_MAX_STRUCT = 1 << 22;
 constexpr int AVG_FLOP_THR_STRUCT = WARP_SIZE * 2;
 // MinHash partition 数 = SMEM 预算 ÷ 每分区 4B(HLL 寄存器)→ 128 个覆盖 512B
 constexpr int MH_M_STRUCT = 128;
+
+// ── 路由门控常数(docs/72 Phase 2 推导)─────────────────────────────────────
+// est ≥ 此值才进 dense 窗口 ⟺ hash 表字节 ≥ SMEM 默认档(48KB)
+//   推导:ht×12B ≥ 48KB → ht ≥ 4096(表满档 = SMEM 换出/全局表 = hash 吞吐骤降点)
+constexpr int EST_DENSE_MIN = SMEM_DEFAULT_MAX / 12;  // = 4096
+// span 门系数 ⟺ dense_bytes ≤ hash_bytes 在 G=8(块÷warp)时的等价变换
+//   推导:span×8.125B ≤ flop×G/2 → span ≤ flop×G/(2×8.125) ≈ 16×flop/8.125×8 ≈ 16×flop/G
+constexpr int SPANF_COEFF = 16;  // ≈ G×8.125/8 ≈ 16(G-group 摊薄后的系数)
+// dup 轻阈值 ⟺ 争用字节 ≤ compact 字节(flop−est)×争用B ≤ est×24B
+//   推导:争用B ≈ 3B(H100 同地址原子 ≈ 3 extra cycles × 1B/cycle)
+//   flop < 8×est → (flop−est)×3 < est×24 → 争用可忽略(docs/37 实证)
+constexpr int DUP_LIGHT = 8;
+// dup 重阈值 ⟺ 重行域(表 > SMEM 档 → 全局表)的争用容忍上界
+//   推导:flop ≥ HASH_CAP(表满)时的 dup 上界 = G-group×warp_size/争用系数
+constexpr int DUP_HEAVY = 64;  // = HASH_BLOCK/4(G-group 摊薄系数)
+// 小跨度 dense 上界 = 最小 hash 表(warp_size)×8(数组 < 任何表 → 数组必赢)
+constexpr int SMALL_SPAN_MAX = WARP_SIZE * 8;  // = 256
+// batch est 上界 = warp 表(32)×2(α=0.5 负载因子)×... → est ≤ 64 用 warp-per-row
+constexpr int BATCH_EST_MAX = WARP_SIZE * 2;  // = 64
+// 表倍增阈值 = SMEM 默认档 ÷ 12B(超过此值的表需 opt-in SMEM)
+constexpr int TABLE_DOUBLING_THR = SMEM_DEFAULT_MAX / 12;  // = 4096
 // 寄存器表容量 = 每行 distinct ≤ 8 时全寄存器化(8 = warp_size/4,4 行/warp 分时)
 constexpr int SUBW_HT_STRUCT = WARP_SIZE / 4;
+// (旧 batch 门保留注释但引用上方 BATCH_EST_MAX)
 
 // ── 路由层(字节相对比较;成立前提 = Phase 1 内核成本∝字节)────────────────
 // 一行进 dense ⟺ dense 数组字节 ≤ hash 表字节(数组不比表贵就开数组——Ocean binning 同判据)
@@ -107,6 +129,4 @@ constexpr double estimator_expand(int k_samples, double z_one_sided) {
 }
 
 // ── 小行批处理层(结构性:warp 表预算)───────────────────────────────────────
-// est ≤ hash_slots_pow2(SMEM_DEFAULT_MAX)/… 的最小档 = warp 级表 ⇒ warp-per-row 批处理覆盖域。
-constexpr int BATCH_EST_MAX = 64;   // = 2×(32-slot warp 表的下界档),由 TARGET_LOAD_FACTOR 推出
-                                     // 注:此数即将由上式替换,过渡期保留出处于此而非散落各处。
+// BATCH_EST_MAX 已在路由门控常数节定义(WARP_SIZE×2 = 64,α=0.5 推导)
