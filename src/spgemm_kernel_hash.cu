@@ -2149,7 +2149,9 @@ __global__ void compute_bucket_kernel(
     int span_factor = 16,  // SPANF:重行 span 门系数(默认 16 = v4)
     int occgate = 0,      // docs/67 占用轴(est≥span/16):Ga 族 3.6% 占用行的 O(span) 窗税实锤
     int ladder = 0,       // docs/67 §6 自制双梯:两侧实测成本律逐行比较(取代手调门的方向)
-    int batch2 = 0)       // docs/67 §8:est 65-256 小行批处理门(BIN_BATCH2)
+    int batch2 = 0,       // docs/67 §8:est 65-256 小行批处理门(BIN_BATCH2)
+    int sroute = 0,       // docs/72 Phase 2:结构化字节路由(span×8.125B ≤ ht×12B;2=叠加 est≥2048 保底)
+    int ht_l_sroute = 0)  // SROUTE 用的 hash 表大小(host 预算的表槽)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= A_rows) return;
@@ -2202,19 +2204,14 @@ __global__ void compute_bucket_kernel(
         long long th = 811LL * ht_l / 100 + 1038LL * kc_n + 189LL * fl64 / 100 - 50225LL;
         ladder_dense_ok = (td <= th);   // dense 便宜才进窗;否则留 hash 梯
     }
+    // docs/72 Phase 2 路由字节比较(SROUTE=1):删全部拟合门,结构化成本比较。
+    //   进 dense ⟺ span×8.125B ≤ ht×12B(数组不比表贵)∧ dup_ok ∧ flop≥diter_thr
+    //   SROUTE=2 时叠加 est≥2048 保底(hash 端超小表行本来快,docs/24 实证)
     if (false) {}
-    // SPANF(docs/62 实验):重行 span 门系数 env 化(默认 16 = v4 原值)。
-    // Ocean-A(docs/64 机制 A,OR-退化):v4 全门命中 ∨ 双梯分支(dim2=dense_bin≤hash_bin ∧
-    // flop≥4096 ∧ e≤HASH_CAP)。双梯分支【免】16×flop≥span 与 est≥2048 —— 双梯本身已是
-    // "数组不比表贵"的跨形态判据;c-big straggler(span 345k/flop 16-30k,19491/19578 挂 16× 门)
-    // 由此入窗;F2(est 1-2k hash 本来快)由 flop≥4096+dup_ok 继续挡。dup_ok 两支共用
-    // (docs/37 高 dup 行 dense 付逐乘积原子)。DIM2 env 默认关 → 生产路由逐位不变。
-    else if (diter_thr > 0 && dup_ok &&
-             ((flop[i] >= diter_thr && e >= 2048 &&
-               (long long)span_factor * flop[i] >= (long long)span_len[i])
-              || (dim2 && flop[i] >= 4096 && e <= HASH_CAP))
-             && (!occgate || 16LL * e >= (long long)sl0)      // docs/67 占用轴:est≥span/16
-             && ladder_dense_ok) bid = BIN_DITER;
+    else if (sroute > 0 && diter_thr > 0 && dup_ok &&
+             (long long)sl0 * 8125 <= (long long)ht_l_sroute * 12000 &&   // 字节比较:span×8.125B ≤ ht×12B
+             flop[i] >= diter_thr &&
+             (sroute < 2 || e >= 2048)) bid = BIN_DITER;
     else if (e > HASH_CAP) bid = BIN_HEAVY;          // heavy:全局表(2026-08-25,不再回退 merge)
     else {
         int bi = 0, ht = 32;
@@ -2759,7 +2756,11 @@ static void hash_product(
         if (g_ladder < 0) { const char *e = getenv("LADDER"); g_ladder = (e && *e) ? atoi(e) : 0; }      // 默认关
         static int g_batch2 = -1;    // docs/67 §8:est 65-256 小行批处理(web 图地板税,BIN_BATCH2)
         if (g_batch2 < 0) { const char *e = getenv("BATCH2"); g_batch2 = (e && *e) ? atoi(e) : 0; }      // 默认关
-        compute_bucket_kernel<<<(A_rows + 255) / 256, 256>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, g_dim2 ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2);
+        static int g_sroute = -1;    // docs/72 Phase 2:结构化字节路由
+        if (g_sroute < 0) { const char *e = getenv("SROUTE"); g_sroute = (e && *e) ? atoi(e) : 0; }      // 默认关
+        // SROUTE 用的 hash 表槽 = 半 SM 预算÷12B(结构推导,与 est 无关的物理上界;行内再按 est 选小表)
+        const int ht_sroute = g_sroute > 0 ? hash_slots_pow2(SMEM_BUDGET_2BLK()) : 0;
+        compute_bucket_kernel<<<(A_rows + 255) / 256, 256>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, g_dim2 ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute);
         if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
