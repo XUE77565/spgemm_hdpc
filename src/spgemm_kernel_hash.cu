@@ -188,13 +188,14 @@ __global__ void row_span_only_kernel(
 #define HASH_CAP HASH_CAP_STRUCT
 #endif
 #define HASH_BLOCK HASH_BLOCK_STRUCT  // SM 占用单位(硬件手册)
-#define N_BINS 20    // 0..10:hash 梯 + ultra(11) + heavy(12) + dense-iter(13) + 小跨度 dense 4 子桶(14-17,docs/37) + batch2(18,docs/67 §8) + batch_s(19,docs/13 v2)
+#define N_BINS 21    // 0..10:hash 梯 + ultra(11) + heavy(12) + dense-iter(13) + 小跨度 dense 4 子桶(14-17,docs/37) + batch2(18,docs/67 §8) + batch_s(19,docs/13 v2) + largest(20,docs/74)
 #define BIN_SSPAN0 14   // span≤256(64线程/3.3KB,32+行/SM —— Ocean dense bin0 同位)
 #define BIN_ULTRA 11
 #define BIN_HEAVY 12
 #define BIN_DITER 13
 #define BIN_BATCH2 18    // docs/67 §8:est 65-256 ∧ kc≤32 小行批处理(<512,4> warp-per-row)
 #define BIN_BATCH_S 19   // docs/13 v2:est≤32 ∧ kc≤32 小行 64 槽表批处理(road 族 100% bin0 实测驱动)
+#define BIN_LARGEST 20   // docs/74 Ocean-D:straggler 行位图窗(SMEM 0.25B/列 + val 全局流过)
 #define BATCH_S_HT BATCH_S_HT_STRUCT  // 64 = 2×32(α=0.5)
 #define GLOBAL_HT_MAX_SLOTS GLOBAL_HT_MAX_STRUCT  // 内存预算÷12B/槽
 #define AVG_FLOP_THR AVG_FLOP_THR_STRUCT  // warp_size×2(结构推导)
@@ -2239,7 +2240,8 @@ __global__ void compute_bucket_kernel(
     int batch2 = 0,       // docs/67 §8:est 65-256 小行批处理门(BIN_BATCH2)
     int sroute = 0,       // docs/72 Phase 2:结构化字节路由(span×8.125B ≤ ht×12B;2=叠加 est≥2048 保底)
     int ht_l_sroute = 0,  // SROUTE 用的 hash 表大小(host 预算的表槽)
-    int batch_s_max = 0)  // docs/13 v2:est≤此值 ∧ kc≤warp → BIN_BATCH_S(64 槽表;0=关)
+    int batch_s_max = 0,  // docs/13 v2:est≤此值 ∧ kc≤warp → BIN_BATCH_S(64 槽表;0=关)
+    int largest_on = 0)   // docs/74:Ocean-D straggler 行位图窗(0=关)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= A_rows) return;
@@ -2264,10 +2266,19 @@ __global__ void compute_bucket_kernel(
     // ⚠ CPU 逐行分析(08-30):c-big 全部 straggler 行卡在 span≤n/4 护栏(其余门全过)——
     // Ocean 数据驱动窗口本就处理大 span,护栏对 DIM2-s 分支放宽到 span≤n(hash_bin 侧自然限流)。
     bool dim2 = (dense_bin <= hash_bin) && sl0 > 0 && n_cols > 0 && (long long)sl0 <= (long long)n_cols;
+    // Ocean-D largest(docs/74):straggler 行(超 SMEM-val dense 档 ∧ 字节模型赢 hash)→ BIN_LARGEST。
+    //   字节模型(×4 定点):span ≤ 48×ht + 32×est ⟺ span×0.25B + est×16B ≤ ht×12B + est×24B
+    //   (位图+前缀 SMEM 0.25B/列;val/emit 经 tmp 全局 est×16B;hash = 表 12B/槽 + compact 24B/est)
+    const bool largest_ok = largest_on && sl0 > 0 && n_cols > 0
+        && (long long)sl0 > (long long)dense_numeric_bin(4)
+        && flop[i] >= EST_DENSE_MIN && e <= HASH_CAP
+        && (long long)sl0 <= 48LL * ht + 32LL * e;
     // 门 v2(333SP +160%/F2 +13% 教训:窄跨度但 est 小的行在 batched/hash 本来就快,勿偷):
     // 极窄 span≤512:数组比任何 hash 表都小,只要 e>64 就值得;中段 512<span≤2048:须 est≥2048
     // (= v4 门的"hash 伺候不了的大表行")。两档都要求 est≥span/2(数组利用率)。
-    if (e > BATCH_EST_MAX && sl0 > 0 && sl0 <= SMALL_SPAN_MAX && 2LL * e >= (long long)sl0) {  // 数组 < 最小表(docs/37)
+    if (largest_ok) {
+        bid = BIN_LARGEST;
+    } else if (e > BATCH_EST_MAX && sl0 > 0 && sl0 <= SMALL_SPAN_MAX && 2LL * e >= (long long)sl0) {  // 数组 < 最小表(docs/37)
         // 小跨度 dense(docs/37;门 v3=收缩到 Ocean dense0 精确槽位:span≤256):pwtk +145%/F2 +14%
         // 教训 = 高 dup 行 dense 付逐乘积原子、hash 只付逐 distinct,中窄跨度(257-2048)反复被偷;
         // 256 内数组比一切 hash 表都小且密集,是唯一稳定赢的槽位(nemeth18 全族实证)。
@@ -2418,6 +2429,120 @@ __global__ void hash_compact_copy_kernel(
 }
 
 // warp-per-row 批量 copy(小行,2026-08-26):bin0 的 ~3M 行×19 项,1CTA/行 launch-bound → 8 行/CTA
+__device__ __forceinline__ int largest_lower_bound(const int *a, int lo, int hi, int v) {
+    while (lo < hi) { int mid = (lo + hi) >> 1; if (a[mid] < v) lo = mid + 1; else hi = mid; }
+    return lo;
+}
+
+// Ocean-D largest 数值内核(docs/74):straggler 行(密度 1/16~1/80,SMEM-val dense 与 hash 都亏)的
+// 第三形态 —— 位图+前缀驻 SMEM(0.25B/列,单窗 span 上限 ≈ 800K),val 经 tmp 全局流过(atomicAdd)。
+// 输出 = tmp_key(低 32 列)/tmp_val + row_nnz,与 hash 行同消费(compact 零改动);
+// est 欠估 → out > est 预算 → 推 ovf_rows 走标准 retry(全局 hash)。
+__global__ void dense_largest_numeric_kernel(
+    const int *A_rp, const int *A_ci, const double *A_val,
+    const int *B_rp, const int *B_ci, const double *B_val,
+    int upper_tri, int A_rows,
+    const int *bucket_rows, const int *span_lo, const int *span_len,
+    int win_cols, const int *est,
+    const long long *row_off, unsigned long long *tmp_key, double *tmp_val,
+    int *row_nnz, int *overflow_flag, int *ovf_rows, int *ovf_cnt, int *row_ovf)
+{
+    int i = bucket_rows[blockIdx.x];
+    if (i >= A_rows) return;
+    int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    int lo0 = span_lo[i], span = span_len[i];
+    int rs = A_rp[i], re = A_rp[i + 1];
+    int a_len = re - rs;
+    // G-group(Phase 1b 同推导):两遍乘积(OR 与 补值)共用组布局
+    int G = WARP_SIZE;
+    {
+        int est_flop = span > 0 ? a_len * (span / 32 > 0 ? span / 32 : 1) : a_len;
+        int avg_B = a_len > 0 ? est_flop / a_len : 1;
+        if (avg_B > 1) {
+            int logG = 31 - __clz((unsigned)avg_B);
+            if (logG < 1) logG = 1;
+            if (logG > ilog2c(WARP_SIZE)) logG = ilog2c(WARP_SIZE);
+            G = 1 << logG;
+        }
+    }
+    int num_groups = blockDim.x / G, my_group = tid / G, my_id = tid % G;
+    extern __shared__ __align__(8) unsigned int lsmem[];   // [words] 位图 | [words] 前缀
+    unsigned int *bmp = lsmem;
+    unsigned int *pref = lsmem + ((win_cols + 31) >> 5);
+    long long base = row_off[i];
+    long long budget = (long long)est[i];
+    long long out = 0;
+    bool ovf = false;
+    int nw_win = (span + win_cols - 1) / win_cols;
+    for (int wi = 0; wi < nw_win && !ovf; wi++) {
+        int c0 = lo0 + wi * win_cols;
+        int c1 = min(c0 + win_cols, lo0 + span);
+        int w = c1 - c0;
+        int words = (w + 31) >> 5;
+        for (int j4 = tid; j4 < words; j4 += blockDim.x) bmp[j4] = 0;
+        __syncthreads();
+        for (int p = rs + my_group; p < re; p += num_groups) {   // pass1:位图 OR
+            int k = A_ci[p];
+            int ks = B_rp[k], ke = B_rp[k + 1];
+            int from = (nw_win == 1) ? ks : largest_lower_bound(B_ci, ks, ke, c0);
+            int to   = (nw_win == 1) ? ke : largest_lower_bound(B_ci, from, ke, c1);
+            for (int q = from + my_id; q < to; q += G) {
+                int col = B_ci[q];
+                if (upper_tri && col < i) continue;
+                int j = col - c0;
+                atomicOr(&bmp[j >> 5], 1u << (j & 31));
+            }
+        }
+        __syncthreads();
+        __shared__ int w_tot;
+        if (warp == 0) {   // pass2:字级 popcount 前缀(Phase 1b 同款)
+            int seglen = (words + 31) / 32;
+            int lo = lane * seglen, hi = min(lo + seglen, words);
+            int run = 0;
+            for (int j = lo; j < hi; j++) { pref[j] = run; run += __popc(bmp[j]); }
+            int excl = run;
+            for (int off = 1; off < 32; off <<= 1) {
+                int v = __shfl_up_sync(0xffffffffu, excl, off);
+                if (lane >= off) excl += v;
+            }
+            for (int j = lo; j < hi; j++) pref[j] += excl - run;
+            if (lane == 31) w_tot = excl;
+        }
+        __syncthreads();
+        if (out + w_tot > budget) {   // est 欠估:tmp 区会越界 → 交 retry(全局 hash)
+            ovf = true;
+            break;
+        }
+        for (int p = rs + my_group; p < re; p += num_groups) {   // pass3:补值 → 精确偏移直写 tmp
+            int k = A_ci[p];
+            double a = A_val[p];
+            int ks = B_rp[k], ke = B_rp[k + 1];
+            int from = (nw_win == 1) ? ks : largest_lower_bound(B_ci, ks, ke, c0);
+            int to   = (nw_win == 1) ? ke : largest_lower_bound(B_ci, from, ke, c1);
+            for (int q = from + my_id; q < to; q += G) {
+                int col = B_ci[q];
+                if (upper_tri && col < i) continue;
+                int j = col - c0;
+                int wo = j >> 5, b = j & 31;
+                unsigned below = b ? (bmp[wo] & ((1u << b) - 1)) : 0u;
+                long long off = (long long)pref[wo] + __popc(below);
+                tmp_key[base + out + off] = (unsigned long long)(unsigned)(c0 + j);   // 低 32 位 = 列(compact 同消费)
+                atomicAdd(&tmp_val[base + out + off], a * B_val[q]);
+            }
+        }
+        out += w_tot;
+        __syncthreads();
+    }
+    if (tid == 0) {
+        if (ovf) {
+            if (!atomicExch(&row_ovf[i], 1)) { int q3 = atomicAdd(ovf_cnt, 1); ovf_rows[q3] = i; }
+            atomicExch(overflow_flag, 1);
+        } else {
+            row_nnz[i] = (int)out;
+        }
+    }
+}
+
 // compact 小行线程版(docs/13 v2):行内串行拷贝零闲 lane(warp 版 5-nnz 行 27/32 lane 闲;
 // road 族 compact 10.6ms/24M 行 = 440ns/行,CTA 数 3M → 94K)
 __global__ void hash_compact_copy_thread_kernel(
@@ -2955,6 +3080,8 @@ static void hash_product(
     void *d_cub_tmp = nullptr;
     static int g_compact_t = -1; // docs/13 v2:bin0/BATCH_S compact 线程级行(函数级:compact 相位亦用)
     if (g_compact_t < 0) { const char *e = getenv("COMPACT_T"); g_compact_t = (e && *e) ? atoi(e) : 0; }
+    static int g_largest = -1;   // docs/74:Ocean-D straggler 位图窗(函数级:binning 传参用)
+    if (g_largest < 0) { const char *e = getenv("LARGEST"); g_largest = (e && *e) ? atoi(e) : 0; }
     prof("binning", [&]{
         CHECK_CUDA(cudaMemset(d_cnt, 0, N_BINS * sizeof(int)));   // 先清零(fused kernel 内 atomicAdd 累加)
         static int g_diter = -1;   // dense-iter 重行阈值(DITER_MIN_FLOP,默认 4096;0=关)
@@ -2977,7 +3104,7 @@ static void hash_product(
         if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 0; }
         // SROUTE 用的 hash 表槽 = 半 SM 预算÷12B(结构推导,与 est 无关的物理上界;行内再按 est 选小表)
         const int ht_sroute = g_sroute > 0 ? hash_slots_pow2(SMEM_BUDGET_2BLK()) : 0;
-        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, g_dim2 ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0);
+        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, g_dim2 ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest);
         if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
@@ -3428,6 +3555,19 @@ static void hash_product(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                     rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
                     d_ovf_rows, d_ovf_cnt, d_row_ovf);
+            } else if (bi == BIN_LARGEST) {   // docs/74:1 CTA/行,SMEM = 0.25B/列 × win
+                const int win_l = (int)((size_t)LARGEST_SMEM_BUDGET * 4);   // 列/窗 = 预算÷0.25B
+                size_t lsm = (size_t)((win_l + 31) >> 5) * sizeof(unsigned) * 2 + 64;
+                static bool lattr = false;
+                if (!lattr) {
+                    CHECK_CUDA(cudaFuncSetAttribute(dense_largest_numeric_kernel,
+                        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)lsm));
+                    lattr = true;
+                }
+                dense_largest_numeric_kernel<<<n, HASH_BLOCK_STRUCT, lsm, cur_s>>>(
+                    dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows,
+                    rows_ptr, d_span_lo, d_span_len, win_l, d_est,
+                    d_off, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf);
             } else if (bi == BIN_ULTRA) {
                 // ultra(est≤EST_ULTRA_THR):线性,免 hash
                 hash_ultra_kernel<<<(n + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT, 0, cur_s>>>(

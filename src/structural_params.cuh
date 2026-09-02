@@ -283,3 +283,6 @@ constexpr int    H2D_MAX_CHUNKS  = 64;                         // 事件表上�
 // ── 小行族专档(docs/13 v2;road/OSM 族 100% 行落 bin0 实测驱动)───────────────
 constexpr int BATCH_S_EST_MAX = WARP_SIZE;     // 32:est ≤ warp 覆盖的小行子档
 constexpr int BATCH_S_HT_STRUCT = WARP_SIZE * 2; // 64 槽表(α=0.5;清表/扫描税 = 128 槽档的一半)
+
+// ── Ocean-D largest 层(docs/74;straggler 行位图窗)───────────────────────────
+constexpr int LARGEST_SMEM_BUDGET = 200 * 1024;   // 位图+前缀 SMEM 预算(opt-in 227K − 27K 驱动保留,同 BCNT)
