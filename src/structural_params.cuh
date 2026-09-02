@@ -279,3 +279,7 @@ constexpr long long MRG3_MAX_FLOP = 3000000000LL;  // 3e9 项 × 12B ≈ 36GB ga
 constexpr int    L2_CACHE_BYTES  = 50 * 1024 * 1024;          // H100 PCIe L2 容量(手册)
 constexpr size_t H2D_CHUNK_BYTES = (size_t)L2_CACHE_BYTES / 4; // chunk ≈ L2/4:DMA 与内核读在 L2 交错
 constexpr int    H2D_MAX_CHUNKS  = 64;                         // 事件表上限(2^6;chunk 超则均分放大)
+
+// ── 小行族专档(docs/13 v2;road/OSM 族 100% 行落 bin0 实测驱动)───────────────
+constexpr int BATCH_S_EST_MAX = WARP_SIZE;     // 32:est ≤ warp 覆盖的小行子档
+constexpr int BATCH_S_HT_STRUCT = WARP_SIZE * 2; // 64 槽表(α=0.5;清表/扫描税 = 128 槽档的一半)
