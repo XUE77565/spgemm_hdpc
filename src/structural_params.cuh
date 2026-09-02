@@ -29,6 +29,15 @@ constexpr int hash_slots_pow2(int smem_budget) {
     return s;
 }
 
+// 计数(symbolic)专用档:该相位只需位图 1 bit/列 → 同预算覆盖列数 ×8。
+// 推导:count 相位无值数组 ⇒ bytes/col = 1/8;档容量 = 预算×8 − 32(同 −32 预留)。
+constexpr int bitmap_count_cols_max(int smem_budget) {
+    return (int)((double)smem_budget * 8.0) - 32;
+}
+
+// 并发目标:每 SM ≥2 块(Ocean CONCURRENT_BLOCKS_PER_SM 同哲学)⇒ 单块 SMEM 预算 = 半 SM。
+constexpr int SMEM_BUDGET_2BLK() { return SMEM_PER_SM_BYTES / 2; }
+
 // ── 路由层(字节相对比较;成立前提 = Phase 1 内核成本∝字节)────────────────
 // 一行进 dense ⟺ dense 数组字节 ≤ hash 表字节(数组不比表贵就开数组——Ocean binning 同判据)
 //   dense_bytes = span × 8.125B;hash_bytes = 表槽位 × 12B

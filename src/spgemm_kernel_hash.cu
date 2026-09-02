@@ -1,5 +1,6 @@
 #include "spgemm.h"
 #include "hash_prof.h"
+#include "structural_params.cuh"
 #include <cuda_runtime.h>
 #include <cub/cub.cuh>
 #include <thrust/scan.h>
@@ -22,6 +23,14 @@
 
 extern __global__ void count_intermediates_kernel(
     const int *A_row_ptr, const int *A_col_idx, int A_rows, int *ub);
+
+// 结构化 dense 内核(docs/72 Phase 1a,spgemm_kernel_struct.cu)
+extern __global__ void dense_struct_count_kernel(
+    const int *A_rp, const int *A_ci,
+    const int *B_rp, const int *B_ci,
+    int upper_tri, int A_rows,
+    const int *bucket_rows, const int *span_lo, const int *span_len,
+    int win_cols, int *row_nnz);
 
 // 二分:返回 [lo,hi) 内第一个 arr[idx] >= val 的下标(与 spgemm_merge.cu 同款,跨 TU 内联用本地拷贝)
 __device__ __forceinline__ int dev_lower_bound(const int *arr, int lo, int hi, int val) {
@@ -2887,8 +2896,33 @@ static void hash_product(
                 // 需 dense 行最大 span 定统一 SMEM(小 span 阵不牺牲 occupancy);超帽回退旧窗式。
                 static int g_bcnt = -1;
                 if (g_bcnt < 0) { const char *e = getenv("BCNT"); g_bcnt = (e && *e) ? atoi(e) : 0; }
+                // docs/72 Phase 1a 结构化(DSTRUCT=1):dense_struct_count 替代所有 count 变体,
+                // 窗宽/档位全部由 structural_params.cuh 推导(零拟合常数),span ≤ 档 → 单窗免重搜。
+                static int g_dstruct = -1;
+                if (g_dstruct < 0) { const char *e = getenv("DSTRUCT"); g_dstruct = (e && *e) ? atoi(e) : 0; }
                 bool bcnt_launched = false;
-                if (g_bcnt && dense_rows) {
+                if (g_dstruct && dense_rows) {
+                    int *d_sp = decltype(d_sp)(dev_alloc(dense_nr * sizeof(int)));
+                    span_gather_kernel<<<(dense_nr + 255) / 256, 256>>>(dense_rows, dense_nr, d_span_len, d_sp);
+                    int hmax_span = 0;
+                    {   auto mx = thrust::max_element(thrust::device_ptr<int>(d_sp), thrust::device_ptr<int>(d_sp + dense_nr));
+                      CHECK_CUDA(cudaMemcpy(&hmax_span, mx.get(), sizeof(int), cudaMemcpyDeviceToHost)); }
+                    dev_free(d_sp);
+                    // 窗宽 = count 档(仅位图 1/8 B/列)由 SMEM 半并发预算推导;SMEM = 窗宽/8 字节
+                    const int win_cols = bitmap_count_cols_max(SMEM_BUDGET_2BLK());
+                    const int use_cols = hmax_span < win_cols ? hmax_span : win_cols;
+                    size_t ssm = (size_t)((use_cols + 31) >> 5) * 4 + 8;
+                    CHECK_CUDA(cudaFuncSetAttribute(dense_struct_count_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)ssm));
+                    dbg("[%s] DSTRUCT: max_span=%d win=%d smem=%zuKB\n", tag, hmax_span, use_cols, ssm / 1024);
+                    prof("dense_count", [&]{
+                        dense_struct_count_kernel<<<dense_nr, 256, ssm>>>(
+                            dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows,
+                            dense_rows, d_span_lo, d_span_len, use_cols, d_row_nnz);
+                        CHECK_CUDA(cudaGetLastError());
+                    });
+                    bcnt_launched = true;   // DSTRUCT 命中时不再走 BCNT/旧窗式
+                }
+                else if (g_bcnt && dense_rows) {
                     int *d_sp = decltype(d_sp)(dev_alloc(dense_nr * sizeof(int)));
                     span_gather_kernel<<<(dense_nr + 255) / 256, 256>>>(dense_rows, dense_nr, d_span_len, d_sp);
                     int hmax_span = 0;
