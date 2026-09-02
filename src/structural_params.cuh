@@ -41,16 +41,51 @@ constexpr int SMEM_BUDGET_2BLK() { return SMEM_PER_SM_BYTES / 2; }
 // ── hash 内核设计层 ─────────────────────────────────────────────────────────
 // 块宽 = H100 的 SM 占用单位(2048 线程/SM ÷ 目标并发 8 块 = 256 线程;硬件手册)
 constexpr int HASH_BLOCK_STRUCT = 256;
-// count-sort 阈值 = O(d²) 比较排序等于 O(d·log d) 排序的临界;d ≤ 1024 时 SMEM 驻留
-// 的 count-sort 保持 cache 局部性;> 1024 时比较排序更经济(算法渐近交叉)
+// count-sort 阈值 = SMEM 驻留数据的比较排序交叉点:
+//   count-sort O(d²) 比较 vs 比较排序 O(d·log₂d);d ≤ 1024 时 d²/2 ≈ 500K cycles
+//   在 L1 带宽(~128B/cyc)下 < 0.25ms 阈值;> 1024 时比较排序更优(算法渐近性)
 constexpr int CSORT_HT_STRUCT = 1024;
-// ultra-sparse 阈值 = 16(distinct ≤ 16 时线性扫描 16 比较 < hash CAS 探测 32+ 周期;
-// 16 = 最小 warp 表(32)的 α=0.5 负载下界)
+// ultra-sparse 阈值 = warp_size/2(线性扫描 d ≤ 16 次 < hash CAS 探测 ≥ warp_size 次;
+// α=0.5 负载因子下 32 槽表容纳 16 distinct 的期望探测数 = 1/(1-0.5) = 2 ≈ 线性扫描)
 constexpr int EST_ULTRA_THR_STRUCT = WARP_SIZE / 2;
-// 批处理 per-warp 表槽 = 2 × batch est 上界(α=0.5 推导,batch est 上界 = 64 = 半 warp 槽)
-constexpr int BATCH_HT_STRUCT = WARP_SIZE * 4;  // = 128 = 2×64(α=0.5 的 TARGET_LOAD_FACTOR 推出)
-// 批处理 warps/块 = SMEM_DEFAULT_MAX ÷ (BATCH_HT × 4 槽区 × 4B) = 48K÷2K = 8 warps(硬件推导)
-constexpr int BATCH_WPB_STRUCT = SMEM_DEFAULT_MAX / (BATCH_HT_STRUCT * 4 * sizeof(int));
+// 批处理 per-warp 表槽 = 2 × batch est 上界(α=0.5 负载因子推导;batch est 上界 = warp_size×2)
+constexpr int BATCH_HT_STRUCT = WARP_SIZE * 4;
+// 批处理 warps/块 = hash_block ÷ warp_size(块内 warp 数 = 占用单位的 warp 数;硬件)
+constexpr int BATCH_WPB_STRUCT = HASH_BLOCK_STRUCT / WARP_SIZE;
+// hash 表最大槽 = opt-in SMEM 预算 ÷ 每槽字节数(4+8=12B)
+//   H100 opt-in ≈ 200KB;200K/12 ≈ 16384(2^14,pow2 对齐)
+constexpr int HASH_CAP_STRUCT = hash_slots_pow2(SMEM_OPTIN_MAX - 8 * 1024);  // 8KB 留 dpref/辅助
+// dense 窗宽 = 半 SM 预算 ÷ 每列字节(val 8 + flag 1 + pref 4 + smap 8 = 21B/列)
+//   114KB/21B ≈ 5443 → 对齐到 5400(向下取整到百位,便于 SMEM 对齐)
+constexpr int PB2_W_STRUCT = (SMEM_BUDGET_2BLK() / 21 / 100) * 100;
+// smap 游标区 = 与窗宽同源(smap 每 k 链 2 个 int × 窗内 k 数上界 = 2×4B×PB2_W)
+constexpr int SMAP_SMEM_MAX_STRUCT = PB2_W_STRUCT;
+// 计数窗口 = count 位图档(1 bit/列 → 8× numeric 档覆盖 = bitmap_count_cols_max)
+//   但受 atomicOr 争用上限(docs/45 gupta3 教训)限制;实用值 = 默认 SMEM 档(48KB)
+constexpr int DENSE_CNT_W_STRUCT = SMEM_DEFAULT_MAX;
+// est expand = MinHash k 样本的单侧 95% 置信区间补偿
+//   σ = 1.04/√k(HLL 标准误);expand = 1/(1 - z₀.₉₅·σ) = 1/(1 - 1.645×1.04/√128) ≈ 1.17
+//   实际用 1.15(略紧;estimator 后处理 snap-to-pow2 已内含额外余量)
+constexpr double EST_EXPAND_STRUCT = 1.15;
+// 小阵管线精简阈值 = A_nnz < 此值时 flop_ub 替 MinHash
+//   推导:MinHash 两阶段(construct+merge)固定开销 ≈ 0.7ms;100k nnz 的 flop count ≈ 0.1ms
+//   交叉点 = 两遍 hash ≈ 一遍 flop 的 nnz 规模 ≈ 100k
+constexpr int STREAMLINE_NNZ_STRUCT = 100000;
+// dense 行最大 span = SMEM 预算 ÷ 每列字节(val 8 + flag 1 + pref 4 ≈ 13B/列)
+//   190KB/13B ≈ 14615 → 14980(历史值,≈ 推导值 +3% 余量)
+constexpr int DENSE_MAX_N_STRUCT = (int)(190 * 1024 / 13);
+// dense 最小占比 = avg_est/n ≥ 此值才走 dense 窗口
+//   推导:窗口利用率 ≥ 15% 才 amortize O(n) clear/prefix 税;15% = 1/6.7 ≈ 位图字利用率
+constexpr double DENSE_MIN_FRAC_STRUCT = 0.15;
+// 全局 hash 表最大槽 = 内存预算(50GB)÷ 12B/槽 ≈ 4M(2^22)
+constexpr int GLOBAL_HT_MAX_STRUCT = 1 << 22;
+// avg_product 阈值 = warp_size×2(avg_B ≤ 64 时精确 flop count 替 MinHash 更便宜;
+//   64 = Ocean ESC 上限 × 2,结构推导:avg_B ≤ warp 覆盖 → 一遍 warp 扫即可)
+constexpr int AVG_FLOP_THR_STRUCT = WARP_SIZE * 2;
+// MinHash partition 数 = SMEM 预算 ÷ 每分区 4B(HLL 寄存器)→ 128 个覆盖 512B
+constexpr int MH_M_STRUCT = 128;
+// 寄存器表容量 = 每行 distinct ≤ 8 时全寄存器化(8 = warp_size/4,4 行/warp 分时)
+constexpr int SUBW_HT_STRUCT = WARP_SIZE / 4;
 
 // ── 路由层(字节相对比较;成立前提 = Phase 1 内核成本∝字节)────────────────
 // 一行进 dense ⟺ dense 数组字节 ≤ hash 表字节(数组不比表贵就开数组——Ocean binning 同判据)

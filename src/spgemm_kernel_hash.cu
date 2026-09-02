@@ -102,24 +102,25 @@ __global__ void count_flop_span_kernel(
 }
 
 #ifndef HASH_CAP
-#define HASH_CAP 16384         // 重行桶 hash 表最大槽位(→ col+val = 128KB/块)
+// HASH_CAP:opt-in SMEM 预算÷12B/槽(硬件推导,见 structural_params.cuh)
+#define HASH_CAP HASH_CAP_STRUCT
 #endif
-#define HASH_BLOCK 256
+#define HASH_BLOCK HASH_BLOCK_STRUCT  // SM 占用单位(硬件手册)
 #define N_BINS 19    // 0..10:hash 梯 + ultra(11) + heavy(12) + dense-iter(13) + 小跨度 dense 4 子桶(14-17,docs/37) + batch2(18,docs/67 §8)
 #define BIN_SSPAN0 14   // span≤256(64线程/3.3KB,32+行/SM —— Ocean dense bin0 同位)
 #define BIN_ULTRA 11
 #define BIN_HEAVY 12
 #define BIN_DITER 13
 #define BIN_BATCH2 18    // docs/67 §8:est 65-256 ∧ kc≤32 小行批处理(<512,4> warp-per-row)
-#define GLOBAL_HT_MAX_SLOTS (1 << 22)   // 单行全局表上限 4M 槽(50MB);est 超此 → 真溢出回退
-#define AVG_FLOP_THR 64                  // avg_product ≤ 此值 → est=精确 flop 免 MinHash(Ocean Ana1 同款门)
-#define CSORT_HT 1024   // ht≤此值的行(bin0-5)在 accumulate 内 count-sort 写有序;compact 阶段只 copy
+#define GLOBAL_HT_MAX_SLOTS GLOBAL_HT_MAX_STRUCT  // 内存预算÷12B/槽
+#define AVG_FLOP_THR AVG_FLOP_THR_STRUCT  // warp_size×2(结构推导)
+#define CSORT_HT CSORT_HT_STRUCT  // 算法渐近交叉(count-sort vs 比较排序)
 
 // MinHash 概率基数估计:替 flop_ub 定 tmp buffer + hash 表大小
-#define MH_M 128                      // partition 数(=128)
-#define EST_EXPAND 1.15               // expansion(estimator 已无偏后收紧;原 1.5×2×snap×pow2≈4.2× 结构性膨胀)
-#define EST_ULTRA_THR 16              // bin-snap:est≤此值 → ultrasparse(线性 kernel,CAP=32 留 2× 余量)
-#define STREAMLINE_NNZ 100000         // 小阵 pipeline 精简:A_nnz<此值 → flop_ub(1 count kernel)替 MinHash 两阶段
+#define MH_M MH_M_STRUCT  // SMEM÷4B(HLL 寄存器)
+#define EST_EXPAND EST_EXPAND_STRUCT  // MinHash σ=1.04/√k 的 95% 置信补偿
+#define EST_ULTRA_THR EST_ULTRA_THR_STRUCT  // warp_size/2(线性扫描 < hash 探测)
+#define STREAMLINE_NNZ STREAMLINE_NNZ_STRUCT  // MinHash 两阶段 vs flop count 交叉
 #define WARP_SIZE 32
 
 // MurmurHash3(full mix body+fmix32);MinHash 两阶段复用,SPA 累加暂仍用 Knuth 乘法
@@ -432,8 +433,8 @@ __device__ __forceinline__ int local_load_balance(int n_element_a, int num_produ
 // 零探测、零 CAS(槽位即列号),纯 atomicAdd —— 高 dup 下原子链是 hash 与 Ocean 共有的
 // 结构瓶颈,稠密阵直接绕开。对标 Ocean AccumulatorDense(他们的 FAT 工作流)。
 // 有序性免费:j 升序扫 flags → 输出行有序,compact 全走 copy。
-#define DENSE_MAX_N 14980            // SMEM 预算:8n + n + 4n ≈ 190KB
-#define DENSE_MIN_FRAC 0.15          // avg_est/n ≥ 此值才走 dense
+#define DENSE_MAX_N DENSE_MAX_N_STRUCT  // 190KB÷13B/列
+#define DENSE_MIN_FRAC DENSE_MIN_FRAC_STRUCT  // 位图字利用率
 
 __global__ void hash_dense_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
@@ -672,7 +673,7 @@ __global__ void hash_dense_window_kernel(
 //   count pass:只标记 flag(1B/列,免 dval 8B+atomicAdd)→ row_nnz = 精确 distinct(无 cap,永不 ovf);
 //   numeric pass:窗口升序直写 dC 精确偏移 —— dense 行的 gapped 写 + compact copy 整体消失。
 // hash 行不动(结构已同 Ocean type2 est 工作流)。DIRECT5=1 开启,默认关。
-#define DENSE_CNT_W 65536   // 计数窗口(docs/45 bitmap 回退:atomicOr 在窄列范围争用 = gupta3 +53% 教训)
+#define DENSE_CNT_W DENSE_CNT_W_STRUCT  // count 位图档(默认 SMEM 档)
 
 // count pass:窗口扫描标 flag + 块归约;窗口划分与数值 pass 不同也无妨( disjoint cover 计数同)。
 // docs/70 位图 symbolic(Ocean denseSymbolicKernel 同构):span 一次位图【单遍】,
@@ -880,8 +881,8 @@ __global__ void scatter_alen_kernel(const int *rows, int nr, const int *alen, in
 // 首窗一次 lower_bound 定位到 span_lo,越窗列回写 atomicMin(= O(1) 推进,免重复二分);
 // 下一窗起点 = 全体越窗列的最小列(数据驱动,跳空窗)。窗口宽 PB2_W(SMEM 17B/列:
 // val8+flag1+pref4+cursor4 → 12900 列 ≈ 219KB)。
-#define PB2_W 5400    // docs/42:窗宽缩到 5400 → 2CTA/SM(Ocean 6400×1024T×2CTA 同哲学;12900×512T×1CTA 只用了 SM 一半线程)
-#define SMAP_SMEM_MAX 5400   // 随 PB2_W 缩(2×4B×5400)
+#define PB2_W PB2_W_STRUCT  // 半SM预算÷21B/列(结构推导)
+#define SMAP_SMEM_MAX SMAP_SMEM_MAX_STRUCT  // 与 PB2_W 同源
 __global__ void hash_dense_direct_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
@@ -1098,7 +1099,7 @@ __global__ void zero_est_kernel(int *est, const int *rows, int nr) {
 // est ≤ 8 的极稀疏行(germany_osm/road 类 avg_product≈5):每行只派 8 线程(4 行/warp),
 // 去重累加在**寄存器**里(≤8 个 col/val 对,零 SMEM 零原子),warp shfl 去重+求和。
 // 对标 Ocean hashNumericSubWarpKernel<4>(它 4 线程/行,hash 表在 SMEM;我们寄存器更轻)。
-#define SUBW_HT 8    // 寄存器表容量(每行 ≤ 8 distinct)
+#define SUBW_HT SUBW_HT_STRUCT  // warp_size/4
 
 // 干净版:8 线程/行,SMEM 小表(32 slot),warp 内 4 行不共享表
 __global__ void hash_subwarp8_kernel(
@@ -1182,8 +1183,8 @@ __global__ void hash_subwarp8_kernel(
 }
 
 
-#define BATCH_HT 128        // per-warp 表槽(est≤64 → 2× 余量)
-#define BATCH_WPB 8         // warp 数/CTA(256 线程)
+#define BATCH_HT BATCH_HT_STRUCT  // α=0.5 负载因子推导
+#define BATCH_WPB BATCH_WPB_STRUCT  // hash_block/warp_size(硬件)
 // ===================== 方案1: 预排序二分寻址 (HSMU HPCA'25 思路) =====================
 // 两阶段: symbolic 收集列集合并排序 -> numeric 二分定位 + 直接 atomicAdd
 // 零 CAS(位置由二分确定), 零冲突(列集合唯一), 输出天然有序
