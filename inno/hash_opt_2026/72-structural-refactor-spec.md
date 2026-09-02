@@ -65,3 +65,15 @@ dense ⟺ span×8.125B ≤ ht×12B(数组不比表贵)。Phase 1b 教训不改�
 使乘积端原子并发可控,per-col 成本常数 ≈ 2.55cyc(已测)。路由用【实测成本律的
 结构化包装】:cost_dense ≈ span×8.125B + 2.55×flop vs cost_hash ≈ ht×12B + 1.89×flop + 1038×kc。
 把这些常数改由 structural_params.cuh 推导(如 2.55→由 L2 带宽推导,1038→由内存延迟推导)。
+
+## SROUTE v1/v2 判定(09-02,电池部分数据)
+
+v1(max 表)→ Ga41 −4.2/nd24k −3.2 赢,brainpc2 +18/mult_dcop +16 回归。
+v2(per-row 表)→ Ga41 wash(赢面消失),brainpc2/mult_dcop 仍回归。
+**根因:字节比较只捕捉内存占用,不捕捉原子争用的时间差。**
+dense 的 per-product atomicAdd 在同列重复(高 dup 行)远慢于 hash 的 per-distinct CAS。
+**Ocean 之所以能用纯字节比较 = 它的 denseNumeric 有 G-group 分组乘积(降争用)。
+我们的旧 dense_direct 也有(这就是 Phase 1b 教训说的"隐藏关键设计")。**
+**对齐路径:Phase 1b-v2(G-group + 位图前缀)→ Phase 2(字节路由)才成立。
+或者:字节路由 + 争用项(需 dup 推导)→ Phase 2-v3。**
+当前:Phase 2 基建保留(SROUTE env,默认关),Phase 1b-v2 优先。
