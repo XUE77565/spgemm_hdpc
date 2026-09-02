@@ -13,7 +13,14 @@ for i in 1 2 3; do
     [ "$L" -lt 6 ] && ok=$((ok+1)) || ok=0
     [ "$i" -lt 3 ] && sleep 60
 done
-if [ "$ok" -ne 3 ]; then echo "负载门未过" | tee -a $LOG; exit 1; fi
+while [ "$ok" -ne 3 ]; do      # 持续等待(灾变期循环重试;上游 = nohup 生命周期)
+    ok=0
+    for i in 1 2 3; do
+        L=$(cut -d' ' -f1 /proc/loadavg | cut -d. -f1)
+        [ "$L" -lt 6 ] && ok=$((ok+1)) || ok=0
+        [ "$i" -lt 3 ] && sleep 60
+    done
+done
 
 cp compare/ocean337/methods_cmp_v29.csv compare/ocean337/methods_cmp_v30.csv
 echo "=== v30 刷新启动 $(date +%H:%M:%S) ===" | tee -a $LOG
