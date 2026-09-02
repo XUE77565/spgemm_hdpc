@@ -2267,13 +2267,16 @@ __global__ void compute_bucket_kernel(
     // Ocean 数据驱动窗口本就处理大 span,护栏对 DIM2-s 分支放宽到 span≤n(hash_bin 侧自然限流)。
     bool dim2 = (dense_bin <= hash_bin) && sl0 > 0 && n_cols > 0 && (long long)sl0 <= (long long)n_cols;
     // Ocean-D largest(docs/74):straggler 行(超 SMEM-val dense 档 ∧ 字节模型赢 hash)→ BIN_LARGEST。
-    //   判据(毫字节,全具名):span×LARGEST_COL + est×LARGEST_VAL ≤ ht×HASH_SLOT + est×COMPACT
+    //   判据(毫字节,全具名):span×LARGEST_COL + est×LARGEST_VAL ≤ ht_eff×HASH_SLOT + est×COMPACT
     //   (dense = 位图+前缀 0.25B/列 + val 经 tmp 16B/est;hash = 表 12B/槽 + compact 24B/est)
+    //   ht_eff:est ≤ HASH_CAP 用 SMEM 梯表;超过 = heavy 全局表 = 2×est 槽(α=0.5;首版误用
+    //   cap 后的 ht 把 19491 条 c-big straggler 行挡在门外 —— 2026-09-03 BINS_DBG 实证修正)
+    const long long ht_eff = (e <= HASH_CAP) ? (long long)ht : 2LL * e;
     const bool largest_ok = largest_on && sl0 > 0 && n_cols > 0
         && (long long)sl0 > (long long)dense_numeric_bin(4)
-        && flop[i] >= EST_DENSE_MIN && e <= HASH_CAP
+        && flop[i] >= EST_DENSE_MIN
         && ((long long)sl0 * LARGEST_COL_MILLI + (long long)e * LARGEST_VAL_PER_EST_MILLI
-            <= (long long)ht * HASH_BYTES_PER_SLOT_MILLI + (long long)e * COMPACT_BYTES_PER_EST_MILLI);
+            <= ht_eff * HASH_BYTES_PER_SLOT_MILLI + (long long)e * COMPACT_BYTES_PER_EST_MILLI);
     // 门 v2(333SP +160%/F2 +13% 教训:窄跨度但 est 小的行在 batched/hash 本来就快,勿偷):
     // 极窄 span≤512:数组比任何 hash 表都小,只要 e>64 就值得;中段 512<span≤2048:须 est≥2048
     // (= v4 门的"hash 伺候不了的大表行")。两档都要求 est≥span/2(数组利用率)。
@@ -2320,7 +2323,8 @@ __global__ void compute_bucket_kernel(
     // 争用 B 推导:H100 SMEM 同地址 atomicAdd 吞吐 ≈ 1/4 cycles vs 不同地址 ≈ 1/cycle
     //   → 每"多余乘积"(flop>est 部分)多付 3 cycles ≈ 3×4B = 12B 争用字节
     //   (Ga41 dup=38× → 37×est×12B ≈ 巨额 → 正确回 hash;F2 dup<3 → 小额 → 留 dense)
-    if (false) {}
+    if (bid == BIN_LARGEST) {}
+    // ↑ largest 已定案,后续链(小跨度/ultra/v4/heavy)不覆写;原 if(false) 占位
     // SROUTE v3(docs/72 Phase 2):结构化字节路由,替代 v4 拟合门(sroute>0 时)
     else if (sroute > 0 && diter_thr > 0 && dup_ok) {
         int tgt_sr = (e <= TABLE_DOUBLING_THR) ? 2 * e : e;
@@ -3109,7 +3113,7 @@ static void hash_product(
         if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 0; }
         // SROUTE 用的 hash 表槽 = 半 SM 预算÷12B(结构推导,与 est 无关的物理上界;行内再按 est 选小表)
         const int ht_sroute = g_sroute > 0 ? hash_slots_pow2(SMEM_BUDGET_2BLK()) : 0;
-        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, g_dim2 ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest);
+        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest);
         if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
