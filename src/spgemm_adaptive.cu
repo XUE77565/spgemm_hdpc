@@ -1,4 +1,5 @@
 #include "spgemm.h"
+#include "structural_params.cuh"   // DISPATCH_MODEL(learned 权重唯一来源)
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -54,7 +55,10 @@ void spgemm_self_product_adaptive(
     double ln  = log10((double)A_rows);
     double lmr = log10((double)std::max(max_row_nnz, 1));
     double lsk = log10(std::max(skew, 1.0));
-    double score = -0.4259 * lfp - 0.4215 * ln - 0.6441 * lmr - 0.6420 * lsk + 5.4297;
+    // learned 权重唯一来源 = structural_params DISPATCH_MODEL(disp_synth 标定 + disp_train 拟合,
+    // 与 ocean337 测试集不相交;方法学见 docs/B 线)
+    const DispatchModel& DM = DISPATCH_MODEL;
+    double score = DM.w_flop * lfp + DM.w_n * ln + DM.w_maxrow * lmr + DM.w_skew * lsk + DM.bias;
     // score < 0 → hash(flop 高 / 重行 / 均匀);score ≥ 0 → merge3(小阵 / 不均匀 straggler)
     const char *force = std::getenv("ADAPTIVE_FORCE");
     int use_hash;
@@ -102,7 +106,10 @@ void spgemm_att_adaptive(
     double ln  = log10((double)A_rows);
     double lmr = log10((double)std::max(max_row_nnz, 1));
     double lsk = log10(std::max(skew, 1.0));
-    double score = -0.4259 * lfp - 0.4215 * ln - 0.6441 * lmr - 0.6420 * lsk + 5.4297;
+    // learned 权重唯一来源 = structural_params DISPATCH_MODEL(disp_synth 标定 + disp_train 拟合,
+    // 与 ocean337 测试集不相交;方法学见 docs/B 线)
+    const DispatchModel& DM = DISPATCH_MODEL;
+    double score = DM.w_flop * lfp + DM.w_n * ln + DM.w_maxrow * lmr + DM.w_skew * lsk + DM.bias;
     const char *force = std::getenv("ADAPTIVE_FORCE");
     int use_hash;
     if (force && force[0]) use_hash = (force[0] == 'h' || force[0] == 'H') ? 1 : 0;

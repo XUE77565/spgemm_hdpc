@@ -1,5 +1,6 @@
 // src/att_tiered.cu
 //  C = A * A^T : three-tier (light/medium/heavy) workload-driven SpGEMM, self-contained.
+#include "structural_params.cuh"
 #include "att_tiered.cuh"
 
 #include <cuda_runtime.h>
@@ -746,7 +747,7 @@ AttStatus att_aat_tiered(
         const int heavy_cap = att_next_pow2((int)ceil((double)cfg.heavy_task_target /
                                                       (double)cfg.hash_load_factor));
         const size_t heavy_smem = (size_t)heavy_cap * (sizeof(int) + sizeof(float));
-        if (heavy_smem > 49152) {
+        if (heavy_smem > SMEM_DEFAULT_MAX) {
             cudaFuncSetAttribute((void*)k_heavy<true>,  cudaFuncAttributeMaxDynamicSharedMemorySize, heavy_smem);
             cudaFuncSetAttribute((void*)k_heavy<false>, cudaFuncAttributeMaxDynamicSharedMemorySize, heavy_smem);
         }
@@ -813,7 +814,7 @@ AttStatus att_aat_tiered(
           ? cfg.medium_cap_override
           : att_next_pow2((int)ceil((double)cfg.heavy_work_threshold / (double)cfg.hash_load_factor));
       const size_t med_smem = (size_t)med_cap * (sizeof(int) + sizeof(float));
-      if (med_smem > 49152) {
+      if (med_smem > SMEM_DEFAULT_MAX) {
           cudaFuncSetAttribute((void*)k_medium<true>,  cudaFuncAttributeMaxDynamicSharedMemorySize, med_smem);
           cudaFuncSetAttribute((void*)k_medium<false>, cudaFuncAttributeMaxDynamicSharedMemorySize, med_smem);
       }

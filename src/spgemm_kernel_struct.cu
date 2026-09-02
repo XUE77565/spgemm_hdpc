@@ -105,7 +105,7 @@ __global__ void dense_struct_numeric_kernel(
     // G-group:G 线程共担一条 k 链(乘积分散在不同 B 元素 → 不同列 → 争用摊薄)
     // 推导:avg_B = flop/a_len;G = min(warp_size, 2^floor(log2(avg_B)))(结构上限 = 1 warp)
     //        num_groups = blockDim/G(每 k 链一组;G 大 → 组少 → 并行 k 链少但每链快)
-    int G = 32;  // 默认 = 1 warp(争用最低的并行单元)
+    int G = WARP_SIZE;  // 默认 = 1 warp(争用最低的并行单元;≤ warp 免跨 warp 同步)
     {
         // 从 span/flop/a_len 推导 avg_B(免 row_flop 依赖)
         int est_flop = span > 0 ? a_len * (span / 32 > 0 ? span / 32 : 1) : a_len;
@@ -113,7 +113,7 @@ __global__ void dense_struct_numeric_kernel(
         if (avg_B > 1) {
             int logG = 31 - __clz((unsigned)avg_B);
             if (logG < 1) logG = 1;
-            if (logG > 5) logG = 5;   // 上限 = log2(WARP_SIZE)=5(硬件:G-group ≤ warp 才免跨 warp 同步)
+            if (logG > ilog2c(WARP_SIZE)) logG = ilog2c(WARP_SIZE);   // 上限 = log2(WARP_SIZE)(硬件:G-group ≤ warp 才免跨 warp 同步)
             G = 1 << logG;
         }
     }

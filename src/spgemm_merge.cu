@@ -1,3 +1,4 @@
+#include "structural_params.cuh"   // 结构常数层(docs/72:全库唯一数值常数点)
 #include "spgemm.h"
 #include "hash_prof.h"
 #include <cuda_runtime.h>
@@ -147,7 +148,7 @@ void spgemm_self_product_merge(
     int *dA_col_idx = (int*)(dA_base + A_row_ptr_size);
     double *dA_val = (double*)(dA_base + ALIGN8(A_row_ptr_size + A_col_idx_size));
 
-    const int block = 256;
+    const int block = HASH_BLOCK_STRUCT;
 
     // host 扫 pinned A_row_ptr 得 max_row_nnz → merge kernel 的 shared mem(seg_cur+seg_end)
     const int *h_row_ptr = (const int*)A_buffer;
@@ -158,7 +159,7 @@ void spgemm_self_product_merge(
     }
     size_t merge_smem = (size_t)max_row_nnz * 2 * sizeof(int);
     // 动态 shared > 48KB 时需显式 opt-in(H100 上限 ~228KB);本数据集 max_row_nnz 很小,留防御
-    if (merge_smem > 48 * 1024) {
+    if (merge_smem > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM) {
         CHECK_CUDA(cudaFuncSetAttribute(merge_serial_kernel,
             cudaFuncAttributeMaxDynamicSharedMemorySize, (int)merge_smem));
     }
@@ -369,7 +370,7 @@ void spgemm_self_product_merge2(
     int *dA_col_idx = (int*)(dA_base + A_row_ptr_size);
     double *dA_val = (double*)(dA_base + ALIGN8(A_row_ptr_size + A_col_idx_size));
 
-    const int block = 256;
+    const int block = HASH_BLOCK_STRUCT;
 
     const int *h_row_ptr = (const int*)A_buffer;
     int max_row_nnz = 0;
@@ -378,7 +379,7 @@ void spgemm_self_product_merge2(
         if (nn > max_row_nnz) max_row_nnz = nn;
     }
     size_t merge_smem = (size_t)max_row_nnz * (2 * sizeof(int) + sizeof(double));   // seg_ptr+seg_end[int]+weight[double]
-    if (merge_smem > 48 * 1024) {
+    if (merge_smem > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM) {
         CHECK_CUDA(cudaFuncSetAttribute(merge_warp_kernel,
             cudaFuncAttributeMaxDynamicSharedMemorySize, (int)merge_smem));
     }
@@ -659,7 +660,7 @@ __global__ void bucket_merge_kernel(
     int base = C_row_ptr[i] + bucket_off[i * K + b];
     {   // docs/66 §7 dense 直写(精确 CSR 版):小跨度桶免 k 段扫描,32 lane 连续段顺序发射
         int L = bhi - blo;
-        bool eligible = (L >= 128 && L <= dcap);
+        bool eligible = (L >= MRG3_DENSE_MIN_SPAN && L <= dcap);
         if (eligible && dmode == 0) return;   // 归 dense launch(双 launch 各司其职,防双跑)
         if (eligible) {
             unsigned char *dfl = (unsigned char*)(smem + 2 * num_k);
@@ -785,7 +786,7 @@ __global__ void bucket_merge_flop_kernel(
         // 布局:[seg|seg_end|weight] 后 flags[L] pad8 [dval[L]]。dmode=1 只处理 128≤L≤cap 的桶
         // (L≥128 = 原子地址地板,band128 L=51 争用集中实测 2× 劣);dmode=0 处理其余(merge)。
         int L = bhi - blo;
-        bool eligible = (L >= 128 && L <= dcap);
+        bool eligible = (L >= MRG3_DENSE_MIN_SPAN && L <= dcap);
         if (eligible && dmode == 0) return;   // 归 dense launch(双 launch 各司其职,防双跑)
         if (eligible) {
             unsigned char *dfl = (unsigned char*)(smem + 2 * num_k);
@@ -899,7 +900,7 @@ static void merge3_product(
     int *dA_col_idx = (int*)(dA_base + A_row_ptr_size);
     double *dA_val = (double*)(dA_base + ALIGN8(A_row_ptr_size + A_col_idx_size));
 
-    const int block = 256;
+    const int block = HASH_BLOCK_STRUCT;
     const int *h_row_ptr = (const int*)A_buffer;
     int max_row_nnz = 0;
     for (int i = 0; i < A_rows; i++) {
@@ -918,9 +919,9 @@ static void merge3_product(
     if (g_dspan < 0) { const char *e = getenv("MRG3_DENSE_SPAN"); g_dspan = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }
     int dense_dcap = 0;            // ≥128 才有 dense launch;0 = 全 merge(旧行为)
     size_t smem_count_d = 0, smem_merge_d = 0;
-    if (smem_merge > 48 * 1024)
+    if (smem_merge > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM)
         CHECK_CUDA(cudaFuncSetAttribute(bucket_merge_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_merge));
-    if (smem_count > 48 * 1024)
+    if (smem_count > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM)
         CHECK_CUDA(cudaFuncSetAttribute(bucket_count_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_count));
 
     dim3 grid(A_rows, K), block32(32);
@@ -941,7 +942,7 @@ static void merge3_product(
     // B 口径:!att 时 dB==dA(count 路径与 flop 路径同源);att 时只有 flop 路径跑,dB=CSC 正确。
     static int g_dyn = -1;
     if (g_dyn < 0) { const char *e = getenv("MRG3_DYN_BND"); g_dyn = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }
-    long long dyn_min = 8192;
+    long long dyn_min = (long long)MRG3_DYN_MIN_BYTES;   // 动态分桶下限
     if (const char *e = getenv("MRG3_DYN_MIN")) dyn_min = atoll(e);
     int *d_bnd = nullptr;
     int *d_max_span = nullptr;   // docs/66 §7:bnd 顺带 atomicMax 行 span → host 精确 dense 桶宽
@@ -963,11 +964,11 @@ static void merge3_product(
             long long L1 = ((long long)hmaxs + K - 1) / K;            // 动态行桶宽上界
             long long L2 = ((long long)A_cols + K - 1) / K;            // 等宽回退行桶宽
             long long L = L1 > L2 ? L1 : L2;
-            if (L >= 128 && smem_merge + 9 * L + 16 <= 48 * 1024) {
+            if (L >= 128 && smem_merge + MRG3_DENSE_BYTES_PER_COL * L + 16 <= SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM) {
                 dense_dcap = (int)L;
-                smem_merge_d = smem_merge + 9 * L + 16;                // numeric dense launch
+                smem_merge_d = smem_merge + MRG3_DENSE_BYTES_PER_COL * L + 16;   // numeric dense launch(val8+flag1/列)
                 smem_count_d = smem_count + L;                         // count flags(1B/col)
-                if (smem_count_d > 48 * 1024) smem_count_d = 48 * 1024;
+                if (smem_count_d > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM) smem_count_d = SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM;
                 dbg("[mrg3] dense dcap=%d(Σspan_max=%d)merge_d=%zuKB\n", dense_dcap, hmaxs, smem_merge_d / 1024);
             }
             cudaFree(d_max_span);
@@ -978,7 +979,7 @@ static void merge3_product(
     static int g_flop = -1;
     if (g_flop < 0) { const char *e = getenv("MRG3_FLOP_UB"); g_flop = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }
     if (att) g_flop = 1;   // ATT 只走 flop path(bucket_count/merge 未泛化为 B)
-    if (g_flop && smem_merge > 48 * 1024) {
+    if (g_flop && smem_merge > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM) {
         CHECK_CUDA(cudaFuncSetAttribute(bucket_flop_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_count));
         CHECK_CUDA(cudaFuncSetAttribute(bucket_merge_flop_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_merge));
     }
@@ -1017,7 +1018,7 @@ static void merge3_product(
         });
         // SAFETY:分配前 sanity —— 非法/超界 total_flop 干净报错退出,绝不把天文数字送进 cudaMalloc
         // (2026-08-25 GPU1 wedge 的根因之一:int 溢出 → (size_t)负数 → 灾难分配)。
-        long long mrg3_max = 3000000000LL;   // 3e9 项 ≈ 36GB gapped,80GB 卡的上限
+        long long mrg3_max = MRG3_MAX_FLOP;   // 3e9 项 ≈ 36GB gapped,80GB 卡的上限
         if (const char *e = getenv("MRG3_MAX_ENTRIES")) mrg3_max = atoll(e);
         if (total_flop <= 0 || total_flop > mrg3_max) {
             fprintf(stderr, "[mrg3] SAFETY: total_flop=%lld 非法/超界(cap=%lld,MRG3_MAX_ENTRIES 可调)"
