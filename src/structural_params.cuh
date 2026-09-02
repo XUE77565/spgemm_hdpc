@@ -298,3 +298,7 @@ constexpr int SMEM_ALIGN_SLACK = 64;              // 动态 SMEM 布局对齐余
 constexpr int LARGEST_COL_MILLI         = (int)((1.0 / 8.0 + 1.0 / 8.0) * 1000);  // 250:位图+前缀
 constexpr int LARGEST_VAL_PER_EST_MILLI = (8 + 8) * 1000;                          // 16000:val 经 tmp 全局
 // hash 侧复用 HASH_BYTES_PER_SLOT_MILLI(12000)与 COMPACT_BYTES_PER_EST_MILLI(24000)
+
+// ── largest 路由守卫(docs/74 守卫电池实证:c-64 +170/nd24k +137/crankseg +140 教训)──
+constexpr int LARGEST_MIN_SPAN = 2 * HASH_BLOCK_STRUCT * WARP_SIZE;  // 16384 列:位图字 ≥ 2×块宽 → 原子摊薄
+constexpr int DUP_LARGEST_MAX  = 8;  // dup ≤ DUP_LIGHT:重乘积行 2×flop 重走 + 全局 atomicAdd 反劣于 SMEM CAS

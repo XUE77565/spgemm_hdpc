@@ -2274,7 +2274,9 @@ __global__ void compute_bucket_kernel(
     const long long ht_eff = (e <= HASH_CAP) ? (long long)ht : 2LL * e;
     const bool largest_ok = largest_on && sl0 > 0 && n_cols > 0
         && (long long)sl0 > (long long)dense_numeric_bin(4)
+        && sl0 >= LARGEST_MIN_SPAN                        // 位图字 ≥ 2×块宽(atomicOr 摊薄;守卫电池实证)
         && flop[i] >= EST_DENSE_MIN
+        && flop[i] <= DUP_LARGEST_MAX * e                 // dup ≤ 8:重乘积行 2×flop 重走反劣(同实证)
         && ((long long)sl0 * LARGEST_COL_MILLI + (long long)e * LARGEST_VAL_PER_EST_MILLI
             <= ht_eff * HASH_BYTES_PER_SLOT_MILLI + (long long)e * COMPACT_BYTES_PER_EST_MILLI);
     // 门 v2(333SP +160%/F2 +13% 教训:窄跨度但 est 小的行在 batched/hash 本来就快,勿偷):
