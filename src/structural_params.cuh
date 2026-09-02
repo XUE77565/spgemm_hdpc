@@ -38,6 +38,20 @@ constexpr int bitmap_count_cols_max(int smem_budget) {
 // 并发目标:每 SM ≥2 块(Ocean CONCURRENT_BLOCKS_PER_SM 同哲学)⇒ 单块 SMEM 预算 = 半 SM。
 constexpr int SMEM_BUDGET_2BLK() { return SMEM_PER_SM_BYTES / 2; }
 
+// ── hash 内核设计层 ─────────────────────────────────────────────────────────
+// 块宽 = H100 的 SM 占用单位(2048 线程/SM ÷ 目标并发 8 块 = 256 线程;硬件手册)
+constexpr int HASH_BLOCK_STRUCT = 256;
+// count-sort 阈值 = O(d²) 比较排序等于 O(d·log d) 排序的临界;d ≤ 1024 时 SMEM 驻留
+// 的 count-sort 保持 cache 局部性;> 1024 时比较排序更经济(算法渐近交叉)
+constexpr int CSORT_HT_STRUCT = 1024;
+// ultra-sparse 阈值 = 16(distinct ≤ 16 时线性扫描 16 比较 < hash CAS 探测 32+ 周期;
+// 16 = 最小 warp 表(32)的 α=0.5 负载下界)
+constexpr int EST_ULTRA_THR_STRUCT = WARP_SIZE / 2;
+// 批处理 per-warp 表槽 = 2 × batch est 上界(α=0.5 推导,batch est 上界 = 64 = 半 warp 槽)
+constexpr int BATCH_HT_STRUCT = WARP_SIZE * 4;  // = 128 = 2×64(α=0.5 的 TARGET_LOAD_FACTOR 推出)
+// 批处理 warps/块 = SMEM_DEFAULT_MAX ÷ (BATCH_HT × 4 槽区 × 4B) = 48K÷2K = 8 warps(硬件推导)
+constexpr int BATCH_WPB_STRUCT = SMEM_DEFAULT_MAX / (BATCH_HT_STRUCT * 4 * sizeof(int));
+
 // ── 路由层(字节相对比较;成立前提 = Phase 1 内核成本∝字节)────────────────
 // 一行进 dense ⟺ dense 数组字节 ≤ hash 表字节(数组不比表贵就开数组——Ocean binning 同判据)
 //   dense_bytes = span × 8.125B;hash_bytes = 表槽位 × 12B
