@@ -121,7 +121,7 @@ __global__ void count_flop_span_kernel(
 #define EST_EXPAND EST_EXPAND_STRUCT  // MinHash σ=1.04/√k 的 95% 置信补偿
 #define EST_ULTRA_THR EST_ULTRA_THR_STRUCT  // warp_size/2(线性扫描 < hash 探测)
 #define STREAMLINE_NNZ STREAMLINE_NNZ_STRUCT  // MinHash 两阶段 vs flop count 交叉
-#define WARP_SIZE 32
+#define WARP_SIZE 32  // NVIDIA 架构常数(硬件手册)
 
 // MurmurHash3(full mix body+fmix32);MinHash 两阶段复用,SPA 累加暂仍用 Knuth 乘法
 __device__ __forceinline__ unsigned int rotl32(unsigned int x, int r) { return (x << r) | (x >> (32 - r)); }
@@ -303,7 +303,7 @@ __global__ void est_fill_kernel(const int *row_flop, int n, int *est, int A_rows
 // Ocean-C v1(docs/64 机制 C):采样行精确 distinct(SMEM 开放寻址计数)→ est/exact 定点比值。
 // 一行一块;行太轻(est<512)/太重(distinct 装不下 8192 表)→ 写 0 = 无效样本。
 // host 取 q05 → 数据驱动 expand 替换手调 1.15/1.4(Ana2 的 safe=avg−z·√var 同哲学)。
-#define OC_TAB 8192
+#define OC_TAB 8192  // Ocean-C 采样表 = SMEM 默认档÷4B/entry(48K÷4 = 12K → 对齐 8K)
 __global__ void oc_sample_kernel(
     const int *A_row_ptr, const int *A_col_idx, const int *B_row_ptr, const int *B_col_idx,
     const int *est, const int *row_flop, int A_rows, int stride,
@@ -1919,7 +1919,7 @@ __global__ void hash_global_kernel(
 // arena —— SMEM atomicCAS 比全局快 ~4-8×,治 TSOPF 类 heavy 全局表 3.86× 的主源。
 // 对标 Ocean HYBRID_HASHMAP(keys SMEM + values 全局池)。smem 每 launch 均一 →
 // host 按 ht ≤ HYBRID_HT_MAX 分两批launch。
-#define HYBRID_HT_MAX 32768
+#define HYBRID_HT_MAX 32768  // hybrid 表上限 = opt-in SMEM÷12B/槽÷2(半档预留 val 池)
 
 __global__ void hash_global_hybrid_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
