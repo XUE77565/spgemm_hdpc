@@ -57,3 +57,11 @@ nnz 全对(Ga 231455088 = v28 精确值)。**性能根因(dense_direct 相位分
 旧 kernel 的 G-group 分组(降低同地址并发)是隐藏的关键设计,结构化版本必须继承。
 下一步:①回退 DSTRUCT=2 到纯实验 ②Phase 1b-v2 = G-group 并行乘积 + 位图前缀发射(继承旧结构优点)
 ③Phase 2 路由(字节比较)不依赖 Phase 1b 的完美,可以先行。
+
+## Phase 2 先行:路由字节比较(不依赖 Phase 1b)
+
+dense ⟺ span×8.125B ≤ ht×12B(数组不比表贵)。Phase 1b 教训不改变路由的经济学——
+即使旧 dense 内核有 warp0 串行前缀(30k/窗 = 8.125B/列×span 的常数),它的 G-group
+使乘积端原子并发可控,per-col 成本常数 ≈ 2.55cyc(已测)。路由用【实测成本律的
+结构化包装】:cost_dense ≈ span×8.125B + 2.55×flop vs cost_hash ≈ ht×12B + 1.89×flop + 1038×kc。
+把这些常数改由 structural_params.cuh 推导(如 2.55→由 L2 带宽推导,1038→由内存延迟推导)。
