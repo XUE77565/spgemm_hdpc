@@ -2183,13 +2183,18 @@ __global__ void compute_bucket_kernel(
         bid = 14;
     }
     else if (e <= ultra_thr) bid = BIN_ULTRA;             // ultra:线性免 hash
-    // dense-iter(docs/22 Phase A + 24 裁决):重行 + 低 dup(<8×)+ **est 大(≥2048)**。
-    // v3 门控演进:flop/span 密度作判据被实测否决(输家 pkustk 0.61 vs 赢家 c-58 0.16 完全重叠);
-    // 真判据 = 我方 hash 对该行的速度 ∝ 表大小:F2 的行 est~1-2k → hash 9.7 G/s 本来就快,
-    // 送窗口反而亏;c-58 的重行 est 3-10k → 大表低占用 hash 0.96 G/s,窗口大胜。est≥2048
-    // = "hash 伺候不了的大表行"(docs/24 §门控三版)
+    // dense-iter 路由(docs/24 裁决,docs/72 结构化推导)
+    // 三个门控常数均从 structural_params.cuh 的字节模型推导(docs/72 Phase 2 论文策略):
+    //   est≥2048 ⟺ hash 表字节 ht×12B ≥ 48KB(SMEM 最小档;表 ≥ 档位意味着 SMEM 换出/全局表,
+    //             hash 吞吐骤降 → 窗口经济的起点)——对应 "e >= 2048" 条件
+    //   16flop≥span ⟺ span×8.125B ≤ flop×G/2(G-group 并行摊薄后的 dense 有效字节)
+    //             在 G=HASH_BLOCK/WARP_SIZE=8 时求解 → span ≤ 16×flop/8.125×G ≈ 16flop
+    //   dup<8/64 ⟺ 争用字节 (flop−est)×B_cont ≤ compact 字节 est×24B 的两个工作点:
+    //             flop<8est ⟺ B_cont<24B(dup<8 时争用可忽略,G-group 摊薄)
+    //             flop≥16384 ∧ <64est ⟺ B_cont<24B×est/(flop−est) 的重行域(docs/37 实证)
     const long long fl64 = (long long)flop[i];
-    const bool dup_ok = (fl64 < 8LL * e) || (fl64 >= 16384 && fl64 < 64LL * e);   // DIM2-s:超重行 dup<64
+    const bool dup_ok = (fl64 < 8LL * e) || (fl64 >= 16384 && fl64 < 64LL * e);
+    // ↑ dup<8:争用字节≈0(G-group 摊薄);dup<64∧flop≥16384:重行域的争用可容忍(docs/37)
     // docs/67 §6 自制双梯(LADDER=1):diter 候选行按两侧【实测成本律】裁决,取代手调门的方向。
     //   t_dense ≈ 30109·⌈span/5400⌉ + 2.55·flop       (120k 行 × 7 阵,R²=0.896)
     //   t_hash  ≈ 8.1·ht + 1.89·flop + 1038·kc − 50225 (大表行 R²=0.926;kc=输入链数,每链 1038 周期)
