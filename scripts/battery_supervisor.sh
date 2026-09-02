@@ -12,7 +12,7 @@ stage_done() {   # $1 = 场头标记
     awk -v h="$1" '
         index($0, h) {inhdr=1; next}
         inhdr && /^--- \[|=== 电池链完成/ {inhdr=0}
-        inhdr && / ms .*[0-9]+$/ {found=1}
+        inhdr && /%  [0-9]+$/ {found=1}
         END {exit !found}
     ' $LOG
 }
