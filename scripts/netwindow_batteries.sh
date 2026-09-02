@@ -24,7 +24,8 @@ guard() {  # 每场前熔断
 MAT_TRIO="road_usa germany_osm hugetrace-00010 hugebubbles-00000 web-Google pre2 bcsstk30 pwtk F2 Ga3As3H12 nd24k"
 MAT_H2D="road_usa germany_osm pre2 hugetrace-00010 hugebubbles-00000 web-Google bcsstk30 pwtk Ga3As3H12 F2 nd24k"
 
-if ! gate; then echo "负载门未通过,退出" >> $LOG; exit 1; fi
+# 持续等待:灾变期内每 2 分钟重试,直到净窗(上限 = monitor 超时控制)
+while ! gate; do sleep 120; done
 
 echo "--- [1/3] docs/13 v2 三件套电池 $(date +%H:%M:%S) ---" >> $LOG
 if guard; then
