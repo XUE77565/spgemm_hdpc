@@ -2737,7 +2737,7 @@ static void hash_product(
     //   (flop+maxbl 只依赖 rp + 本 chunk 的 A_ci 行区间);span(B_ci 随机访问)同步后补趟。
     //   收益 = count_flop 藏入 h2d 窗 + DVFS(docs/57:传输期干活让后继起点更暖)。
     static int g_h2dovl = -1;
-    if (g_h2dovl < 0) { const char *e = getenv("H2DOVL"); g_h2dovl = (e && *e) ? atoi(e) : 0; }
+    if (g_h2dovl < 0) { const char *e = getenv("H2DOVL"); g_h2dovl = (e && *e) ? atoi(e) : 1; }
     // 门:avg B 行长 ≤ TINY_ROW_MAX_LEN(平方阵 = A_nnz/A_rows;h2d 时刻可判)——
     //   B 行短 → span 补趟的随机 B_ci 重走与主 pass 同量级(road 族实测 −15~−17%);
     //   B 行长(pre2/F2/nd24k,FEM 重乘积族)→ span 补趟 ≈ 整个 count 重做(+10~+34% 实测)→ 关
@@ -2868,7 +2868,7 @@ static void hash_product(
     } else {
     prof("count_flop", [&]{
         static int g_count_tiny = -1;   // docs/13 v2:avg row ≤ 8 阵的 count 线程纂(声明在此 = count 相位先于 binning)
-        if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 0; }
+        if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 1; }
         if (!att && g_count_tiny && A_rows > 0 && A_nnz <= TINY_ROW_MAX_LEN * A_rows)
             count_flop_tiny_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
                 dA_rp, dA_ci, A_rows, dB_rp, dB_ci, d_flop, d_span_lo, d_span_len, d_maxbl);
@@ -3093,9 +3093,9 @@ static void hash_product(
     unsigned long long *d_scr_key = nullptr; double *d_scr_val = nullptr;
     void *d_cub_tmp = nullptr;
     static int g_compact_t = -1; // docs/13 v2:bin0/BATCH_S compact 线程级行(函数级:compact 相位亦用)
-    if (g_compact_t < 0) { const char *e = getenv("COMPACT_T"); g_compact_t = (e && *e) ? atoi(e) : 0; }
+    if (g_compact_t < 0) { const char *e = getenv("COMPACT_T"); g_compact_t = (e && *e) ? atoi(e) : 1; }
     static int g_largest = -1;   // docs/74:Ocean-D straggler 位图窗(函数级:binning 传参用)
-    if (g_largest < 0) { const char *e = getenv("LARGEST"); g_largest = (e && *e) ? atoi(e) : 0; }
+    if (g_largest < 0) { const char *e = getenv("LARGEST"); g_largest = (e && *e) ? atoi(e) : 1; }
     prof("binning", [&]{
         CHECK_CUDA(cudaMemset(d_cnt, 0, N_BINS * sizeof(int)));   // 先清零(fused kernel 内 atomicAdd 累加)
         static int g_diter = -1;   // dense-iter 重行阈值(DITER_MIN_FLOP,默认 4096;0=关)
@@ -3113,9 +3113,9 @@ static void hash_product(
         static int g_sroute = -1;    // docs/72 Phase 2:结构化字节路由
         if (g_sroute < 0) { const char *e = getenv("SROUTE"); g_sroute = (e && *e) ? atoi(e) : 0; }      // 默认关
         static int g_batch_s = -1;   // docs/13 v2:est≤32 ∧ kc≤32 → 64 槽表子档(净窗电池后定默认)
-        if (g_batch_s < 0) { const char *e = getenv("BATCH_S"); g_batch_s = (e && *e) ? atoi(e) : 0; }
+        if (g_batch_s < 0) { const char *e = getenv("BATCH_S"); g_batch_s = (e && *e) ? atoi(e) : 1; }
         static int g_count_tiny = -1;// docs/13 v2:avg row ≤ 8 阵的 count 线程级行
-        if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 0; }
+        if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 1; }
         // SROUTE 用的 hash 表槽 = 半 SM 预算÷12B(结构推导,与 est 无关的物理上界;行内再按 est 选小表)
         const int ht_sroute = g_sroute > 0 ? hash_slots_pow2(SMEM_BUDGET_2BLK()) : 0;
         compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest);
