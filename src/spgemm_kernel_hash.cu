@@ -7,6 +7,7 @@
 #include <thrust/sort.h>
 #include <thrust/device_ptr.h>
 #include <cstdio>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -98,6 +99,64 @@ __global__ void count_flop_span_kernel(
         span_lo[i] = (lo == INT_MAX) ? 0 : lo;
         span_len[i] = (hi < lo) ? 0 : (hi - lo + 1);
         if (max_b_len) max_b_len[i] = mb;
+    }
+}
+
+// h2d 重叠管线的行区间版(docs/71):只算 flop + max_b_len —— 数据依赖 = row_ptr(先行小拷贝)
+// + 本 chunk 的 A_ci 行区间;span(B_ci 随机访问,须全量)由同步后的 row_span_only_kernel 补。
+__global__ void count_flop_range_kernel(
+    const int *A_row_ptr, const int *A_col_idx, int r0, int r1,
+    const int *B_row_ptr, int *ub, int *max_b_len)
+{
+    int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    int lane = threadIdx.x & 31;
+    int i = r0 + warp;
+    if (i >= r1) return;
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    int s = 0, mb = 0;
+    for (int p = rs + lane; p < re; p += 32) {
+        int k = A_col_idx[p];
+        int b0 = B_row_ptr[k], b1 = B_row_ptr[k + 1];
+        s += b1 - b0;
+        mb = max(mb, b1 - b0);
+    }
+    for (int off = 16; off > 0; off >>= 1) {
+        s += __shfl_down_sync(0xFFFFFFFF, s, off);
+        mb = max(mb, __shfl_down_sync(0xFFFFFFFF, mb, off));
+    }
+    if (lane == 0) {
+        ub[i] = s;
+        if (max_b_len) max_b_len[i] = mb;
+    }
+}
+
+// span-only 补趟(h2d 重叠管线;A_ci/B_ci 已全量在 device):每 k 只读 B 行首/末 2 元素
+__global__ void row_span_only_kernel(
+    const int *A_row_ptr, const int *A_col_idx, int A_rows,
+    const int *B_row_ptr, const int *B_col_idx,
+    int *span_lo, int *span_len)
+{
+    int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    int lane = threadIdx.x & 31;
+    int i = warp;
+    if (i >= A_rows) return;
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    int lo = INT_MAX, hi = -1;
+    for (int p = rs + lane; p < re; p += 32) {
+        int k = A_col_idx[p];
+        int b0 = B_row_ptr[k], b1 = B_row_ptr[k + 1];
+        if (b0 < b1) {
+            int c0 = B_col_idx[b0], c1 = B_col_idx[b1 - 1];
+            lo = min(lo, c0); hi = max(hi, c1);
+        }
+    }
+    for (int off = 16; off > 0; off >>= 1) {
+        lo = min(lo, __shfl_down_sync(0xFFFFFFFF, lo, off));
+        hi = max(hi, __shfl_down_sync(0xFFFFFFFF, hi, off));
+    }
+    if (lane == 0) {
+        span_lo[i] = (lo == INT_MAX) ? 0 : lo;
+        span_len[i] = (hi < lo) ? 0 : (hi - lo + 1);
     }
 }
 
@@ -2493,7 +2552,68 @@ static void hash_product(
     size_t A_v_sz = (size_t)A_nnz * sizeof(double);
     size_t A_total = ALIGN8(A_rp_sz + A_ci_sz) + A_v_sz;
     void *dA; dA = decltype(dA)(dev_alloc(A_total));
-    prof("h2d", [&]{ CHECK_CUDA(cudaMemcpy(dA, A_buffer, A_total, cudaMemcpyHostToDevice)); });
+    // h2d 重叠管线(docs/71,用户提议;H2DOVL=1 开,默认关待电池):
+    //   rp 先行小拷贝(kernel 定位行边界必需)→ ci/val 按 chunk 流水 —— S1 DMA ∥ S2 count_flop_range
+    //   (flop+maxbl 只依赖 rp + 本 chunk 的 A_ci 行区间);span(B_ci 随机访问)同步后补趟。
+    //   收益 = count_flop 藏入 h2d 窗 + DVFS(docs/57:传输期干活让后继起点更暖)。
+    static int g_h2dovl = -1;
+    if (g_h2dovl < 0) { const char *e = getenv("H2DOVL"); g_h2dovl = (e && *e) ? atoi(e) : 0; }
+    const bool h2dovl = g_h2dovl && !att && A_nnz > 0;
+    bool h2d_count_done = false;
+    int *d_flop; d_flop = decltype(d_flop)(dev_alloc(A_rows * sizeof(int)));       // 重叠管线要用 → 提前分配
+    int *d_maxbl; d_maxbl = decltype(d_maxbl)(dev_alloc(A_rows * sizeof(int)));
+    if (h2dovl) {
+        static cudaStream_t sC = nullptr, sK = nullptr;              // copy 流 / kernel 流
+        static cudaEvent_t ev[H2D_MAX_CHUNKS], evDone;
+        if (!sC) {
+            CHECK_CUDA(cudaStreamCreate(&sC)); CHECK_CUDA(cudaStreamCreate(&sK));
+            for (auto &x : ev) CHECK_CUDA(cudaEventCreate(&x));
+            CHECK_CUDA(cudaEventCreate(&evDone));
+        }
+        const int *h_rp = (const int*)A_buffer;
+        prof("h2d", [&]{
+            // ① rp 先行(B 侧同 = 平方阵 dB_rp=dA_rp;count 的长度查询全靠它)
+            CHECK_CUDA(cudaMemcpyAsync(dA, A_buffer, A_rp_sz, cudaMemcpyHostToDevice, sC));
+            CHECK_CUDA(cudaStreamSynchronize(sC));
+            // ② ci/val 按 chunk 流水(chunk 不切行:host rp 二分取行边界)
+            size_t val_off = ALIGN8(A_rp_sz + A_ci_sz);
+            const char *h_ci  = (const char*)A_buffer + A_rp_sz;
+            const char *h_val = (const char*)A_buffer + val_off;
+            long long body = (long long)A_ci_sz + (long long)A_v_sz;
+            int nchunk = (int)((body + (long long)H2D_CHUNK_BYTES - 1) / (long long)H2D_CHUNK_BYTES);
+            if (nchunk > H2D_MAX_CHUNKS) nchunk = H2D_MAX_CHUNKS;
+            if (nchunk < 1) nchunk = 1;
+            long long per = ((long long)A_nnz + nchunk - 1) / nchunk;
+            int r_prev = 0;
+            for (int k = 0; k < nchunk; k++) {
+                long long p0 = per * k;
+                long long p1 = per * (k + 1);
+                if (p1 > (long long)A_nnz) p1 = A_nnz;
+                if (p1 <= p0) break;
+                const int *base = h_rp + 1, *top = h_rp + A_rows + 1;
+                int r1 = (int)(std::upper_bound(base, top, (int)p1) - h_rp);   // 首个 rp > p1 的行号
+                CHECK_CUDA(cudaMemcpyAsync((char*)dA + A_rp_sz + p0 * 4, h_ci + p0 * 4,
+                                           (size_t)(p1 - p0) * 4, cudaMemcpyHostToDevice, sC));
+                CHECK_CUDA(cudaMemcpyAsync((char*)dA + val_off + p0 * 8, h_val + p0 * 8,
+                                           (size_t)(p1 - p0) * 8, cudaMemcpyHostToDevice, sC));
+                CHECK_CUDA(cudaEventRecord(ev[k], sC));
+                CHECK_CUDA(cudaStreamWaitEvent(sK, ev[k]));
+                int rows_k = r1 - r_prev;
+                if (rows_k > 0)
+                    count_flop_range_kernel<<<(rows_k * 32 + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT,
+                                              HASH_BLOCK_STRUCT, 0, sK>>>(
+                        (int*)dA, (int*)((char*)dA + A_rp_sz), r_prev, r1,
+                        (int*)dA, d_flop, d_maxbl);
+                r_prev = r1;
+            }
+            // ③ 哨兵:默认流等 kernel 流收尾(span 补趟/后续相位在默认流)
+            CHECK_CUDA(cudaEventRecord(evDone, sK));
+            CHECK_CUDA(cudaStreamWaitEvent((cudaStream_t)0, evDone));
+        });
+        h2d_count_done = true;
+    } else {
+        prof("h2d", [&]{ CHECK_CUDA(cudaMemcpy(dA, A_buffer, A_total, cudaMemcpyHostToDevice)); });
+    }
     char *b = (char*)dA;
     int   *dA_rp  = (int*)b;
     int   *dA_ci  = (int*)(b + A_rp_sz);
@@ -2529,10 +2649,9 @@ static void hash_product(
     //   ③ 否则 MinHash 两阶段(est = min(2×snap(E), flop):flop 封顶 MinHash 高估 —— TSOPF
     //      Σest 曾爆到 147 亿 = int 溢出 + 74× 过分配;min 不引入新低估:flop ≥ distinct 恒真)
     int *d_est; d_est = decltype(d_est)(dev_alloc(A_rows * sizeof(int)));
-    int *d_flop; d_flop = decltype(d_flop)(dev_alloc(A_rows * sizeof(int)));
     int *d_span_lo; d_span_lo = decltype(d_span_lo)(dev_alloc(A_rows * sizeof(int)));    // docs/24 跨度窗口
     int *d_span_len; d_span_len = decltype(d_span_len)(dev_alloc(A_rows * sizeof(int)));
-    int *d_maxbl;   d_maxbl   = decltype(d_maxbl)(dev_alloc(A_rows * sizeof(int)));   // 行 k 集内 B 行最大长(LLB 输入)
+    // d_flop/d_maxbl 已随重叠管线提前分配(h2dovl=0 时同此,零语义差)
     long long total_flop = 0;
     // PIPEFUSE step-1(docs/58):count_flop 后不再 host 回传 —— device 规约 total_flop + avg 门,
     // construct/merge 无条件背靠背 launch(门命中自退化),host 读数推迟到 binning 已有同步。
@@ -2544,7 +2663,14 @@ static void hash_product(
     const bool pfuse = g_pipefuse && !att && A_rows > 0
         && ((unsigned long long)A_rows * MH_M * sizeof(unsigned int)) <= MH_TABLE_MAX_BYTES;
     double avg_product = 0.0;
-    if (pfuse) {
+    if (h2d_count_done) {   // 重叠管线已算 flop+maxbl → 只补 span(B_ci 随机访问,须全量)+ 规约
+        prof("count_flop", [&]{
+            row_span_only_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
+                dA_rp, dA_ci, A_rows, dB_rp, dB_ci, d_span_lo, d_span_len);
+            CHECK_CUDA(cudaGetLastError());
+            total_flop = thrust::reduce(thrust::device_ptr<int>(d_flop), thrust::device_ptr<int>(d_flop + A_rows), 0LL);
+        });
+    } else if (pfuse) {
         d_tflop = decltype(d_tflop)(dev_alloc(sizeof(long long)));
         d_avg_gate = decltype(d_avg_gate)(dev_alloc(sizeof(int)));
         prof("count_flop", [&]{

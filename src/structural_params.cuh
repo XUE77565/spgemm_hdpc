@@ -274,3 +274,8 @@ constexpr int MRG3_DYN_MIN_BYTES = 8192;   // 动态边界桶下限 = 2×CSORT_H
 constexpr int MRG3_DENSE_MIN_SPAN = 128;   // dense 单写行最小 span = 4×WARP_SIZE(bitmap 清零 4 warp 并行)
 constexpr int MRG3_DENSE_BYTES_PER_COL = 9;  // val 8B + flag 1B(merge dense 布局)
 constexpr long long MRG3_MAX_FLOP = 3000000000LL;  // 3e9 项 × 12B ≈ 36GB gapped < 80GB DRAM(SAFETY)
+
+// ── h2d 重叠管线层(docs/71;rp 先行 → ci/val 分 chunk DMA ∥ count_flop)────────
+constexpr int    L2_CACHE_BYTES  = 50 * 1024 * 1024;          // H100 PCIe L2 容量(手册)
+constexpr size_t H2D_CHUNK_BYTES = (size_t)L2_CACHE_BYTES / 4; // chunk ≈ L2/4:DMA 与内核读在 L2 交错
+constexpr int    H2D_MAX_CHUNKS  = 64;                         // 事件表上限(2^6;chunk 超则均分放大)
