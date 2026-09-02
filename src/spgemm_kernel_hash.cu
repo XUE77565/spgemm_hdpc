@@ -2204,18 +2204,21 @@ __global__ void compute_bucket_kernel(
         long long th = 811LL * ht_l / 100 + 1038LL * kc_n + 189LL * fl64 / 100 - 50225LL;
         ladder_dense_ok = (td <= th);   // dense 便宜才进窗;否则留 hash 梯
     }
-    // docs/72 Phase 2 路由字节比较(SROUTE=1/3):结构化成本比较。
+    // docs/72 Phase 2 路由字节比较(SROUTE=1/3/4):结构化成本比较。
     //   SROUTE=1(纯表):span×8.125B ≤ ht_row×12B
-    //   SROUTE=3(含 compact):span×8.125B ≤ ht_row×12B + est×24B(hash 行 gapped→exact 的读+写交通)
-    // compact 项的结构推导:hash 行写 gapped tmp(12B/entry)+ compact 读 gapped 写 exact(12B×2)
-    //   = 24B/distinct;dense 直写免付。这是 v2 的 brainpc2/mult_dcop 回归根因(表字节不含 epilogue)。
+    //   SROUTE=3(含 compact):span×8.125B ≤ ht_row×12B + est×24B
+    //   SROUTE=4(含 compact+争用):span×8.125B + (flop−est)×争用B ≤ ht×12B + est×24B
+    // 争用 B 推导:H100 SMEM 同地址 atomicAdd 吞吐 ≈ 1/4 cycles vs 不同地址 ≈ 1/cycle
+    //   → 每"多余乘积"(flop>est 部分)多付 3 cycles ≈ 3×4B = 12B 争用字节
+    //   (Ga41 dup=38× → 37×est×12B ≈ 巨额 → 正确回 hash;F2 dup<3 → 小额 → 留 dense)
     if (false) {}
     else if (sroute > 0 && diter_thr > 0 && dup_ok) {
         int tgt_sr = (e <= 4096) ? 2 * e : e;
         int ht_row = 32; while (ht_row < tgt_sr && ht_row < HASH_CAP) ht_row <<= 1;
-        // hash 字节 = 表(ht×12) + compact est×24(SROUTE≥3 含;数据布局层推导)
         long long hash_bytes = (long long)ht_row * 12000 + (sroute >= 3 ? (long long)e * 24000 : 0);
-        if ((long long)sl0 * 8125 <= hash_bytes &&
+        long long dense_bytes = (long long)sl0 * 8125
+            + (sroute >= 4 ? (fl64 - e) * 12000 / 1000 : 0);  // 争用 = (flop−est)×12B(H100 原子吞吐推导)
+        if (dense_bytes <= hash_bytes &&
             flop[i] >= diter_thr &&
             (sroute < 2 || e >= 2048)) bid = BIN_DITER;
         else if (e > HASH_CAP) bid = BIN_HEAVY;
