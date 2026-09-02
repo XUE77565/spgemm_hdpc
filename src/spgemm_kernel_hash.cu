@@ -2217,14 +2217,14 @@ __global__ void compute_bucket_kernel(
     //   → 每"多余乘积"(flop>est 部分)多付 3 cycles ≈ 3×4B = 12B 争用字节
     //   (Ga41 dup=38× → 37×est×12B ≈ 巨额 → 正确回 hash;F2 dup<3 → 小额 → 留 dense)
     if (false) {}
+    // SROUTE v3(docs/72 Phase 2):结构化字节路由,替代 v4 拟合门(sroute>0 时)
     else if (sroute > 0 && diter_thr > 0 && dup_ok) {
         int tgt_sr = (e <= 4096) ? 2 * e : e;
         int ht_row = 32; while (ht_row < tgt_sr && ht_row < HASH_CAP) ht_row <<= 1;
         long long hash_bytes = (long long)ht_row * 12000 + (sroute >= 3 ? (long long)e * 24000 : 0);
         long long dense_bytes = (long long)sl0 * 8125
-            + (sroute >= 4 ? (fl64 - e) * 12000 / 1000 : 0);  // 争用 = (flop−est)×12B(H100 原子吞吐推导)
-        if (dense_bytes <= hash_bytes &&
-            flop[i] >= diter_thr &&
+            + (sroute >= 4 ? (fl64 - e) * 12000 / 1000 : 0);
+        if (dense_bytes <= hash_bytes && flop[i] >= diter_thr &&
             (sroute < 2 || e >= 2048)) bid = BIN_DITER;
         else if (e > HASH_CAP) bid = BIN_HEAVY;
         else { int bi_sr = 0, ht_sr = 32; int t_sr = (e <= 4096) ? 2*e : e;
@@ -2232,7 +2232,13 @@ __global__ void compute_bucket_kernel(
                if (e <= 64) { int rk = A_row_ptr[i+1]-A_row_ptr[i]; bid = (rk <= 32) ? 0 : bi_sr; }
                else bid = bi_sr; }
     }
-    else if (e > HASH_CAP) bid = BIN_HEAVY;          // heavy:全局表(2026-08-25,不再回退 merge)
+    // v4 拟合门(默认路径;常数附 docs/72 结构推导注释 4194b45)
+    else if (diter_thr > 0 && dup_ok &&
+             ((flop[i] >= diter_thr && e >= 2048 &&
+               (long long)span_factor * flop[i] >= (long long)span_len[i])
+              || (dim2 && flop[i] >= 4096 && e <= HASH_CAP))
+             && (!occgate || 16LL * e >= (long long)sl0)
+             && ladder_dense_ok) bid = BIN_DITER;
     else if (e > HASH_CAP) bid = BIN_HEAVY;          // heavy:全局表(2026-08-25,不再回退 merge)
     else {
         int bi = 0, ht = 32;
