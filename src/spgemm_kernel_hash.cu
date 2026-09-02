@@ -2729,7 +2729,11 @@ static void hash_product(
     //   收益 = count_flop 藏入 h2d 窗 + DVFS(docs/57:传输期干活让后继起点更暖)。
     static int g_h2dovl = -1;
     if (g_h2dovl < 0) { const char *e = getenv("H2DOVL"); g_h2dovl = (e && *e) ? atoi(e) : 0; }
-    const bool h2dovl = g_h2dovl && !att && A_nnz > 0;
+    // 门:avg B 行长 ≤ TINY_ROW_MAX_LEN(平方阵 = A_nnz/A_rows;h2d 时刻可判)——
+    //   B 行短 → span 补趟的随机 B_ci 重走与主 pass 同量级(road 族实测 −15~−17%);
+    //   B 行长(pre2/F2/nd24k,FEM 重乘积族)→ span 补趟 ≈ 整个 count 重做(+10~+34% 实测)→ 关
+    const bool h2dovl = g_h2dovl && !att && A_nnz > 0 && A_rows > 0
+        && A_nnz / A_rows <= TINY_ROW_MAX_LEN;
     bool h2d_count_done = false;
     int *d_flop; d_flop = decltype(d_flop)(dev_alloc(A_rows * sizeof(int)));       // 重叠管线要用 → 提前分配
     int *d_maxbl; d_maxbl = decltype(d_maxbl)(dev_alloc(A_rows * sizeof(int)));
