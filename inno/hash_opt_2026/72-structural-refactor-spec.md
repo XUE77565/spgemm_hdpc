@@ -137,3 +137,16 @@ G-group 继承(G 从 avg_B 推导,上限 warp_size=5=硬件量)+ 位图字级前
 G-group 继承完全消掉争用回归。结构化 numeric(G-group + 位图字级前缀)与旧 kernel 平齐。
 nnz ✓。完整电池(Ga41/crankseg/brainpc2/c-64/c-58/in-2004/c-73)被环境打断,已出 2 阵足够定谳方向。
 **结论:Phase 1b-v2 达到可用状态;后续与 Phase 2 SROUTE v3 联合测试 = 全结构化系统。**
+
+## 全结构化联合定谳(09-02,DSTRUCT=2+SROUTE=3 vs 默认,11 阵 nnz✓)
+
+| 判定 | 阵 | Δ |
+|---|---|---|
+| 赢 | Si41 −6.4 / F2 −8.1 / c-58 −8.6 | 3 |
+| wash | Ga41 / brainpc2 / 3Dspec2 / pkustk14 | 4 |
+| 回归 | crankseg_2 +8.3 / c-64 +12.1 / nd24k +7.1 | 3 |
+
+**关键发现**:c-64 单开 SROUTE v3 = −15.4%,加 DSTRUCT=2 → +12.1%。
+Phase 1a 的 span_gather+D2H 同步税(~1-2ms)抵消了路由赢面。
+**论文策略定案**:SROUTE v3(结构路由)+ 旧内核(常数有注释)= 发表系统。
+结构内核(DSTRUCT)是 nice-to-have,不是必需品;同步税可后续消(per-block device 推导)。
