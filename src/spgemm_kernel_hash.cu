@@ -2778,7 +2778,7 @@ static void hash_product(
         static int g_spanf = -1;
         if (g_spanf < 0) { const char *e = getenv("SPANF"); g_spanf = (e && *e) ? atoi(e) : 16; }   // docs/62:重行 span 门系数(默认 16 = v4;净窗实验 4)
         static int g_occgate = -1;   // docs/67 占用轴:est≥span/16(Ga 族 3.6% 占用 O(span) 窗税实锤,
-        if (g_occgate < 0) { const char *e = getenv("OCCGATE"); g_occgate = (e && *e) ? atoi(e) : 0; }   // 强制 hash 双簇 −8~17%);默认关待电池
+        if (g_occgate < 0) { const char *e = getenv("OCCGATE"); g_occgate = (e && *e) ? atoi(e) : 1; }   // 17 阵 0 回归(Ga −7/3Dspec2 −32/crankseg −16/nd24k −3.5/c-64 wash);v29 默认开;OCCGATE=0 关回
         static int g_ladder = -1;    // docs/67 §6 自制双梯:两侧成本律逐行比较(86% oracle 一致方向)
         if (g_ladder < 0) { const char *e = getenv("LADDER"); g_ladder = (e && *e) ? atoi(e) : 0; }      // 默认关
         static int g_batch2 = -1;    // docs/67 §8:est 65-256 小行批处理(web 图地板税,BIN_BATCH2)
