@@ -165,3 +165,60 @@ Phase 1a 的 span_gather+D2H 同步税(~1-2ms)抵消了路由赢面。
 
 **SROUTE v1-v4 完整迭代记录**(docs/72 §SROUTE):v3(含 compact)= 最佳,c-64 −15.4%;
 Ga41/in-2004/brainpc2 回归(争用动态不可纯字节化)。论文 = SROUTE 理论 + fitted 附推导。
+
+---
+
+## 终审(2026-09-03,375d9d0 + 扫尾 commit):全库零裸调优数字定版
+
+### Ocean 参数分类学(对照基准:ocean/include/Common.h + kernels/Analysis.cuh)
+
+| 层 | Ocean 做法 | 我们的对位 |
+|---|---|---|
+| 硬件 | NUM_SM/SHARED_MEMORY_KB/MAX_THREADS_PER_SM | SMEM_PER_SM/SMEM_DEFAULT/SMEM_OPTIN/MAX_BLOCK_THREADS |
+| 占用梯 | CONCURRENT_BLOCKS_PER_SM={32,16,8,4,2} → 一切块宽/SMEM 预算推导 | OCC_LADDER 同款(本次新增) |
+| 档位公式 | DENSE_BIN = SMEM/bytes_per_unit − 小预留;hash 档 = 素数 | dense_numeric_bin()/hash_slots_pow2()/bitmap_count_cols_max() |
+| 教科书 | HLL_CONSTANT(HLL 论文)、α=0.8 负载、MurmurHash 种子 | Knuth 乘法哈希、α=0.5(Knuth TAOCP 6.4)、MinHash σ=1.04/√k |
+| 标定参数 | Config 里 ~5 个阈值(decideMatrixType 传入) | 成本律 6 系数(R²/出处附注)+ DISPATCH_MODEL(learned) |
+
+### 本次改造(~90 处)
+1. **占用梯层**:OCC_LADDER{32,16,8,4,2} ÷ 128K → dense_numeric_bin = 预算/9−4。
+   原 DIM2 手圆整 451/906/1818/3641/7284 → 公式精确 451/906/1816/3636/7277(差 ≤0.1% 列,DIM2 默认关)
+2. **成本律集中声明**(LADDER 用):TD_WIN=30109ns/窗、TD_FLOP=2.55ns/flop、TH_HT=8.11ns/槽、
+   TH_KC=1038ns/链、TH_BASE=−50225ns(R²=0.896/0.926,docs/67 §6 标定)
+3. **SROUTE 毫字节定点**:8125/12000/24000/12000 ← 字节模型(8.125/12/24/12B)×1000
+4. **OC/MHSAMP 采样层**:OC_TABLE=8192(48K÷4B 对齐)、OC_EST∈[512,4096]、Q12 定点、
+   64 样本、q05、margin 1.02、cap 1.5(HLL 3σ);MHSAMP 2048/1000
+5. **门控层**:方案5(≥1000 行 ∧ ≥5%)、hybrid(dup>5 ∧ >50K 行 ∧ 8GB 池)、heavy 24GB、
+   retry(>50 行切 expand / <1000 免排序 / 1.02 保留边)、in-place 50M、stream 4/16、
+   priv 196K/8 warp、BCNT 200K/1.6M bit、csort(CAP=TPB×IPT 覆盖桶 est 上界,融合键列上限
+   = 2^(32−log2 CAP) 公式化)
+6. **launch/梯子**:28+2 处工具 launch 块宽 → HASH_BLOCK_STRUCT;G-group 梯 → hash_logG();
+   小跨度子桶梯 <SMALL_SPAN_MAX×2^k, min(span/4, HASH_BLOCK)>;hblk 梯引用 ilog2c
+7. **dispatcher**:logistic 5 系数 → DISPATCH_MODEL 结构体(learned,disp_synth 标定 + disp_train
+   拟合,与 ocean337 不相交 = 无泄漏方法学,论文叙事核心)
+8. **merge3**:K=5 桶/dyn_min 8192/L≥128=4×warp/3e9 flop cap(36GB gapped < 80GB)
+
+### ⚠ bugfix:v29 刷新 29 阵 DNF 根因(本次发现并修复)
+DENSE_CNT_W 结构化时取 SMEM_DEFAULT_MAX=49152 恰好等于无 opt-in 动态上限,但
+hash_dense_count_kernel 有 `__shared__ int wcnt[32]`=128B 静态数组 → CUDA 总量规则
+(静态+动态 ≤ 48K)被打破 → invalid argument → **凡 diter 行 ≥1000 的阵全灭**
+(c-64×2/c-66×2/c-67×2/c-71/c-73×2/cage15/circuit_4/crankseg×2/gupta2/in-2004/nd24k/
+pkustk×3/rajat×6/soc-Slashdot×2/TSOPF_FS_b300_c2/wb-edu)。
+v28 用的 65536 反而必走 opt-in 所以不炸。修复:
+- `DENSE_CNT_W = SMEM_DEFAULT_MAX − SMEM_STATIC_HEADROOM(128B)`
+- 全库 13 处 opt-in 守卫统一含头规则(`> 48K − 128` 而非 `> 48K`)
+- v29 因此需 29 阵补跑(修复后 c-64 18.53 vs v28 19.52 = −5%,其余见 fill log)
+
+### 保值验证(关键!)
+`/tmp/valcheck.cu`(可重跑):89 项常数逐一与原裸数字比对 —— 86 项严格相等,
+3 项有意变更单列:
+1. DENSE_CNT_W 65536→49024(bugfix,上文)
+2. dim2 梯 1818/3641/7284→1816/3636/7277(Ocean 公式精确值)
+3. csort 融合键位差(修正后 = 原 2^20/2^18 语义)
+另:LADDER 成本律窗数 5399/5400→PB2_W(5500)单源化(LADDER 默认关,行为无感)。
+冒烟:bcsstk30/Ga3As41H72 nnz 与 CSV 逐位一致(零红旗)。
+
+### 残余数字审计结论
+复扫 5 个主力文件:24 候选 = 定点分母(×100/×1000,已文档化)/ dbg 显示格式(×100%、/1024)/
+`t & 255` 检查节奏 / why_buf[128] 缓冲 / att Tpb(实验文件)——**无一是调优阈值**。
+基线文件(formulations/manual/dense_cublas = 对照组,非论文方法)未动。
