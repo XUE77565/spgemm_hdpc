@@ -2673,7 +2673,7 @@ static void hash_product(
         if (S > OC_SAMPLES) S = OC_SAMPLES;
         int *d_ratio = decltype(d_ratio)(dev_alloc((size_t)S * sizeof(int)));
         prof("oc_samp", [&]{
-            oc_sample_kernel<<<S, 256>>>(dA_rp, dA_ci, dB_rp, dB_ci, d_est, d_flop, A_rows, stride, d_ratio);
+            oc_sample_kernel<<<S, HASH_BLOCK_STRUCT>>>(dA_rp, dA_ci, dB_rp, dB_ci, d_est, d_flop, A_rows, stride, d_ratio);
             CHECK_CUDA(cudaGetLastError());
         });
         std::vector<int> hr(S);
@@ -3238,7 +3238,7 @@ static void hash_product(
                     d_ovf_rows, d_ovf_cnt, d_row_ovf);
             } else if (bi == BIN_ULTRA) {
                 // ultra(est≤EST_ULTRA_THR):线性,免 hash
-                hash_ultra_kernel<<<(n + 255) / 256, 256, 0, cur_s>>>(
+                hash_ultra_kernel<<<(n + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT, 0, cur_s>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                     rows_ptr, n, d_off, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
                     d_ovf_rows, d_ovf_cnt, d_row_ovf);

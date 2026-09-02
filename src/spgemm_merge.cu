@@ -964,7 +964,7 @@ static void merge3_product(
             long long L1 = ((long long)hmaxs + K - 1) / K;            // 动态行桶宽上界
             long long L2 = ((long long)A_cols + K - 1) / K;            // 等宽回退行桶宽
             long long L = L1 > L2 ? L1 : L2;
-            if (L >= 128 && smem_merge + MRG3_DENSE_BYTES_PER_COL * L + 16 <= SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM) {
+            if (L >= MRG3_DENSE_MIN_SPAN && smem_merge + MRG3_DENSE_BYTES_PER_COL * L + 16 <= SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM) {
                 dense_dcap = (int)L;
                 smem_merge_d = smem_merge + MRG3_DENSE_BYTES_PER_COL * L + 16;   // numeric dense launch(val8+flag1/列)
                 smem_count_d = smem_count + L;                         // count flags(1B/col)
