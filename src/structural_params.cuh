@@ -308,3 +308,7 @@ constexpr int LARGEST_SPARSE_DEN = 8;  // est/span ≤ 1/8 才进 largest:每字
 
 // ── merge3 边界 v3 层(flop 近似均分;docs/66 续)──────────────────────────────
 constexpr int MRG3_FINE_BINS = WARP_SIZE;  // 细直方图桶数 = warp 宽(每 lane 一 bin;中点 splat O(num_k))
+
+// ── v31-④ ESC 层(docs/76;零表 counting-sort 短行)───────────────────────────
+constexpr int ESC_FLOP_MAX = WARP_SIZE;  // 32 乘积/行:每线程 1 乘积,32² 计数在 SMEM/寄存器近零
+                                         // (Ocean usparse 上界同域;dup 在 counting 中天然合并)

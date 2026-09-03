@@ -188,7 +188,7 @@ __global__ void row_span_only_kernel(
 #define HASH_CAP HASH_CAP_STRUCT
 #endif
 #define HASH_BLOCK HASH_BLOCK_STRUCT  // SM 占用单位(硬件手册)
-#define N_BINS 21    // 0..10:hash 梯 + ultra(11) + heavy(12) + dense-iter(13) + 小跨度 dense 4 子桶(14-17,docs/37) + batch2(18,docs/67 §8) + batch_s(19,docs/13 v2) + largest(20,docs/74)
+#define N_BINS 22    // …+ largest(20,docs/74) + esc(21,docs/76 v31-④)
 #define BIN_SSPAN0 14   // span≤256(64线程/3.3KB,32+行/SM —— Ocean dense bin0 同位)
 #define BIN_ULTRA 11
 #define BIN_HEAVY 12
@@ -196,6 +196,7 @@ __global__ void row_span_only_kernel(
 #define BIN_BATCH2 18    // docs/67 §8:est 65-256 ∧ kc≤32 小行批处理(<512,4> warp-per-row)
 #define BIN_BATCH_S 19   // docs/13 v2:est≤32 ∧ kc≤32 小行 64 槽表批处理(road 族 100% bin0 实测驱动)
 #define BIN_LARGEST 20   // docs/74 Ocean-D:straggler 行位图窗(SMEM 0.25B/列 + val 全局流过)
+#define BIN_ESC 21      // docs/76 v31-④:零表 counting-sort 短行(csort 机制前移;输出天然有序)
 #define BATCH_S_HT BATCH_S_HT_STRUCT  // 64 = 2×32(α=0.5)
 #define GLOBAL_HT_MAX_SLOTS GLOBAL_HT_MAX_STRUCT  // 内存预算÷12B/槽
 #define AVG_FLOP_THR AVG_FLOP_THR_STRUCT  // warp_size×2(结构推导)
@@ -2242,6 +2243,7 @@ __global__ void compute_bucket_kernel(
     int ht_l_sroute = 0,  // SROUTE 用的 hash 表大小(host 预算的表槽)
     int batch_s_max = 0,  // docs/13 v2:est≤此值 ∧ kc≤warp → BIN_BATCH_S(64 槽表;0=关)
     int largest_on = 0,   // docs/74:Ocean-D straggler 行位图窗(0=关)
+    int esc_on = 0,       // docs/76 v31-④:零表 counting-sort 短行(flop≤ESC_FLOP_MAX;0=关)
     int dim2_on = 0)      // DIM2 独立门(n_cols 传参只为 largest 的 span 护栏;误点亮 dim2 曾把
                           // bcsstk30 642 行送 BIN_DITER → +24.8%,2026-09-03 惊吓扫实证)
 {
@@ -2287,7 +2289,9 @@ __global__ void compute_bucket_kernel(
     // 门 v2(333SP +160%/F2 +13% 教训:窄跨度但 est 小的行在 batched/hash 本来就快,勿偷):
     // 极窄 span≤512:数组比任何 hash 表都小,只要 e>64 就值得;中段 512<span≤2048:须 est≥2048
     // (= v4 门的"hash 伺候不了的大表行")。两档都要求 est≥span/2(数组利用率)。
-    if (largest_ok) {
+    if (esc_on && flop[i] > 0 && flop[i] <= ESC_FLOP_MAX) {
+        bid = BIN_ESC;    // v31-④:零表 counting-sort(乘积少 = 位次计数近零;est ≤ flop ≤ 32)
+    } else if (largest_ok) {
         bid = BIN_LARGEST;
     } else if (e > BATCH_EST_MAX && sl0 > 0 && sl0 <= SMALL_SPAN_MAX && 2LL * e >= (long long)sl0) {  // 数组 < 最小表(docs/37)
         // 小跨度 dense(docs/37;门 v3=收缩到 Ocean dense0 精确槽位:span≤256):pwtk +145%/F2 +14%
@@ -2330,8 +2334,8 @@ __global__ void compute_bucket_kernel(
     // 争用 B 推导:H100 SMEM 同地址 atomicAdd 吞吐 ≈ 1/4 cycles vs 不同地址 ≈ 1/cycle
     //   → 每"多余乘积"(flop>est 部分)多付 3 cycles ≈ 3×4B = 12B 争用字节
     //   (Ga41 dup=38× → 37×est×12B ≈ 巨额 → 正确回 hash;F2 dup<3 → 小额 → 留 dense)
-    if (bid == BIN_LARGEST) {}
-    // ↑ largest 已定案,后续链(小跨度/ultra/v4/heavy)不覆写;原 if(false) 占位
+    if (bid == BIN_LARGEST || bid == BIN_ESC) {}
+    // ↑ largest/esc 已定案,后续链(小跨度/ultra/v4/heavy)不覆写;原 if(false) 占位
     // SROUTE v3(docs/72 Phase 2):结构化字节路由,替代 v4 拟合门(sroute>0 时)
     else if (sroute > 0 && diter_thr > 0 && dup_ok) {
         int tgt_sr = (e <= TABLE_DOUBLING_THR) ? 2 * e : e;
@@ -2553,6 +2557,78 @@ __global__ void dense_largest_numeric_kernel(
             row_nnz[i] = (int)out;
         }
     }
+}
+
+// v31-④ ESC 零表短行内核(docs/76;Ocean usparse 同位,机制 = 我们 csort 的位次计数前移):
+// flop ≤ ESC_FLOP_MAX 的行,每 subwarp(=WARP_SIZE)一行、每线程 ≤1 乘积;
+// 位次 = popc(比我小的 key),同 key 只 leader 写全和 → 零表零清零,输出天然有序
+// (compact 免 csort)。乘积定位 = 逐链计数 O(rk)(空 B 链自然跳过)。溢出守卫同 largest。
+__global__ void hash_esc_kernel(
+    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
+    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
+    int upper_tri,
+    const int *bucket_rows, int n_in_bucket,
+    const long long *row_off, const int *est,
+    unsigned long long *tmp_key, double *tmp_val,
+    int *row_nnz, int *overflow_flag, int *ovf_rows, int *ovf_cnt, int *row_ovf)
+{
+    int sw = (int)((blockIdx.x * blockDim.x + threadIdx.x) / WARP_SIZE);   // subwarp = 整 warp(v1)
+    int t = threadIdx.x & (WARP_SIZE - 1);
+    if (sw >= n_in_bucket) return;
+    int i = bucket_rows[sw];
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+
+    // ① 每线程定位第 t 个乘积(逐链计数;哨兵 = 无乘积)
+    int my_key = 0x7fffffff; double my_val = 0.0;
+    {
+        int cnt = 0;
+        for (int p = rs; p < re && my_key == 0x7fffffff; p++) {
+            int k = A_col_idx[p];
+            int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
+            int len = ke - ks;
+            if (cnt <= t && t < cnt + len) {
+                int q = ks + (t - cnt);
+                int col = B_col_idx[q];
+                if (!(upper_tri && col < i)) {
+                    my_key = col; my_val = A_val[p] * B_val[q];
+                } else { my_key = -1; my_val = 0.0; }   // 过滤项:哨兵(不参与)
+                break;
+            }
+            cnt += len;
+        }
+        // 注:t≥flop 或被过滤的线程保持哨兵
+    }
+    __syncwarp();
+
+    // ② counting-sort fused(同 csort/Ocean countSortCompactFused):
+    //    32 轮 shfl 直扫:数"比我小的有效 key"= 位次;同 key 只最小 lane 当 leader 持全和
+    double sum = my_val;
+    unsigned smaller = 0u; bool leader = true;
+    #pragma unroll
+    for (int k = 0; k < WARP_SIZE; k++) {
+        int ok = __shfl_sync(0xffffffffu, my_key, k);
+        double ov = __shfl_sync(0xffffffffu, my_val, k);
+        if (ok == 0x7fffffff || ok == -1) continue;          // 哨兵/过滤项
+        if (ok < my_key) smaller |= (1u << k);
+        else if (ok == my_key) { sum += ov; if (k < t) leader = false; }
+    }
+    __syncwarp();
+    unsigned leaders = __ballot_sync(0xffffffffu, leader && my_key != 0x7fffffff && my_key != -1);
+    int n_out = __popc(leaders);
+    if (n_out > est[i]) {   // est 欠估 → 标准 retry 兜底
+        if (t == 0) {
+            if (!atomicExch(&row_ovf[i], 1)) { int q2 = atomicAdd(ovf_cnt, 1); ovf_rows[q2] = i; }
+            atomicExch(overflow_flag, 1);
+        }
+        return;
+    }
+    if (leader && my_key != 0x7fffffff && my_key != -1) {
+        int pos = __popc(smaller);   // 有效中比我小的个数 = 精确位次(天然有序)
+        long long base = row_off[i];
+        tmp_key[base + pos] = (unsigned long long)(unsigned)my_key;   // 低 32 = 列(compact 同消费)
+        tmp_val[base + pos] = sum;                                    // leader 持全和,免 atomicAdd
+    }
+    if (t == 0) row_nnz[i] = n_out;
 }
 
 // compact 小行线程版(docs/13 v2):行内串行拷贝零闲 lane(warp 版 5-nnz 行 27/32 lane 闲;
@@ -3098,6 +3174,8 @@ static void hash_product(
     if (g_compact_t < 0) { const char *e = getenv("COMPACT_T"); g_compact_t = (e && *e) ? atoi(e) : 1; }
     static int g_largest = -1;   // docs/74:Ocean-D straggler 位图窗(函数级:binning 传参用)
     if (g_largest < 0) { const char *e = getenv("LARGEST"); g_largest = (e && *e) ? atoi(e) : 1; }
+    static int g_esc = -1;       // docs/76 v31-④:零表 counting-sort 短行
+    if (g_esc < 0) { const char *e = getenv("ESC_K"); g_esc = (e && *e) ? atoi(e) : 0; }
     prof("binning", [&]{
         CHECK_CUDA(cudaMemset(d_cnt, 0, N_BINS * sizeof(int)));   // 先清零(fused kernel 内 atomicAdd 累加)
         static int g_diter = -1;   // dense-iter 重行阈值(DITER_MIN_FLOP,默认 4096;0=关)
@@ -3120,7 +3198,7 @@ static void hash_product(
         if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 1; }
         // SROUTE 用的 hash 表槽 = 半 SM 预算÷12B(结构推导,与 est 无关的物理上界;行内再按 est 选小表)
         const int ht_sroute = g_sroute > 0 ? hash_slots_pow2(SMEM_BUDGET_2BLK()) : 0;
-        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_dim2);
+        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_dim2);
         if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
@@ -3561,6 +3639,11 @@ static void hash_product(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                     rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
                     d_ovf_rows, d_ovf_cnt, d_row_ovf, d_hybrid_val);
+            } else if (bi == BIN_ESC) {   // v31-④:零表 counting-sort,输出天然有序
+                hash_esc_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT, 0, cur_s>>>(
+                    dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
+                    rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val,
+                    d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf);
             } else if (bi == BIN_BATCH_S) {   // docs/13 v2:est≤32 小行 64 槽表(清/扫税减半;road 族 100% bin0)
                 hash_spa_batched_kernel<BATCH_S_HT, BATCH_WPB><<<(n + BATCH_WPB - 1) / BATCH_WPB, BATCH_WPB * WARP_SIZE, 0, cur_s>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
@@ -4052,7 +4135,7 @@ static void hash_product(
                 // 是 32-64 次串行拷贝 → web-Google +13.6% 教训,线程纂只给 nnz≤32 的 BATCH_S 行)
                 hash_compact_copy_warp_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());   // TEMP:定位
-            } else if (bi == BIN_BATCH_S) {
+            } else if (bi == BIN_BATCH_S || bi == BIN_ESC) {
                 // BATCH_S 行 est≤32(distinct ≤ 32 上界):串行 ≤32 次 = 0 闲 lane,CTA 3M→94K
                 if (g_compact_t)
                     hash_compact_copy_thread_kernel<<<(n + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
