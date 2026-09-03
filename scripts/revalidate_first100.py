@@ -20,7 +20,7 @@ def num(x):
     except: return None
 
 def one(mtx):
-    env = dict(os.environ, USE_MEMPOOL="1", METHOD="adaptive", DBG="1")
+    env = dict(os.environ, USE_MEMPOOL="1", METHOD="adaptive", DBG="1", CUDA_VISIBLE_DEVICES=os.environ.get("F100_GPU","0"))
     try:
         r = subprocess.run([BIN, f"{DIR}/{mtx}.mtx"], capture_output=True, text=True, env=env, timeout=300)
     except subprocess.TimeoutExpired:
