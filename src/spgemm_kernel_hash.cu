@@ -2826,6 +2826,92 @@ static void launch_csort_fused(int n, const int *rows_ptr, const long long *d_of
     CHECK_CUDA(cudaGetLastError());
 }
 
+// v31-①'(docs/76 §10 靶纸,SEGRTS=1):bin≥7 大行 csort O(n²/block) 排序税换 cub 分段基数排序。
+//   pre2 实证:bin6/7 380K 行(1-4K distinct)csort = 26.2ms(57% 时长)vs Ocean epilogue.sort 2.5ms。
+__global__ void bin_gather_kernel(
+    const int *rows, int n, const long long *row_off, const int *row_nnz,
+    const long long *bin_off,
+    const unsigned long long *src_key, const double *src_val,
+    unsigned long long *dst_key, double *dst_val)
+{
+    int j = blockIdx.x;
+    if (j >= n) return;
+    int i = rows[j];
+    long long so = row_off[i], m = row_nnz[i], d = bin_off[j];
+    for (int t = threadIdx.x; t < m; t += blockDim.x) {
+        dst_key[d + t] = src_key[so + t];
+        dst_val[d + t] = src_val[so + t];
+    }
+}
+__global__ void bin_scatter_kernel(
+    const int *rows, int n, const int *row_ptr, const int *row_nnz,
+    const long long *bin_off,
+    const unsigned long long *src_key, const double *src_val,
+    int *out_col, double *out_val, const int *skip)
+{
+    int j = blockIdx.x;
+    if (j >= n) return;
+    int i = rows[j];
+    if (skip && skip[i]) return;
+    long long d = bin_off[j];
+    int dst = row_ptr[i], m = row_nnz[i];
+    for (int t = threadIdx.x; t < m; t += blockDim.x) {
+        out_col[dst + t] = (int)(src_key[d + t] & 0xffffffffu);
+        out_val[dst + t] = src_val[d + t];
+    }
+}
+__global__ void bin_seg_kernel(const int *rows, int n, const long long *bin_off,
+                               const int *row_nnz, int *seg_beg, int *seg_end)
+{
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= n) return;
+    seg_beg[j] = (int)bin_off[j];                      // 按 bin 内序(heavy_seg_kernel 按行号,勿复用)
+    seg_end[j] = (int)(bin_off[j] + row_nnz[rows[j]]);
+}
+struct RowNnzPicker {
+    const int *row_nnz;
+    __host__ __device__ int operator()(int r) const { return row_nnz[r]; }
+};
+static void launch_bin_segrts(int n, const int *rows_ptr,
+                              const long long *d_off, const int *d_row_nnz,
+                              const int *dC_rp, int *dC_ci, double *d_val,
+                              unsigned long long *d_tmp_key, double *d_tmp_val,
+                              const int *skip)
+{
+    if (n <= 0) return;
+    int  *d_bnnz = (int*)dev_alloc((size_t)n * sizeof(int));
+    long long *d_boff = (long long*)dev_alloc((size_t)(n + 1) * sizeof(long long));
+    RowNnzPicker pick{d_row_nnz};
+    thrust::transform(thrust::device_ptr<const int>(rows_ptr),
+                      thrust::device_ptr<const int>(rows_ptr + n),
+                      thrust::device_ptr<int>(d_bnnz), pick);
+    CHECK_CUDA(cudaMemset(d_boff, 0, sizeof(long long)));            // [0]=0
+    thrust::inclusive_scan(thrust::device_ptr<int>(d_bnnz),          // [1..n] = 前缀和(exclusive_scan
+                           thrust::device_ptr<int>(d_bnnz + n),      // 只写 [0..n-1],读 [n] 曾得垃圾
+                           thrust::device_ptr<long long>(d_boff + 1));   // → 15PB cudaMalloc,c-64 红旗根因
+    long long btot = 0;
+    CHECK_CUDA(cudaMemcpy(&btot, d_boff + n, sizeof(long long), cudaMemcpyDeviceToHost));
+    if (btot <= 0) return;
+    unsigned long long *gk = (unsigned long long*)dev_alloc((size_t)btot * sizeof(unsigned long long));
+    double            *gv = (double*)dev_alloc((size_t)btot * sizeof(double));
+    unsigned long long *ok = (unsigned long long*)dev_alloc((size_t)btot * sizeof(unsigned long long));
+    double            *ov = (double*)dev_alloc((size_t)btot * sizeof(double));
+    bin_gather_kernel<<<n, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, d_boff,
+                                                d_tmp_key, d_tmp_val, gk, gv);
+    int *d_sgb = (int*)dev_alloc((size_t)n * sizeof(int));
+    int *d_sge = (int*)dev_alloc((size_t)n * sizeof(int));
+    bin_seg_kernel<<<(n + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
+        rows_ptr, n, d_boff, d_row_nnz, d_sgb, d_sge);
+    size_t cb = 0;
+    CHECK_CUDA(cub::DeviceSegmentedRadixSort::SortPairs(
+        nullptr, cb, gk, ok, gv, ov, (int)btot, n, d_sgb, d_sge));
+    void *ct = dev_alloc(cb);
+    CHECK_CUDA(cub::DeviceSegmentedRadixSort::SortPairs(
+        ct, cb, gk, ok, gv, ov, (int)btot, n, d_sgb, d_sge));
+    bin_scatter_kernel<<<n, HASH_BLOCK_STRUCT>>>(rows_ptr, n, dC_rp, d_row_nnz, d_boff,
+                                                 ok, ov, dC_ci, d_val, skip);
+}
+
 // launch helper:按 config 查 BlockRadixSort TempStorage 大小,>48KB 自动 opt-in 动态 shared(H100 可 ~228KB)。
 template<int TPB, int IPT>
 static void launch_csort(int n, const int *rows_ptr, const long long *d_off, const int *d_row_nnz,
@@ -4227,10 +4313,17 @@ static void hash_product(
                     launch_csort<CSORT_TPB_A, CSORT_IPT_A>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());
             } else if (bi <= 9) {
-                if (A_cols < csort_fused_max_cols(CSORT_TPB_B, CSORT_IPT_B) && !getenv("NOCSF"))   // pos 14 位(CAP=16384)
+                static int g_segrts = -1;   // v31-①':bin≥7 csort O(n²) → cub 分段基数排序(靶纸:pre2 排序税 26ms=57%)
+                if (g_segrts < 0) { const char *e = getenv("SEGRTS"); g_segrts = (e && *e) ? atoi(e) : 0; }
+                if (bi >= 7 && g_segrts) {
+                    launch_bin_segrts(n, rows_ptr, d_off, d_row_nnz, dC_rp, dC_ci, d_val,
+                                      d_tmp_key, d_tmp_val, d_row_ovf);
+                    CHECK_CUDA(cudaGetLastError());
+                } else if (A_cols < csort_fused_max_cols(CSORT_TPB_B, CSORT_IPT_B) && !getenv("NOCSF")) {   // pos 14 位(CAP=16384)
                     launch_csort_fused<CSORT_TPB_B, CSORT_IPT_B>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
-                else
+                } else {
                     launch_csort<CSORT_TPB_B, CSORT_IPT_B>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                }
                 CHECK_CUDA(cudaGetLastError());
             } else if (bi == BIN_HEAVY) {
                 // heavy:accumulate 内已分段排序(compact 读 scratch)
