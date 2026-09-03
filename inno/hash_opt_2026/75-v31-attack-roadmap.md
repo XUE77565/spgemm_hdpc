@@ -24,10 +24,25 @@ geomean 残差 ~1.32× ≈ 前两族贡献。目标:v31 → ~1.15×,v32 → 冲 
 
 | # | 项 | 攻击对象 | 工程量 | 预期 |
 |---|---|---|---|---|
-| ① | 管线遍数合并:count_flop×mh_construct 融合 → est_scan×binning×scatter 融合 | road 族 | 大 | road −20~30% |
+| **④(升第一)** | **ESC 零表短行内核**:est≤32 行走 subwarp counting-sort(csort 机制前移到 accumulate,零表零清零,有序直写) | **road 族 accumulate 2.65×+compact 2.6×(残差 99%)** | 中 | road −35~50% |
 | ② | 8B 符号槽位压缩(key 位压缩打包) | 中行族 | 中 | 中行族 −15~25% |
 | ③ | 占用梯联动块宽(64T..512T 随档) | 全体 hash 档 | 小 | 组合② |
-| ④ | ESC 式零表短行内核(est≤16) | road 甜区 | 小 | ultra 档 −10~20% |
+| ①(降级) | 管线遍数合并 | ~~road 族~~ **已证伪:前端持平反超** | 大 | 仅杂项收尾 |
+
+## ⚠ 2026-09-04 分相对拍定谔(road_usa,双方自家 profiler)
+
+| 相位 | 我们 v30 | Ocean(stats.json bench_detail) |
+|---|---|---|
+| count | **0.49**(COUNT_TINY 7.6→0.49!) | 1.45(product_calc) |
+| est+bin+cnnz | 2.2 | ~1.5 |
+| **accumulate** | **19.96** | **7.53(usparse_main = ESC 16-thread subwarp)** |
+| **compact** | **6.12** | 2.39(epilogue.copy) |
+
+- 前端已持平/反超 → ①的"遍数税"假设证伪,COUNT_TINY 已解决
+- 残差 99% = accumulate+compact 的**表形态**:Ocean avg 乘积 6.67 的行零表 count-sort,
+  我们 BATCH_S 仍付 64 槽清/扫税(832ns/行 vs 314ns/行)
+- ESC 化双杀:零表 + 有序直写(compact 的 csort 税同时消失)
+- Ocean decision.workflow=2(HLL),ultra_sparse.kernel_size=16(avg 乘积 6.67<38max)
 
 执行原则(不变):env 门控 → 小口子 → 净窗电池(nnz 红旗+中位)→ 赢者翻默认;
 全参数结构化具名(milli-byte/位宽推导),零裸数字铁律。
