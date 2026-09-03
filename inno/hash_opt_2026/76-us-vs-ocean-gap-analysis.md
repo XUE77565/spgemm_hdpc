@@ -118,3 +118,11 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
 
 **攻击序列重排**:①' compact 排序税(中行族大行输出有序化)→ ②' diter 路由门修正(TSOPF 形态回 hash)
 → ③' 原②③(accumulate 常数)。前端全平(再证伪遍数税);retry 3.45 vs overflow 0.11 顺带靶。
+
+## 十一、①' SEGRTS 电池定谳(09-04 晨)——排序税假设【部分证伪】
+
+- 实现:bin≥7(后扩 ≥6)csort → cub 分段基数排序,6/6 nnz 精确,两修(段内核索引域/scan 尾)
+- 电池:pre2 −0.6~−1.0 / c-64 +2.7~+5.1 / F2 +1.1 / crankseg_2 +0.1 = **全 wash**
+- **结论:csort 本身不是 pre2 compact 26.2ms 的主体**——换线性时间排序零变化 ⇒ 26ms 在
+  compact 相位的其他成分(copy 群/margin/retry 善后/同步),需先做相位内分解再开下一枪
+- SEGRTS 保持门控(中性偏负,默认关);#24 状态 = 假设部分证伪,待分解
