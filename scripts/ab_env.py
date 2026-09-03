@@ -5,7 +5,7 @@ nnz 红旗:>1% 不一致 = 无效测量。
       .venv/bin/python scripts/ab_env.py "H2DOVL=1" mat1 mat2 ..."""
 import os, sys, re, subprocess, statistics
 
-BIN = "./spgemm_test"
+BIN = os.environ.get("SPGEMM_BIN", "./spgemm_test")
 DIR = "data/ocean/square"
 RUNS = 3
 
