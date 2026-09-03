@@ -2612,10 +2612,11 @@ __global__ void hash_esc_kernel(
     // ⚠ 子组 mask 必须按 lane 基址对齐(v2 首版 0xFF 全组共用 = lane8-15 非法 → road/web-G nnz 红旗)
     const unsigned full_mask = ((SUBW == WARP_SIZE) ? 0xffffffffu : ((1u << SUBW) - 1u))
                                << (threadIdx.x & 31 & ~(SUBW - 1));
-    #pragma unroll
-    for (int k = 0; k < SUBW; k++) {
-        int ok = __shfl_sync(full_mask, my_key, k);
-        double ov = __shfl_sync(full_mask, my_val, k);
+    const int sub_base = threadIdx.x & 31 & ~(SUBW - 1);   // ⚠ shfl 的源 lane 是【绝对】编号:
+    #pragma unroll                                                      // 子组 8-15 曾读 0-7 = 别人的行 → 跨行键污染超计
+    for (int k = 0; k < SUBW; k++) {                                    // (ESC32 的 k=0..31 恰=绝对 → bcsstk30 掩护)
+        int ok = __shfl_sync(full_mask, my_key, sub_base + k);
+        double ov = __shfl_sync(full_mask, my_val, sub_base + k);
         if (ok == 0x7fffffff || ok == -1) continue;          // 哨兵/过滤项
         if (ok < my_key) smaller |= (1u << k);
         else if (ok == my_key) { sum += ov; if (k < t) leader = false; }
@@ -2624,7 +2625,7 @@ __global__ void hash_esc_kernel(
     unsigned leaders = __ballot_sync(full_mask, leader && my_key != 0x7fffffff && my_key != -1);
     // ⚠ ballot 返回全局 lane 位,smaller 是子组局部位 —— 必须移位对齐(ESC8 的 2/3/4 号
     //   子组曾因此位空间错位 AND 出垃圾位 → road 超计;ESC32 全 warp 恰重合所以 bcsstk30 对)
-    leaders >>= (threadIdx.x & 31 & ~(SUBW - 1));
+    leaders >>= sub_base;
     smaller &= leaders;   // 只数"更小且是 leader"的 lane(Ocean countSortCompactFused 的 bitmap &= leadings_bitmap)
     int n_out = __popc(leaders);
     if (n_out > est[i]) {   // est 欠估 → 标准 retry 兜底
