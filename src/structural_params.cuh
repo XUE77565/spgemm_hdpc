@@ -312,3 +312,7 @@ constexpr int MRG3_FINE_BINS = WARP_SIZE;  // 细直方图桶数 = warp 宽(每 
 // ── v31-④ ESC 层(docs/76;零表 counting-sort 短行)───────────────────────────
 constexpr int ESC_FLOP_MAX = WARP_SIZE;  // 32 乘积/行:每线程 1 乘积,32² 计数在 SMEM/寄存器近零
                                          // (Ocean usparse 上界同域;dup 在 counting 中天然合并)
+
+// ── v31-④ v2 子组分档(docs/76;v1 整 warp 伺候 6.7 乘积行 = −2~4% 失败教训)────────
+constexpr int ESC_SUBW8_MAX  = WARP_SIZE / 4;  // 8:flop≤8 → 8 线程子组(4 行/warp;road avg 6.7 对位)
+constexpr int ESC_SUBW16_MAX = WARP_SIZE / 2;  // 16:flop≤16(Ocean NUMERIC_USPARSE 同款档位)
