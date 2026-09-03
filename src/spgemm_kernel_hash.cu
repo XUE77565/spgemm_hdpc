@@ -2609,7 +2609,9 @@ __global__ void hash_esc_kernel(
     //    32 轮 shfl 直扫:数"比我小的有效 key"= 位次;同 key 只最小 lane 当 leader 持全和
     double sum = my_val;
     unsigned smaller = 0u; bool leader = true;
-    const unsigned full_mask = (SUBW == WARP_SIZE) ? 0xffffffffu : ((1u << SUBW) - 1u);
+    // ⚠ 子组 mask 必须按 lane 基址对齐(v2 首版 0xFF 全组共用 = lane8-15 非法 → road/web-G nnz 红旗)
+    const unsigned full_mask = ((SUBW == WARP_SIZE) ? 0xffffffffu : ((1u << SUBW) - 1u))
+                               << (threadIdx.x & 31 & ~(SUBW - 1));
     #pragma unroll
     for (int k = 0; k < SUBW; k++) {
         int ok = __shfl_sync(full_mask, my_key, k);
