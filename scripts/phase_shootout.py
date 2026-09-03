@@ -3,10 +3,12 @@
 用法:.venv/bin/python scripts/phase_shootout.py pre2 TSOPF_RS_b2383_c1 ...
 ⚠ 须净窗(GPU 独占);Ocean 侧:ocean/spgemm <csr> config/bench_detail.json → stats.json"""
 import os, sys, re, json, subprocess
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(REPO)
 
 BIN = "./spgemm_test"
 DIR = "data/ocean/square"
-OC = "ocean"
+OC = os.path.join(REPO, "ocean")
 
 def ours(mtx):
     env = dict(os.environ, MP_HOST_MB="8192", USE_MEMPOOL="1", METHOD="adaptive", DBG="1")

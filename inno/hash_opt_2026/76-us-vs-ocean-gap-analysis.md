@@ -107,3 +107,14 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
   (守卫只跳 largest/ESC);复活实验(守卫补 ultra)实测 bloweya ~8× 慢 → est≤16 行
   在 BATCH_S/ESC 里确实比 ultra 线扫快,死代码回退保留,定性入档
 - germany(dup1.4)vs patents(dup≥2)的分界 = counting/表 成本模型的教科书实证
+
+## 十、第二枪靶纸(09-04 晨,phase_shootout 中行族)——②③ 原假设部分证伪!
+
+| 阵 | 我们 TOTAL | Ocean | 主凶相位 |
+|---|---|---|---|
+| pre2 | 45.77 | 15.25 | **compact+sort 26.2(57%!)vs epilogue.sort 2.5 = 10×排序税** |
+| TSOPF_b2383 | 29.76 | 10.38 | **dense_direct 22.2(75%)——路由错:同行 Ocean 走 hash numeric 5.6,我们错送 BIN_DITER 窗 = 4×** |
+| bcsstk30 | 3.16 | 2.52 | accumulate 1.25× + compact/retry 小税(②③原靶,次要) |
+
+**攻击序列重排**:①' compact 排序税(中行族大行输出有序化)→ ②' diter 路由门修正(TSOPF 形态回 hash)
+→ ③' 原②③(accumulate 常数)。前端全平(再证伪遍数税);retry 3.45 vs overflow 0.11 顺带靶。
