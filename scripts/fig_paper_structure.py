@@ -474,105 +474,161 @@ def fig_merge3():
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 图 4/5:hash 与 merge 分支机制图(HSMU Fig.1 泳道语法:
-#   泳道 = 内存层级 registers/SMEM/L2·HBM,列 = 阶段,小样例格子,黑箭头数据流)
+# 图 4/5:hash 与 merge 分支机制图 —— v2 顶刊视觉层
+#   规范(ref/ 顶会样板 OpSparse SC22 / MatRaptor / HSMU Fig.1 归纳):
+#   · 低饱和语义色,无边框或极浅边;同一颜色语义跨图复用
+#   · header-bar 标题栏框(深色带白字标题 + 浅色主体)
+#   · 箭头细(≤1pt)小锐头,主流程实线 / 次要虚线,直线与直角折线(不用弧线)
+#   · 数据值用等宽字体;格子直角细边
+#   · 泳道近无色(#FBFBFA)+ 极浅边;阶段轴 = 细线 + 小三角
+#   · 图内无大标题(论文 caption 承担)
 # ════════════════════════════════════════════════════════════════════════════
-_LANES = [  # (y0, y1, fill, name)
-    (60.0, 84.5, "#F5F5F5", "L2 · HBM"),
-    (35.0, 57.5, "#E9F1F9", "shared memory"),
-    (10.5, 32.5, "#FBF5E6", "registers"),
-]
-_CHAIN_Y  = [78.0, 70.0, 62.0]
-_CHAINS   = [[1, 9], [0, 3, 8], [2, 6, 9]]
-_C_OUT    = [0, 1, 2, 3, 6, 8, 9]
+V_BLUE = ("#D6E7F5", "#4A7BB0")   # hash 族 (body fill, header/edge)
+V_ORNG = ("#FBE6CC", "#B97A2A")   # dense 族
+V_GREN = ("#D9F0DE", "#3F8A5A")   # merge 族
+V_GRAY = ("#F0F0F0", "#6B6B6B")   # host / 数据搬运
+V_TXT, V_SUB, V_ARR = "#1A1A1A", "#6A6A6A", "#3B3B3B"
+V_RED = "#B03A2E"
+MONO = "DejaVu Sans Mono"
+
+_CHAIN_Y = [78.0, 70.0, 62.0]
+_CHAINS  = [[1, 9], [0, 3, 8], [2, 6, 9]]
+_C_OUT   = [0, 1, 2, 3, 6, 8, 9]
+_LANES_V = [(60.0, 84.5, "L2 · HBM  (global memory)"),
+            (35.0, 57.5, "shared memory  (per block)"),
+            (10.5, 32.5, "registers  (per warp)")]
 
 
-def _hcell(ax, cx, cy, txt, w=3.2, h=4.4, fc="#FFFFFF", ec="#555555", fs=6.0):
-    rbox(ax, cx - w / 2, cy - h / 2, w, h, [(str(txt), fs, C_TXT, "bold")],
-         fc=fc, ec=ec, lw=0.7, rounding=0.45)
-
-
-def _lane_canvas(ax):
-    for y0, y1, fc, name in _LANES:
+def v_lanes(ax):
+    for y0, y1, name in _LANES_V:
         ax.add_patch(FancyBboxPatch((6.5, y0), 91.5, y1 - y0,
-                     boxstyle="round,pad=0,rounding_size=0.8",
-                     fc=fc, ec="#CCCCCC", lw=0.6, zorder=1))
-        ax.text(4.4, (y0 + y1) / 2, name, fontsize=6.0, color="#777777",
+                     boxstyle="round,pad=0,rounding_size=0.6",
+                     fc="#FBFBFA", ec="#E3E3E3", lw=0.6, zorder=1))
+        ax.text(4.2, (y0 + y1) / 2, name, fontsize=5.6, color="#8F8F8F",
                 ha="center", va="center", rotation=90, zorder=2)
 
 
-def _load_column(ax):
-    """load 阶段(两图完全平行):三条 k 链格子 + 阶段轴左列。"""
+def v_phases(ax, names):
+    ax.plot([8, 97], [88.5, 88.5], color="#CFCFCF", lw=0.6, zorder=1)
+    for x, n in zip((19.5, 50.5, 82.5), names):
+        ax.text(x, 91.2, n, fontsize=6.3, color=V_TXT, fontweight="bold",
+                ha="center", va="center", zorder=3)
+    for xm in (35.0, 67.0):
+        ax.plot(xm, 88.5, marker=">", markersize=3.0, color=V_ARR, zorder=3)
+
+
+def v_hdrbox(ax, x, y, w, h, title, body, pal, tfs=6.2, bfs=5.5):
+    """header-bar 框:顶部深色标题带(白字)+ 浅色主体。body = [line, ...]"""
+    fill, head = pal
+    hh = tfs * 1.45 * _UPP + 1.1
+    ax.add_patch(FancyBboxPatch((x, y), w, h,
+                 boxstyle="round,pad=0,rounding_size=0.6",
+                 fc=fill, ec="none", zorder=3))
+    ax.add_patch(FancyBboxPatch((x, y + h - hh), w, hh,
+                 boxstyle="round,pad=0,rounding_size=0.6",
+                 fc=head, ec="none", zorder=4))
+    ax.text(x + w / 2, y + h - hh / 2, title, fontsize=tfs, color="#FFFFFF",
+            fontweight="bold", ha="center", va="center", zorder=5)
+    lh = bfs * 1.55 * _UPP
+    cy = y + (h - hh) / 2 + lh * len(body) / 2
+    for line in body:
+        cy -= lh / 2
+        ax.text(x + w / 2, cy, line, fontsize=bfs, color=V_TXT,
+                ha="center", va="center", zorder=5)
+        cy -= lh / 2
+
+
+def v_cell(ax, cx, cy, txt, w=3.2, h=4.4, fill="#FFFFFF", edge="#8F8F8F",
+           fs=5.9, lw=0.7):
+    ax.add_patch(FancyBboxPatch((cx - w / 2, cy - h / 2), w, h,
+                 boxstyle="round,pad=0,rounding_size=0.3",
+                 fc=fill, ec=edge, lw=lw, zorder=3))
+    ax.text(cx, cy, str(txt), fontsize=fs, color=V_TXT, fontweight="bold",
+            fontfamily=MONO, ha="center", va="center", zorder=4)
+
+
+def v_arr(ax, pts, lw=0.9, color=V_ARR, ls="-"):
+    """直线/直角折线箭头(顶刊规范:不用弧线)。pts = [(x,y), ...]"""
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:-1]):
+        ax.plot([x0, x1], [y0, y1], color=color, lw=lw, ls=ls,
+                solid_capstyle="round", zorder=2)
+    arr(ax, *pts[-2], *pts[-1], lw=lw, color=color, ls=ls)
+
+
+def v_note(ax, x, y, text, fs=5.5, color=V_SUB, ha="left", bold=False):
+    ax.text(x, y, text, fontsize=fs, color=color, ha=ha, va="center",
+            fontweight="bold" if bold else "normal", zorder=6)
+
+
+def v_load(ax):
+    """load 列(两图平行):三条 k 链。"""
     for cy, nums in zip(_CHAIN_Y, _CHAINS):
         for j, v in enumerate(nums):
-            _hcell(ax, 18.0 + j * 3.6, cy, v, fc="#EFEFEF", ec="#8C8C8C")
-    label(ax, 9.0, _CHAIN_Y[1], "k-chains of row i\nA[k₀,:] A[k₁,:] A[k₂,:]", 5.6)
+            v_cell(ax, 18.0 + j * 3.6, cy, v, fill="#F2F2F2", edge="#9A9A9A")
+    v_note(ax, 8.6, _CHAIN_Y[1], "k-chains of row i\nA[k₀,:]  A[k₁,:]  A[k₂,:]", 5.4)
 
 
-def _phase_axis(ax, mid, right):
-    for x0, x1 in ((33.0, 35.2), (66.0, 68.2)):
-        arr(ax, x0, 88.5, x1, 88.5, lw=1.8, color="#444444")
-    label(ax, 20.0, 88.5, "load k-chains", 6.6, C_TXT, ha="center", weight="bold")
-    label(ax, 50.5, 88.5, mid, 6.6, C_TXT, ha="center", weight="bold")
-    label(ax, 82.5, 88.5, right, 6.6, C_TXT, ha="center", weight="bold")
-
-
-def _emit_column(ax, c_label):
-    """emit 阶段(两图完全平行):C[i,:] 行。"""
+def v_emit(ax, tag):
     for j, v in enumerate(_C_OUT):
-        _hcell(ax, 70.0 + j * 4.0, 73.0, v, w=3.6, fc=C_GREN_F, ec=C_GREN_E)
-    label(ax, 70.0, 79.3, c_label, 6.0, "#3F5E35")
+        v_cell(ax, 70.0 + j * 4.0, 73.0, v, w=3.6, fill=V_GREN[0], edge=V_GREN[1])
+    v_note(ax, 70.0, 79.4, f"C[i,:]  ·  {tag}", 5.7, "#2F6B46", bold=True)
+
+
+def v_foot(ax, line1, line2):
+    ax.plot([6.5, 97.5], [8.8, 8.8], color="#DDDDDD", lw=0.6, zorder=1)
+    ax.text(52, 5.7, line1, fontsize=6.0, color=V_TXT, fontweight="bold",
+            ha="center", va="center", zorder=3)
+    ax.text(52, 2.7, line2, fontsize=5.5, color=V_SUB,
+            ha="center", va="center", zorder=3)
 
 
 def fig_hash_kernel():
     fig, ax = new_canvas(7.16, 4.7)
-    label(ax, 6.5, 95.5, "hash branch — per-row open-addressing accumulate "
-          "(one bin of the SMEM ladder)", 7.4, C_TXT, weight="bold")
-    _lane_canvas(ax)
-    _phase_axis(ax, "hash accumulate", "extract & emit")
-    _load_column(ax)
+    v_lanes(ax)
+    v_phases(ax, ("load k-chains", "hash accumulate", "extract & emit"))
+    v_load(ax)
 
-    # 链 → warp(Register 泳道)
-    for i, cy in enumerate(_CHAIN_Y):
-        arr(ax, 26.6, cy, 36.0, 24.0, lw=0.7, conn=f"arc3,rad={0.25 - i * 0.25}")
-    rbox(ax, 36, 14, 29, 16.5, [
-        ("warp · 32 lanes", 6.4, C_TXT, "bold"),
-        ("lane t_j owns cursor of chain k_j", 5.6, C_SUB, "normal"),
-        ("products  a_ik × B[k,:]  streamed", 5.6, C_SUB, "normal"),
-    ], fc="#FFFFFF", ec="#B08D3C", lw=0.9)
+    # 链 → warp(直线收敛)
+    for cy, ty in zip(_CHAIN_Y, (26.0, 23.0, 20.0)):
+        v_arr(ax, [(26.6, cy), (36.0, ty)], lw=0.8)
+    v_hdrbox(ax, 36, 14, 29, 16.5, "warp · 32 lanes",
+             ["lane t_j owns cursor of chain k_j",
+              "products  a_ik × B[k,:]  streamed"], V_GRAY)
 
     # 插入箭头 → SMEM 表
     for x in (46.0, 50.0, 54.0):
-        arr(ax, x, 30.5, x, 42.6, lw=0.7)
-    label(ax, 56.5, 35.4, "insert (CAS probe)", 5.6)
+        v_arr(ax, [(x, 30.5), (x, 42.6)], lw=0.8)
 
-    # 开放寻址表(SMEM 泳道):一行 8 槽样例 + probe 冲突弧
-    slots = [0, 1, 9, 3, 2, 6, 8, "—"]
-    for j, v in enumerate(slots):
-        _hcell(ax, 38.0 + j * 3.35, 45.0, v, w=3.1,
-               fc="#FFFFFF" if v != "—" else "#F2F2F2",
-               ec="#5F87B5" if v != "—" else "#BBBBBB")
-    arr(ax, 41.9, 47.8, 45.0, 47.8, lw=0.7, color="#B0713A", ls="--",
-        conn="arc3,rad=-0.6")
-    label(ax, 43.4, 51.0, "probe", 5.4, "#B0713A", ha="center")
-    label(ax, 38.0, 53.8, "open-addressing table — 16 slots = 2 × 7 distinct", 5.6)
-    label(ax, 38.0, 39.4, "α = 0.5 ⇒ E[probes] = 1.5  ·  12 B/slot (key 4 + val 8)", 5.6)
-    label(ax, 38.0, 36.9, "pass 1: count (1-bit/col)   ·   pass 2: insert + add", 5.6)
+    # 开放寻址表:8 槽样例,每槽 [key|val],槽下地址 s0..s7
+    keys = ["0", "1", "9", "3", "2", "6", "8", ""]
+    for j, k in enumerate(keys):
+        cx = 38.0 + j * 3.35
+        v_cell(ax, cx - 0.8, 45.2, k, w=1.6, h=3.8, fs=5.4,
+               fill="#FFFFFF" if k else "#F4F4F4",
+               edge="#4A7BB0" if k else "#BBBBBB")
+        ax.add_patch(FancyBboxPatch((cx, 43.3), 1.5, 3.8,
+                     boxstyle="round,pad=0,rounding_size=0.3",
+                     fc="#EDF3FA", ec="#BBBBBB", lw=0.6, zorder=3))
+        ax.text(cx, 40.6, f"s{j}", fontsize=4.6, color="#9A9A9A",
+                fontfamily=MONO, ha="center", va="center", zorder=4)
+    v_arr(ax, [(41.35, 47.6), (44.7, 47.6)], lw=0.7, color=V_RED, ls="--")
+    v_note(ax, 43.0, 49.9, "h(9) → s₁ full → +1 probe", 5.3, V_RED, ha="center")
+    v_note(ax, 38.0, 54.4, "open-addressing table · 16 slots = 2 × 7 distinct (α = 0.5)", 5.5)
+    v_note(ax, 38.0, 37.4, "12 B/slot (key 4 + val 8) · E[probes] = 1.5", 5.5)
+    v_note(ax, 38.0, 35.0, "pass 1: count (1-bit/col bitmap) · pass 2: insert + add (CAS probe)", 5.5)
 
     # extract → 有序条 → C 行
-    arr(ax, 63.2, 45.0, 68.6, 45.0, lw=0.8)
+    v_arr(ax, [(62.4, 45.2), (68.8, 45.2)], lw=0.9)
     for j, v in enumerate(_C_OUT):
-        _hcell(ax, 70.0 + j * 3.35, 45.0, v, w=3.0, fc="#C9DCEF", ec="#5F87B5")
-    label(ax, 70.0, 49.3, "numeric direct-write in table order → compact", 5.6)
-    arr(ax, 83.4, 42.8, 83.4, 71.0, lw=0.8)
-    _emit_column(ax, "C[i,:] — sorted after compact")
+        v_cell(ax, 70.0 + j * 3.35, 45.2, v, w=3.0, fill=V_BLUE[0], edge=V_BLUE[1])
+    v_note(ax, 70.0, 49.6, "numeric direct-write → compact (sorted bins copy-free)", 5.5)
+    v_arr(ax, [(83.4, 43.0), (83.4, 71.0)], lw=0.9)
+    v_emit(ax, "sorted after compact")
 
-    # 底注
-    rbox(ax, 6.5, 0.8, 91.5, 7.6, [
-        ("one kernel per ladder bin — table sized by row est (α = 0.5)", 6.2, C_TXT, "bold"),
-        ("SMEM ladder 32 → 16K slots · overflow → flop-sized retry · est > cap → global table", 5.6, C_SUB, "normal"),
-        ("cf. merge branch: register merge — no table, no sort", 5.6, C_SUB, "normal"),
-    ], fc="#FFFFFF", ec="#B9C4CE", lw=0.9)
+    v_foot(ax,
+           "one kernel per ladder bin — table sized by row est: SMEM ladder 32 → 16K slots"
+           " · overflow → flop-sized retry · est > cap → global table",
+           "cf. merge branch: register merge — no table, no sort")
 
     fig.savefig("fig/paper_structure_hash.png", dpi=DPI)
     fig.savefig("fig/paper_structure_hash.pdf")
@@ -585,52 +641,44 @@ def fig_hash_kernel():
 
 def fig_merge_kernel():
     fig, ax = new_canvas(7.16, 4.7)
-    label(ax, 6.5, 95.5, "merge branch — column-bucket warp merge "
-          "(K disjoint value ranges per row)", 7.4, C_TXT, weight="bold")
-    _lane_canvas(ax)
-    _phase_axis(ax, "bucket + merge", "concat & emit")
-    _load_column(ax)
+    v_lanes(ax)
+    v_phases(ax, ("load k-chains", "bucket + warp merge", "concat & emit"))
+    v_load(ax)
 
-    # 链 → SMEM 桶边界
-    for i, cy in enumerate(_CHAIN_Y):
-        arr(ax, 26.6, cy, 37.5, 45.0 + (1 - i) * 2.0, lw=0.7,
-            conn=f"arc3,rad={0.2 - i * 0.2}")
+    # 链 → 桶边界(直线收敛)
+    for cy, ty in zip(_CHAIN_Y, (47.0, 45.0, 43.0)):
+        v_arr(ax, [(26.6, cy), (36.4, ty)], lw=0.8)
     for j, v in enumerate([0, 3, 7, 10]):
-        _hcell(ax, 38.0 + j * 3.6, 45.0, v, w=3.2, fc="#FFFFFF", ec="#7AA36B")
-    label(ax, 38.0, 53.8, "bucket bounds = row span [min col, max col] ÷ K", 5.6)
-    label(ax, 38.0, 39.4, "count pass: 1 B flag / column within bucket", 5.6)
-    label(ax, 38.0, 36.9, "bounds tight to product span (load-balanced)", 5.6)
+        v_cell(ax, 38.0 + j * 3.6, 45.0, v, w=3.2, fill="#FFFFFF", edge=V_GREN[1])
+    ax.text(44.4, 40.6, "bnd[0..K]", fontsize=4.6, color="#9A9A9A",
+            fontfamily=MONO, ha="center", va="center", zorder=4)
+    v_note(ax, 38.0, 54.4, "bucket bounds = row span [min col, max col] ÷ K", 5.5)
+    v_note(ax, 38.0, 37.4, "count pass: 1 B flag / column within bucket", 5.5)
+    v_note(ax, 38.0, 35.0, "bounds tight to product span (load-balanced)", 5.5)
 
-    # 边界 → Register 泳道:warp 归并 + 桶序条
-    arr(ax, 49.0, 42.8, 49.0, 32.0, lw=0.7)
-    rbox(ax, 36, 16.5, 29, 15.5, [
-        ("(row, bucket) = one warp", 6.4, C_TXT, "bold"),
-        ("shuffle-min selects smallest head", 5.6, C_SUB, "normal"),
-        ("shuffle-add sums duplicates (9 + 9 → 9)", 5.6, C_SUB, "normal"),
-    ], fc="#FFFFFF", ec="#7AA36B", lw=0.9)
-    # 桶序条:三组桶内有序短条
-    for x, v in zip([38.0, 40.6, 43.2], [0, 1, 2]):
-        _hcell(ax, x, 13.0, v, w=2.4, h=3.6, fc=C_GREN_F, ec=C_GREN_E, fs=5.4)
-    for x, v in zip([48.0, 50.8], [3, 6]):
-        _hcell(ax, x, 13.0, v, w=2.4, h=3.6, fc=C_GREN_F, ec=C_GREN_E, fs=5.4)
-    for x, v in zip([56.0, 58.8], [8, 9]):
-        _hcell(ax, x, 13.0, v, w=2.4, h=3.6, fc=C_GREN_F, ec=C_GREN_E, fs=5.4)
+    # 边界 → warp 归并(Register 泳道)+ 桶序条
+    v_arr(ax, [(49.0, 42.8), (49.0, 32.2)], lw=0.8)
+    v_hdrbox(ax, 36, 16.5, 29, 15.5, "(row, bucket) = one warp",
+             ["shuffle-min → smallest column head",
+              "shuffle-add → duplicates (9 + 9 → 9)"], V_GREN)
+    for xs, vals in (([38.0, 40.6, 43.2], [0, 1, 2]),
+                     ([48.0, 50.8], [3, 6]),
+                     ([56.0, 58.8], [8, 9])):
+        for x, v in zip(xs, vals):
+            v_cell(ax, x, 13.0, v, w=2.4, h=3.6, fs=5.2,
+                   fill=V_GREN[0], edge=V_GREN[1])
 
-    # concatenate 框 → C 行
-    rbox(ax, 68, 14, 28, 8.0, [
-        ("concatenate", 6.4, C_TXT, "bold"),
-        ("(offsets = in-row scan)", 5.6, C_SUB, "normal"),
-    ], fc="#FFFFFF", ec="#7AA36B", lw=0.9)
-    arr(ax, 60.2, 13.0, 68.0, 17.0, lw=0.7, conn="arc3,rad=-0.2")
-    arr(ax, 82.0, 22.0, 82.0, 71.0, lw=0.8)
-    _emit_column(ax, "C[i,:] — concatenated sorted")
+    # concatenate → C 行
+    v_arr(ax, [(60.2, 13.0), (68.0, 16.5)], lw=0.8)
+    v_hdrbox(ax, 68, 12.8, 28, 8.0, "concatenate",
+             ["bucket offsets = in-row scan"], V_GREN)
+    v_arr(ax, [(82.0, 20.8), (82.0, 71.0)], lw=0.9)
+    v_emit(ax, "concatenated sorted")
 
-    # 底注
-    rbox(ax, 6.5, 0.8, 91.5, 7.6, [
-        ("disjoint value ranges ⇒ concatenation is already sorted", 6.2, C_TXT, "bold"),
-        ("(row, bucket) = one warp · duplicate columns shuffle-added · no table, no sort", 5.6, C_SUB, "normal"),
-        ("cf. hash branch: SMEM / global open-addressing tables", 5.6, C_SUB, "normal"),
-    ], fc="#FFFFFF", ec="#B9C4CE", lw=0.9)
+    v_foot(ax,
+           "disjoint value ranges ⇒ concatenation is already sorted"
+           " · duplicate columns shuffle-added · no table, no sort",
+           "cf. hash branch: SMEM / global open-addressing tables")
 
     fig.savefig("fig/paper_structure_merge.png", dpi=DPI)
     fig.savefig("fig/paper_structure_merge.pdf")
