@@ -310,9 +310,9 @@ constexpr int LARGEST_SPARSE_DEN = 8;  // est/span ≤ 1/8 才进 largest:每字
 constexpr int MRG3_FINE_BINS = WARP_SIZE;  // 细直方图桶数 = warp 宽(每 lane 一 bin;中点 splat O(num_k))
 
 // ── v31-④ ESC 层(docs/76;零表 counting-sort 短行)───────────────────────────
-constexpr int ESC_FLOP_MAX = WARP_SIZE / 4;  // v5:8 乘积/行(只用 ESC8 子组)——v4 电池实证
-                                         // flop≤8 三族全赢(germany/road/hugetrace +16~70%)、9-32 的
-                                         // patents/bloweya 残留回归(ESC16/32 counting 贵于 BATCH_S 表)
+constexpr int ESC_FLOP_MAX = WARP_SIZE;  // 终版(v5 证伪:flop≤8 门把 hugetrace +36% 赢面归零、
+                                         // road +16→+5;全档 + dup≤2(v4)三族全赢为最优点,patents/bloweya
+                                         // −6~14% 残根 = flop 9-32 ∧ dup≤2 域内另一维未抓到,后续微调)
 
 // ── v31-④ v2 子组分档(docs/76;v1 整 warp 伺候 6.7 乘积行 = −2~4% 失败教训)────────
 constexpr int ESC_SUBW8_MAX  = WARP_SIZE / 4;  // 8:flop≤8 → 8 线程子组(4 行/warp;road avg 6.7 对位)
