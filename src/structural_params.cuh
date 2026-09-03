@@ -316,3 +316,5 @@ constexpr int ESC_FLOP_MAX = WARP_SIZE;  // 32 乘积/行:每线程 1 乘积,32�
 // ── v31-④ v2 子组分档(docs/76;v1 整 warp 伺候 6.7 乘积行 = −2~4% 失败教训)────────
 constexpr int ESC_SUBW8_MAX  = WARP_SIZE / 4;  // 8:flop≤8 → 8 线程子组(4 行/warp;road avg 6.7 对位)
 constexpr int ESC_SUBW16_MAX = WARP_SIZE / 2;  // 16:flop≤16(Ocean NUMERIC_USPARSE 同款档位)
+constexpr int ESC_DUP_MAX = 2;  // v4 门:counting O(flop·SUBW) vs 表 O(est+ht) 的盈亏平衡 dup≈2
+                                 // (germany 1.4 赢/patents ≥2 输,分相实证;DUP_LIGHT 同族推导)
