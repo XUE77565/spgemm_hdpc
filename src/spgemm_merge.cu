@@ -518,6 +518,10 @@ __global__ void bucket_bnd_kernel(
     int *rb = bnd + (size_t)i * (K + 1);
     int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
     int num_k = re - rs;
+    if (mode == 1) {   // v1 固定分桶(用户 09-04 对照试验):所有行 blo = j*n/K,全域等宽
+        if (lane == 0) { rb[0] = 0; rb[K] = A_cols; for (int j = 1; j < K; j++) rb[j] = (int)((long long)j * A_cols / K); }
+        return;
+    }
     if (num_k <= 0) {   // 空行:任意合法边界(全空桶)
         if (lane == 0) { rb[0] = 0; rb[K] = A_cols; for (int j = 1; j < K; j++) rb[j] = (int)((long long)j * A_cols / K); }
         return;
