@@ -343,6 +343,137 @@ def fig_routing():
     print("fig/paper_structure_routing.{png,pdf} written")
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# 图 3:merge3 列域并行归并(对标 FIANLSPGEMMPPT.pdf 第 6 页,论文化精修)
+# ════════════════════════════════════════════════════════════════════════════
+def fig_merge3():
+    fig, ax = new_canvas(7.16, 4.8)
+
+    CHAIN_Y = [78.0, 68.0, 58.0]          # 三条 k 链的行中心(两面板共用 → 对照对齐)
+    CHAINS  = ["K₀", "K₁", "K₂"]          # 行 i 的三条输入链 A[k,:]
+    DATA    = [[1, 9], [0, 3, 8], [2, 6, 9]]
+
+    def cell(cx, cy, num, fc="#FFFFFF", ec="#8C8C8C", w=4.4, h=4.6, fs=6.4):
+        rbox(ax, cx - w / 2, cy - h / 2, w, h, [(str(num), fs, C_TXT, "bold")],
+             fc=fc, ec=ec, lw=0.8, rounding=0.5)
+
+    # ══ 左面板:prior row merge(串行选择)══════════════════════════════════
+    ax.add_patch(FancyBboxPatch((2, 8), 44, 88,
+                 boxstyle="round,pad=0,rounding_size=1.6",
+                 fc="#FCFCFC", ec="#C4C4C4", lw=1.0, zorder=1))
+    label(ax, 4.0, 92.5, "prior row merge — one warp per row, serial select",
+          7.2, "#555555", weight="bold")
+    label(ax, 4.0, 88.8, "row i  =  merge of k-chains  A[k₀,:]  A[k₁,:]  A[k₂,:]",
+          5.9, C_SUB)
+    # 三条链:浅灰长条 + 数字格(右移,左侧留给 merge 框 → 水平箭头零交叉)
+    for cy, nums in zip(CHAIN_Y, DATA):
+        ax.add_patch(FancyBboxPatch((19, cy - 3.0), 25, 6.0,
+                     boxstyle="round,pad=0,rounding_size=0.8",
+                     fc="#EFEFEF", ec="none", zorder=2))
+        lo, hi = 23.0, 41.0
+        n = len(nums)
+        for j, v in enumerate(nums):
+            cell(lo + j * ((hi - lo) / max(n - 1, 1)) if n > 1 else (lo + hi) / 2,
+                 cy, v)
+    # 串行归并循环框(左侧竖框,高度贴合三条链)
+    rbox(ax, 4, 52, 11.5, 32.0, [
+        ("warp merge", 6.2, C_TXT, "bold"),
+        ("loop", 6.2, C_TXT, "bold"),
+        ("", 2.5, C_SUB, "normal"),
+        ("shuffle-min", 5.8, C_SUB, "normal"),
+        ("emit winner", 5.8, C_SUB, "normal"),
+        ("advance chain", 5.8, C_SUB, "normal"),
+        ("", 2.5, C_SUB, "normal"),
+        ("loop × flop", 5.8, "#888888", "normal"),
+    ], fc="#EFEFEF", ec=C_GRAY_E, lw=0.9)
+    for cy in CHAIN_Y:
+        arr(ax, 19.0, cy, 15.5, cy, lw=0.7)               # 三链水平汇入
+    # 串行发射 → 结果
+    arr(ax, 9.75, 52, 9.75, 25.0, lw=0.9)
+    label(ax, 11.2, 40.0, "serial emit", 5.8, C_SUB)
+    for j, v in enumerate([0, 1, 2, 3, 6, 8, 9]):
+        cell(10.5 + j * 5.35, 22.5, v, fc="#EFEFEF", ec=C_GRAY_E)
+    label(ax, 8.3, 18.0, "C[i,:]  column-sorted, one element at a time",
+          5.9, C_SUB)
+    ax.text(4.0, 13.0, "serial dependency — heavy rows are stragglers",
+            fontsize=6.0, color="#A33333", style="italic", va="center", zorder=6)
+    ax.text(4.0, 10.0, "(why fast GPU SpGEMM abandoned merge for hash)",
+            fontsize=5.8, color="#A33333", va="center", zorder=6)
+
+    # ══ 面板间大箭头 ═════════════════════════════════════════════════════
+    arr(ax, 46.6, 52, 53.4, 52, lw=2.6, color="#B9C4CE", head="-|>",
+        conn="arc3,rad=0")
+    label(ax, 50, 55.5, "same row,\nsame chains", 5.8, "#7A8791", ha="center")
+    label(ax, 50, 47.5, "add a value-\ndomain axis", 5.8, "#3F5E35", ha="center")
+
+    # ══ 右面板:merge3(列值域不交桶)════════════════════════════════════
+    ax.add_patch(FancyBboxPatch((54, 8), 44, 88,
+                 boxstyle="round,pad=0,rounding_size=1.6",
+                 fc="#FAFDF9", ec="#9DB893", lw=1.0, zorder=1))
+    label(ax, 56.0, 92.5, "merge3 — disjoint column-domain buckets",
+          7.2, "#3F5E35", weight="bold")
+    label(ax, 56.0, 88.6, "bounds split row span [min col, max col] into K equal ranges",
+          5.8, C_SUB)
+    # 三个竖桶(青色渐深)
+    BX0, BW, BG = 56.0, 12.4, 1.9
+    BFILL = ["#EAF5F0", "#D2EADD", "#B6DCCA"]
+    BIN    = [[1, 0, 2], [None, 3, 6], [9, 8, 9]]        # 桶 × 链(演示 K=3)
+    for b in range(3):
+        bx = BX0 + b * (BW + BG)
+        ax.add_patch(FancyBboxPatch((bx, 54), BW, 32.5,
+                     boxstyle="round,pad=0,rounding_size=1.0",
+                     fc=BFILL[b], ec="#7AA36B", lw=0.9, zorder=2))
+        label(ax, bx + BW / 2, 83.6, f"bucket {b}", 6.0, "#3F5E35", ha="center",
+              weight="bold")
+        for r in range(3):                               # 数字落位:行=链,x=桶内居中
+            v = BIN[b][r]
+            if v is not None:
+                cell(bx + BW / 2, CHAIN_Y[r], v)
+    # 桶 → warp-shfl 药丸 → 桶内有序短条
+    OUT = [[0, 1, 2], [3, 6], [8, 9]]
+    for b in range(3):
+        bx = BX0 + b * (BW + BG)
+        cx = bx + BW / 2
+        arr(ax, cx, 54, cx, 48.2, lw=0.8, color="#7AA36B")
+        rbox(ax, cx - 5.6, 42.4, 11.2, 5.6, [("warp-shfl merge", 6.0, C_TXT, "bold")],
+             fc="#FFFFFF", ec="#7AA36B", lw=0.9, rounding=2.8)
+        arr(ax, cx, 42.4, cx, 37.0, lw=0.8, color="#7AA36B")
+        vals = OUT[b]
+        cw = 3.6 if len(vals) == 3 else 4.2
+        for j, v in enumerate(vals):
+            cell(cx + (j - (len(vals) - 1) / 2) * (cw + 0.5), 34.5, v,
+                 fc=C_GREN_F, ec=C_GREN_E, w=cw)
+    # 桶 2 的重复列去重说明并入底部注释带(桶内两个 9 由 warp-shfl 内 shuffle-add 合并)
+    # 拼接 → 结果
+    for b in range(3):
+        cx = BX0 + b * (BW + BG) + BW / 2
+        arr(ax, cx, 32.2, cx, 29.0, lw=0.7, color="#7AA36B")
+    ax.plot([BX0 + BW / 2, BX0 + 2 * (BW + BG) + BW / 2], [29.0, 29.0],
+            color="#7AA36B", lw=0.8, zorder=2)
+    arr(ax, 77, 29.0, 77, 22.0, lw=0.9, color="#7AA36B")
+    label(ax, 79.0, 26.0, "concatenate\n(offsets = in-row scan)", 5.8, "#3F5E35")
+    for j, v in enumerate([0, 1, 2, 3, 6, 8, 9]):
+        cell(60.5 + j * 5.35, 19.5, v, fc=C_GREN_F, ec=C_GREN_E)
+    label(ax, 60.5, 15.2, "C[i,:]  sorted directly", 5.9, "#3F5E35", ha="center")
+    ax.text(56.0, 11.2, "parallel axes:  rows  ×  k-chains  ×  column buckets",
+            fontsize=6.0, color="#3F5E35", style="italic", va="center", zorder=6)
+
+    # ══ 底部要点注释带 ══
+    rbox(ax, 2, 1.0, 96, 5.6, [
+        ("disjoint value ranges ⇒ bucket outputs concatenate in sorted order", 6.4, C_TXT, "bold"),
+        ("parallel and order-preserving · no global sort · duplicate columns shuffle-added within bucket · one warp per (row, bucket)", 5.8, C_SUB, "normal"),
+    ], fc="#FFFFFF", ec="#B9C4CE", lw=0.9)
+
+    fig.savefig("fig/paper_structure_merge3.png", dpi=DPI)
+    fig.savefig("fig/paper_structure_merge3.pdf")
+    plt.close(fig)
+    _pdf_meta("fig/paper_structure_merge3.pdf",
+              "merge3: column-domain parallel k-way merge "
+              "(prior serial row merge vs disjoint column buckets)")
+    print("fig/paper_structure_merge3.{png,pdf} written")
+
+
 if __name__ == "__main__":
     fig_overview()
     fig_routing()
+    fig_merge3()
