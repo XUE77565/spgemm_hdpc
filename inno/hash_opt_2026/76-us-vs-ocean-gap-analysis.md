@@ -126,3 +126,12 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
 - **结论:csort 本身不是 pre2 compact 26.2ms 的主体**——换线性时间排序零变化 ⇒ 26ms 在
   compact 相位的其他成分(copy 群/margin/retry 善后/同步),需先做相位内分解再开下一枪
 - SEGRTS 保持门控(中性偏负,默认关);#24 状态 = 假设部分证伪,待分解
+
+## 十二、②' diter 路由门三轮实验(09-04 晨)——单行特征无法分离,存档开放
+
+- **电池(DITER off)**:TSOPF×2 −34.3%(hash 赢)✓ / **c-64 +98%(diter 赢)**✓ / Ga/crankseg/nd24k/3Dspec wash
+- 饱和门(2e≥cap):TSOPF 19.6 ✓ 但 c-64 43.9(把 e=4096∧dup2.6 的 diter 赢家行踢了)
+- dup 门(flop≥2e):TSOPF 19.4 ✓ 但 c-64 26.8(e=8192∧dup1.6 行也被踢)+ Ga 58.1(dup1.57 行要窗)
+- **结论**:c-64/Ga(diter)与 TSOPF(hash)的边界不在任何已测单行特征(est/dup/span·n 组合均反例),
+  疑似矩阵级行分布形态(同 e=4096 的行在 c-64/Ga 要窗、在 TSOPF 要表)→ 需矩阵级判据或
+  per-row 采样成本比较(如 OC 采样式);TSOPF −34% 收益锁在抽屉,待判据
