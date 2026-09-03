@@ -2622,8 +2622,10 @@ __global__ void hash_esc_kernel(
     }
     __syncwarp();
     unsigned leaders = __ballot_sync(full_mask, leader && my_key != 0x7fffffff && my_key != -1);
-    smaller &= leaders;   // ⚠ 只数"更小且是 leader"的 lane(Ocean countSortCompactFused 的
-                          // bitmap &= leadings_bitmap;漏此行 = 重复 key 的多余 lane 挤进位次 → 越位写)
+    // ⚠ ballot 返回全局 lane 位,smaller 是子组局部位 —— 必须移位对齐(ESC8 的 2/3/4 号
+    //   子组曾因此位空间错位 AND 出垃圾位 → road 超计;ESC32 全 warp 恰重合所以 bcsstk30 对)
+    leaders >>= (threadIdx.x & 31 & ~(SUBW - 1));
+    smaller &= leaders;   // 只数"更小且是 leader"的 lane(Ocean countSortCompactFused 的 bitmap &= leadings_bitmap)
     int n_out = __popc(leaders);
     if (n_out > est[i]) {   // est 欠估 → 标准 retry 兜底
         if (t == 0) {
