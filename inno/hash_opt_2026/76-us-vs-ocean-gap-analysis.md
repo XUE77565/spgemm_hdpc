@@ -97,3 +97,13 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
 - 生态位 = 中行族 hash 桶(est 65-16K,dup 2-8)= 宽输带;与 ②(槽宽)③(块宽)正交
 - 家族关系:④(ESC,flop≤32)与 merge3 是"完全体"(连 scatter 都省);⑤ = 中行域的增量形
 - 执行:④ 落地划走小行域后,mid bin 单桶试验(env PRECOMB=1),任务 #23
+
+## 九、v31 终版复盘 + ESC 门四连修(09-04 深夜)
+
+- v31 = 1.3643×/34(ESC 收益被 est≤16 行回归对冲);c-big 再 −25% 至 103ms(1.72×)
+- **门演化**:v2(无门,全 flop≤32)→ v3(est>16,误杀 germany 的 ESC 赢面:germany 行 est≤8)
+  → **v4(dup≤2,终判据)**:counting 成本∝flop、表成本∝est,盈亏平衡 dup≈2
+- **重大定性:BIN_ULTRA 是死代码且"正确的死"**——第二链 fallback 无条件覆写 ultra 位
+  (守卫只跳 largest/ESC);复活实验(守卫补 ultra)实测 bloweya ~8× 慢 → est≤16 行
+  在 BATCH_S/ESC 里确实比 ultra 线扫快,死代码回退保留,定性入档
+- germany(dup1.4)vs patents(dup≥2)的分界 = counting/表 成本模型的教科书实证
