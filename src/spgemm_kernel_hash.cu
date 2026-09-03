@@ -2332,8 +2332,9 @@ __global__ void compute_bucket_kernel(
     // 门 v2(333SP +160%/F2 +13% 教训:窄跨度但 est 小的行在 batched/hash 本来就快,勿偷):
     // 极窄 span≤512:数组比任何 hash 表都小,只要 e>64 就值得;中段 512<span≤2048:须 est≥2048
     // (= v4 门的"hash 伺候不了的大表行")。两档都要求 est≥span/2(数组利用率)。
-    if (esc_on && flop[i] > 0 && flop[i] <= ESC_FLOP_MAX) {
-        // v31-④ v2:按乘积数分档子组(Ocean NUMERIC_USPARSE_KERNEL_SIZES {16,32}+8 同型)
+    if (esc_on && flop[i] > 0 && flop[i] <= ESC_FLOP_MAX && e > EST_ULTRA_THR) {
+        // v31-④ v3 门:est>ULTRA 才进 ESC —— est≤16 的行 ultra 线扫更快(v31 全刷 rajat28/patents/
+        // circuit_4/brainpc2/bloweya +14~28% 教训:ESC 曾吃掉 ultra 行,counting 全扫比线扫贵)
         bid = (flop[i] <= ESC_SUBW8_MAX) ? BIN_ESC8
             : (flop[i] <= ESC_SUBW16_MAX) ? BIN_ESC16 : BIN_ESC32;
     } else if (largest_ok) {
