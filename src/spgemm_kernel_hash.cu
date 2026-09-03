@@ -125,6 +125,28 @@ __global__ void count_flop_tiny_kernel(
     if (max_b_len) max_b_len[i] = mb;
 }
 
+// span-only tiny 形(avg≤8;线程级行)
+__global__ void row_span_only_tiny_kernel(
+    const int *A_row_ptr, const int *A_col_idx, int A_rows,
+    const int *B_row_ptr, const int *B_col_idx,
+    int *span_lo, int *span_len)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= A_rows) return;
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    int lo = INT_MAX, hi = -1;
+    for (int p = rs; p < re; p++) {
+        int k = A_col_idx[p];
+        int b0 = B_row_ptr[k], b1 = B_row_ptr[k + 1];
+        if (b0 < b1) {
+            int c0 = B_col_idx[b0], c1 = B_col_idx[b1 - 1];
+            lo = min(lo, c0); hi = max(hi, c1);
+        }
+    }
+    span_lo[i] = (lo == INT_MAX) ? 0 : lo;
+    span_len[i] = (hi < lo) ? 0 : (hi - lo + 1);
+}
+
 // h2d 重叠管线的行区间版(docs/71):只算 flop + max_b_len —— 数据依赖 = row_ptr(先行小拷贝)
 // + 本 chunk 的 A_ci 行区间;span(B_ci 随机访问,须全量)由同步后的 row_span_only_kernel 补。
 __global__ void count_flop_range_kernel(
@@ -151,6 +173,25 @@ __global__ void count_flop_range_kernel(
         ub[i] = s;
         if (max_b_len) max_b_len[i] = mb;
     }
+}
+
+// 重叠管线 tiny 形(avg≤8 矩阵):线程级行 + 行区间(与 COUNT_TINY 正交组合;
+// H2DOVL 曾旁路 COUNT_TINY → M6/HTC 族 warp 形 count 超窗 +23% 回归,2026-09-04 隔离电池实证)
+__global__ void count_flop_range_tiny_kernel(
+    const int *A_row_ptr, const int *A_col_idx, int r0, int r1,
+    const int *B_row_ptr, int *ub, int *max_b_len)
+{
+    int i = r0 + (blockIdx.x * blockDim.x + threadIdx.x);
+    if (i >= r1) return;
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    int s = 0, mb = 0;
+    for (int p = rs; p < re; p++) {
+        int k = A_col_idx[p];
+        int b0 = B_row_ptr[k], b1 = B_row_ptr[k + 1];
+        s += b1 - b0; mb = max(mb, b1 - b0);
+    }
+    ub[i] = s;
+    if (max_b_len) max_b_len[i] = mb;
 }
 
 // span-only 补趟(h2d 重叠管线;A_ci/B_ci 已全量在 device):每 k 只读 B 行首/末 2 元素
@@ -2940,8 +2981,12 @@ static void hash_product(
     double avg_product = 0.0;
     if (h2d_count_done) {   // 重叠管线已算 flop+maxbl → 只补 span(B_ci 随机访问,须全量)+ 规约
         prof("count_flop", [&]{
-            row_span_only_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
-                dA_rp, dA_ci, A_rows, dB_rp, dB_ci, d_span_lo, d_span_len);
+            if (A_nnz <= TINY_ROW_MAX_LEN * A_rows)
+                row_span_only_tiny_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
+                    dA_rp, dA_ci, A_rows, dB_rp, dB_ci, d_span_lo, d_span_len);
+            else
+                row_span_only_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
+                    dA_rp, dA_ci, A_rows, dB_rp, dB_ci, d_span_lo, d_span_len);
             CHECK_CUDA(cudaGetLastError());
             total_flop = thrust::reduce(thrust::device_ptr<int>(d_flop), thrust::device_ptr<int>(d_flop + A_rows), 0LL);
         });
