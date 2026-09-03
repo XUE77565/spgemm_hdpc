@@ -37,7 +37,8 @@ def one(mtx):
     if tot is None:
         return None, None, ""
     comp = tot - ph.get("h2d", 0) - ph.get("d2h", 0)
-    ch = "[mrg3]" if "mrg3-prof" in r.stderr.split("TOTAL(GPU)")[-1][:2000] else ""
+    adapt = [l for l in r.stderr.splitlines() if "[adapt]" in l]
+    ch = "[mrg3]" if adapt and "merge3" in adapt[-1] else "[hash]"
     return comp, int(nnz[-1]), ch
 
 rows = []
