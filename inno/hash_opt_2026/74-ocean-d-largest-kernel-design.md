@@ -84,3 +84,16 @@ dense: span×250 + est×16000 ≤ hash: ht_eff×12000 + est×24000
 
 cage15 类 est 欠估族:走 flop-retry 兜底(正确但吃内存;精确管线集成 = 下一步)。
 守卫电池(OCCGATE 族)在跑。
+
+---
+
+## 2026-09-03 傍晚·窗口交接快照(v30 挂起时点)
+
+- **v30 全刷挂在负载门**(nohup 脱离,`scripts/v30_refresh.sh`,log=compare/v30_refresh.log);
+  净窗自动:cp v29→v30 → REFRESH=Auto 全刷 → DNF 自动补跑 → 终版 geomean 打印
+- 五件套默认 ON(电池全绿,本文件 + docs/13 v2 记录);惊吓扫唯一旗标 bcsstk30(dim2 误点亮)已修
+- **first100 复测 = v30 后第一优先**:`scripts/revalidate_first100.py`(用户纠错:07-27 档案
+  dispatcher→merge3 净赢 Ocean 0.622×,81/19;旧口径需现代 compute-only+nnz 红旗背书)
+- 论文图组 v1:`scripts/fig_paper_main.py` + fig/paper_v29_*.{png,pdf}(GFLOPS 趋势/加速比/
+  版本演进);Ocean PDF 在 ref/;v30 出数后 `fig_paper_main.py <v30.csv> fig/paper_v30` 重刷
+- 最新二进制 = 五件套默认版;v28 对照构建法:git archive 9acfad1 → /tmp/v28build/
