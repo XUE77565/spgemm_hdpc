@@ -19,7 +19,7 @@ def one(mtx, env_str):
         r = subprocess.run([BIN, f"{DIR}/{mtx}.mtx"], capture_output=True, text=True, env=env, timeout=300)
     except subprocess.TimeoutExpired:
         return None, None
-    prof = re.findall(r"\[hash-prof\]\s+(\S+)\s+([0-9.]+)\s*ms", r.stderr)
+    prof = re.findall(r"\[(?:hash|mrg3)-prof\]\s+(\S+)\s+([0-9.]+)\s*ms", r.stderr)
     nnz = re.findall(r"Result C:.*?nnz\s*=\s*(\d+)", r.stdout)
     if not prof or not nnz:
         return None, None
