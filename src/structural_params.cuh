@@ -305,3 +305,6 @@ constexpr int DUP_LARGEST_MAX  = 2;  // dup ≤ 2 = 真 straggler 形态(flop≈
                                        // hash 全局 CAS 与 largest 的 2×flop 读 + fp64 原子打平 → 失去稳定优势(c-64 +12.8% 实证)
 constexpr int LARGEST_SPARSE_DEN = 8;  // est/span ≤ 1/8 才进 largest:每字期望置位 ≤ 4(32/8)→ 原子冲突
                                        // 与清字税同界;c-big 1/17 ✓ vs c-64 1/2.5 ✗(守卫电池终判据)
+
+// ── merge3 边界 v3 层(flop 近似均分;docs/66 续)──────────────────────────────
+constexpr int MRG3_FINE_BINS = WARP_SIZE;  // 细直方图桶数 = warp 宽(每 lane 一 bin;中点 splat O(num_k))

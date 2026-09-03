@@ -509,7 +509,8 @@ __global__ void bucket_bnd_kernel(
     const int *B_row_ptr, const int *B_col_idx,
     int A_rows, int A_cols, int K, long long dyn_min,
     int *bnd,                      // [A_rows * (K+1)]
-    int *d_max_span = nullptr)     // docs/66 §7:host D2H 一个 int → dense 桶宽上限精确已知
+    int *d_max_span = nullptr,     // docs/66 §7:host D2H 一个 int → dense 桶宽上限精确已知
+    int mode = 2)                  // 2=span 均分(docs/66 v2)/3=flop 近似均分(v3:链长加权细直方图)
 {
     int i = blockIdx.x;
     if (i >= A_rows) return;
@@ -542,8 +543,42 @@ __global__ void bucket_bnd_kernel(
         if (lane == 0) { rb[0] = 0; rb[K] = A_cols; for (int j = 1; j < K; j++) rb[j] = (int)((long long)j * A_cols / K); }
         return;
     }
+    long long span = (long long)mx - mn + 1;
+    if (mode >= 3) {
+        // v3(flop 近似均分):每条链按其 B 行中点落 MRG3_FINE_BINS 细桶,权 = 链长(O(num_k),免额外扫描)。
+        //   窄链(偏斜主源)被中点精确定位;宽链本就近似均匀覆盖 → 中点近似损失小。
+        //   边界 = 细桶权前缀的 K 等分点(列分辨率 span/FINE,充足)。
+        __shared__ long long fw[MRG3_FINE_BINS];
+        __shared__ long long fpref[MRG3_FINE_BINS + 1];
+        if (lane < MRG3_FINE_BINS) fw[lane] = 0;
+        __syncwarp();
+        for (int p = lane; p < num_k; p += 32) {
+            int k = A_col_idx[rs + p];
+            int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
+            if (ks >= ke) continue;
+            int c0 = B_col_idx[ks], c1 = B_col_idx[ke - 1];
+            int mid = c0 + (c1 - c0) / 2;
+            int fb = (int)(((long long)mid - mn) * MRG3_FINE_BINS / span);
+            if (fb < 0) fb = 0; if (fb >= MRG3_FINE_BINS) fb = MRG3_FINE_BINS - 1;
+            atomicAdd((unsigned long long *)&fw[fb], (unsigned long long)(ke - ks));
+        }
+        __syncwarp();
+        if (lane == 0) {
+            long long run = 0;
+            fpref[0] = 0;
+            for (int b = 0; b < MRG3_FINE_BINS; b++) { run += fw[b]; fpref[b + 1] = run; }
+            rb[0] = mn; rb[K] = mx + 1;
+            for (int j = 1; j < K; j++) {
+                long long target = (long long)j * total / K;   // total = 该行 Σ链长(v2 已归约)
+                int b = 0;
+                while (b + 1 < MRG3_FINE_BINS && fpref[b + 1] < target) b++;
+                rb[j] = (int)(mn + ((long long)(b + 1) * span / MRG3_FINE_BINS));   // 细桶右端 = 边界
+            }
+            if (d_max_span) atomicMax(d_max_span, (int)span);
+        }
+        return;
+    }
     if (lane == 0) {
-        long long span = (long long)mx - mn + 1;
         rb[0] = mn;        // 桶 0 左端收紧到 min(乘积不可能 < mn)
         rb[K] = mx + 1;    // 末桶右端 = max+1(覆盖 max;乘积不可能 > max)
         for (int j = 1; j < K; j++) rb[j] = mn + (int)(j * span / K);
@@ -944,6 +979,8 @@ static void merge3_product(
     if (g_dyn < 0) { const char *e = getenv("MRG3_DYN_BND"); g_dyn = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }
     long long dyn_min = (long long)MRG3_DYN_MIN_BYTES;   // 动态分桶下限
     if (const char *e = getenv("MRG3_DYN_MIN")) dyn_min = atoll(e);
+    static int g_bound = -1;   // 边界模式:2=span 均分(v2 默认)/3=flop 近似均分(v3)
+    if (g_bound < 0) { const char *e = getenv("MRG3_BOUND"); g_bound = (e && *e) ? atoi(e) : 2; }
     int *d_bnd = nullptr;
     int *d_max_span = nullptr;   // docs/66 §7:bnd 顺带 atomicMax 行 span → host 精确 dense 桶宽
     if (g_dyn && g_dspan) {
@@ -954,7 +991,7 @@ static void merge3_product(
         CHECK_CUDA(cudaMalloc(&d_bnd, (size_t)A_rows * (K + 1) * sizeof(int)));
         prof("bnd", [&]{
             bucket_bnd_kernel<<<A_rows, block32>>>(
-                dA_row_ptr, dA_col_idx, dB_row_ptr, dB_col_idx, A_rows, A_cols, K, dyn_min, d_bnd, d_max_span);
+                dA_row_ptr, dA_col_idx, dB_row_ptr, dB_col_idx, A_rows, A_cols, K, dyn_min, d_bnd, d_max_span, g_bound);
             CHECK_CUDA(cudaGetLastError());
         });
         // docs/66 §7:D2H 一个 int(~10μs)→ dcap 精确;只在可能 dense 时付这笔同步
