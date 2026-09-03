@@ -473,7 +473,177 @@ def fig_merge3():
     print("fig/paper_structure_merge3.{png,pdf} written")
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# 图 4/5:hash 与 merge 分支机制图(HSMU Fig.1 泳道语法:
+#   泳道 = 内存层级 registers/SMEM/L2·HBM,列 = 阶段,小样例格子,黑箭头数据流)
+# ════════════════════════════════════════════════════════════════════════════
+_LANES = [  # (y0, y1, fill, name)
+    (60.0, 84.5, "#F5F5F5", "L2 · HBM"),
+    (35.0, 57.5, "#E9F1F9", "shared memory"),
+    (10.5, 32.5, "#FBF5E6", "registers"),
+]
+_CHAIN_Y  = [78.0, 70.0, 62.0]
+_CHAINS   = [[1, 9], [0, 3, 8], [2, 6, 9]]
+_C_OUT    = [0, 1, 2, 3, 6, 8, 9]
+
+
+def _hcell(ax, cx, cy, txt, w=3.2, h=4.4, fc="#FFFFFF", ec="#555555", fs=6.0):
+    rbox(ax, cx - w / 2, cy - h / 2, w, h, [(str(txt), fs, C_TXT, "bold")],
+         fc=fc, ec=ec, lw=0.7, rounding=0.45)
+
+
+def _lane_canvas(ax):
+    for y0, y1, fc, name in _LANES:
+        ax.add_patch(FancyBboxPatch((6.5, y0), 91.5, y1 - y0,
+                     boxstyle="round,pad=0,rounding_size=0.8",
+                     fc=fc, ec="#CCCCCC", lw=0.6, zorder=1))
+        ax.text(4.4, (y0 + y1) / 2, name, fontsize=6.0, color="#777777",
+                ha="center", va="center", rotation=90, zorder=2)
+
+
+def _load_column(ax):
+    """load 阶段(两图完全平行):三条 k 链格子 + 阶段轴左列。"""
+    for cy, nums in zip(_CHAIN_Y, _CHAINS):
+        for j, v in enumerate(nums):
+            _hcell(ax, 18.0 + j * 3.6, cy, v, fc="#EFEFEF", ec="#8C8C8C")
+    label(ax, 9.0, _CHAIN_Y[1], "k-chains of row i\nA[k₀,:] A[k₁,:] A[k₂,:]", 5.6)
+
+
+def _phase_axis(ax, mid, right):
+    for x0, x1 in ((33.0, 35.2), (66.0, 68.2)):
+        arr(ax, x0, 88.5, x1, 88.5, lw=1.8, color="#444444")
+    label(ax, 20.0, 88.5, "load k-chains", 6.6, C_TXT, ha="center", weight="bold")
+    label(ax, 50.5, 88.5, mid, 6.6, C_TXT, ha="center", weight="bold")
+    label(ax, 82.5, 88.5, right, 6.6, C_TXT, ha="center", weight="bold")
+
+
+def _emit_column(ax, c_label):
+    """emit 阶段(两图完全平行):C[i,:] 行。"""
+    for j, v in enumerate(_C_OUT):
+        _hcell(ax, 70.0 + j * 4.0, 73.0, v, w=3.6, fc=C_GREN_F, ec=C_GREN_E)
+    label(ax, 70.0, 79.3, c_label, 6.0, "#3F5E35")
+
+
+def fig_hash_kernel():
+    fig, ax = new_canvas(7.16, 4.7)
+    label(ax, 6.5, 95.5, "hash branch — per-row open-addressing accumulate "
+          "(one bin of the SMEM ladder)", 7.4, C_TXT, weight="bold")
+    _lane_canvas(ax)
+    _phase_axis(ax, "hash accumulate", "extract & emit")
+    _load_column(ax)
+
+    # 链 → warp(Register 泳道)
+    for i, cy in enumerate(_CHAIN_Y):
+        arr(ax, 26.6, cy, 36.0, 24.0, lw=0.7, conn=f"arc3,rad={0.25 - i * 0.25}")
+    rbox(ax, 36, 14, 29, 16.5, [
+        ("warp · 32 lanes", 6.4, C_TXT, "bold"),
+        ("lane t_j owns cursor of chain k_j", 5.6, C_SUB, "normal"),
+        ("products  a_ik × B[k,:]  streamed", 5.6, C_SUB, "normal"),
+    ], fc="#FFFFFF", ec="#B08D3C", lw=0.9)
+
+    # 插入箭头 → SMEM 表
+    for x in (46.0, 50.0, 54.0):
+        arr(ax, x, 30.5, x, 42.6, lw=0.7)
+    label(ax, 56.5, 35.4, "insert (CAS probe)", 5.6)
+
+    # 开放寻址表(SMEM 泳道):一行 8 槽样例 + probe 冲突弧
+    slots = [0, 1, 9, 3, 2, 6, 8, "—"]
+    for j, v in enumerate(slots):
+        _hcell(ax, 38.0 + j * 3.35, 45.0, v, w=3.1,
+               fc="#FFFFFF" if v != "—" else "#F2F2F2",
+               ec="#5F87B5" if v != "—" else "#BBBBBB")
+    arr(ax, 41.9, 47.8, 45.0, 47.8, lw=0.7, color="#B0713A", ls="--",
+        conn="arc3,rad=-0.6")
+    label(ax, 43.4, 51.0, "probe", 5.4, "#B0713A", ha="center")
+    label(ax, 38.0, 53.8, "open-addressing table — 16 slots = 2 × 7 distinct", 5.6)
+    label(ax, 38.0, 39.4, "α = 0.5 ⇒ E[probes] = 1.5  ·  12 B/slot (key 4 + val 8)", 5.6)
+    label(ax, 38.0, 36.9, "pass 1: count (1-bit/col)   ·   pass 2: insert + add", 5.6)
+
+    # extract → 有序条 → C 行
+    arr(ax, 63.2, 45.0, 68.6, 45.0, lw=0.8)
+    for j, v in enumerate(_C_OUT):
+        _hcell(ax, 70.0 + j * 3.35, 45.0, v, w=3.0, fc="#C9DCEF", ec="#5F87B5")
+    label(ax, 70.0, 49.3, "numeric direct-write in table order → compact", 5.6)
+    arr(ax, 83.4, 42.8, 83.4, 71.0, lw=0.8)
+    _emit_column(ax, "C[i,:] — sorted after compact")
+
+    # 底注
+    rbox(ax, 6.5, 0.8, 91.5, 7.6, [
+        ("one kernel per ladder bin — table sized by row est (α = 0.5)", 6.2, C_TXT, "bold"),
+        ("SMEM ladder 32 → 16K slots · overflow → flop-sized retry · est > cap → global table", 5.6, C_SUB, "normal"),
+        ("cf. merge branch: register merge — no table, no sort", 5.6, C_SUB, "normal"),
+    ], fc="#FFFFFF", ec="#B9C4CE", lw=0.9)
+
+    fig.savefig("fig/paper_structure_hash.png", dpi=DPI)
+    fig.savefig("fig/paper_structure_hash.pdf")
+    plt.close(fig)
+    _pdf_meta("fig/paper_structure_hash.pdf",
+              "hash branch: per-row open-addressing accumulate "
+              "(warp lanes, SMEM ladder table, extract and emit)")
+    print("fig/paper_structure_hash.{png,pdf} written")
+
+
+def fig_merge_kernel():
+    fig, ax = new_canvas(7.16, 4.7)
+    label(ax, 6.5, 95.5, "merge branch — column-bucket warp merge "
+          "(K disjoint value ranges per row)", 7.4, C_TXT, weight="bold")
+    _lane_canvas(ax)
+    _phase_axis(ax, "bucket + merge", "concat & emit")
+    _load_column(ax)
+
+    # 链 → SMEM 桶边界
+    for i, cy in enumerate(_CHAIN_Y):
+        arr(ax, 26.6, cy, 37.5, 45.0 + (1 - i) * 2.0, lw=0.7,
+            conn=f"arc3,rad={0.2 - i * 0.2}")
+    for j, v in enumerate([0, 3, 7, 10]):
+        _hcell(ax, 38.0 + j * 3.6, 45.0, v, w=3.2, fc="#FFFFFF", ec="#7AA36B")
+    label(ax, 38.0, 53.8, "bucket bounds = row span [min col, max col] ÷ K", 5.6)
+    label(ax, 38.0, 39.4, "count pass: 1 B flag / column within bucket", 5.6)
+    label(ax, 38.0, 36.9, "bounds tight to product span (load-balanced)", 5.6)
+
+    # 边界 → Register 泳道:warp 归并 + 桶序条
+    arr(ax, 49.0, 42.8, 49.0, 32.0, lw=0.7)
+    rbox(ax, 36, 16.5, 29, 15.5, [
+        ("(row, bucket) = one warp", 6.4, C_TXT, "bold"),
+        ("shuffle-min selects smallest head", 5.6, C_SUB, "normal"),
+        ("shuffle-add sums duplicates (9 + 9 → 9)", 5.6, C_SUB, "normal"),
+    ], fc="#FFFFFF", ec="#7AA36B", lw=0.9)
+    # 桶序条:三组桶内有序短条
+    for x, v in zip([38.0, 40.6, 43.2], [0, 1, 2]):
+        _hcell(ax, x, 13.0, v, w=2.4, h=3.6, fc=C_GREN_F, ec=C_GREN_E, fs=5.4)
+    for x, v in zip([48.0, 50.8], [3, 6]):
+        _hcell(ax, x, 13.0, v, w=2.4, h=3.6, fc=C_GREN_F, ec=C_GREN_E, fs=5.4)
+    for x, v in zip([56.0, 58.8], [8, 9]):
+        _hcell(ax, x, 13.0, v, w=2.4, h=3.6, fc=C_GREN_F, ec=C_GREN_E, fs=5.4)
+
+    # concatenate 框 → C 行
+    rbox(ax, 68, 14, 28, 8.0, [
+        ("concatenate", 6.4, C_TXT, "bold"),
+        ("(offsets = in-row scan)", 5.6, C_SUB, "normal"),
+    ], fc="#FFFFFF", ec="#7AA36B", lw=0.9)
+    arr(ax, 60.2, 13.0, 68.0, 17.0, lw=0.7, conn="arc3,rad=-0.2")
+    arr(ax, 82.0, 22.0, 82.0, 71.0, lw=0.8)
+    _emit_column(ax, "C[i,:] — concatenated sorted")
+
+    # 底注
+    rbox(ax, 6.5, 0.8, 91.5, 7.6, [
+        ("disjoint value ranges ⇒ concatenation is already sorted", 6.2, C_TXT, "bold"),
+        ("(row, bucket) = one warp · duplicate columns shuffle-added · no table, no sort", 5.6, C_SUB, "normal"),
+        ("cf. hash branch: SMEM / global open-addressing tables", 5.6, C_SUB, "normal"),
+    ], fc="#FFFFFF", ec="#B9C4CE", lw=0.9)
+
+    fig.savefig("fig/paper_structure_merge.png", dpi=DPI)
+    fig.savefig("fig/paper_structure_merge.pdf")
+    plt.close(fig)
+    _pdf_meta("fig/paper_structure_merge.pdf",
+              "merge branch: column-bucket warp merge "
+              "(disjoint value ranges, shuffle merge, concatenation)")
+    print("fig/paper_structure_merge.{png,pdf} written")
+
+
 if __name__ == "__main__":
     fig_overview()
     fig_routing()
     fig_merge3()
+    fig_hash_kernel()
+    fig_merge_kernel()
