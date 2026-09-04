@@ -3570,6 +3570,17 @@ static void hash_product(
             h_tier_end[t] = off;
         }
         h_big_off = off;
+        // §28 矩阵级 DSTRUCT 判据:档内行中位 est/span < 1/2 → 全人口走老内核(窗口机制在
+        // 中位半空 = 不可摊销;Zd 0.40/c-43 0.34 → old,in-2004 0.59 → struct;矩阵级 ≠ §25
+        // 逐行驱逐,行全留 diter 只选内核族,Zd 四除后的末刀)
+        if (off > 0) {
+            std::vector<double> dens;
+            for (int k = 0; k < off; k++) if (h_sp[idx[k]] > 0) dens.push_back((double)h_est[idx[k]] / h_sp[idx[k]]);
+            std::sort(dens.begin(), dens.end());
+            double med = dens[dens.size() / 2];
+            if (med < 0.5) { h_big_off = 0; h_tier_end[0] = h_tier_end[1] = h_tier_end[2] = h_tier_end[3] = h_tier_end[4] = h_tier_end[5] = 0; }
+            dbg("[%s] §28 矩阵级判据:档内中位密度 %.2f → %s\n", tag, med, med < 0.5 ? "老内核" : "结构内核");
+        }
         h_tier_hmax = 0;                       // 档内段最大 span(档内非 span 序,取段内 max)
         for (int k = 0; k < off; k++) h_tier_hmax = h_tier_hmax > h_sp[idx[k]] ? h_tier_hmax : h_sp[idx[k]];
         {   // §26 per-tier 窗宽自适应:窗 = 该档段内【实际】最大 span(非档上限)—— 段内每行
