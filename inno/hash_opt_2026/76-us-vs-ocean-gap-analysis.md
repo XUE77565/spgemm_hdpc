@@ -155,3 +155,13 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
 - 我们:radix 内核 `Sort(col,val,0,32)` 全 32 位(NOCSF 实测 61.9ms 反劣:radix+额外 copy);fused 计数 26ms 已是两者较优
 - **可动刀口**:csort_radix 压缩位版(Sort(col,val,0,log2(A_cols)) 或 bin 级 IDX_BITS)—— 与 valid_bits
   参数同源,估计 bin6/7 15.3+9.8 → 5-8ms(直逼 Ocean);工程小,净赢 8-12ms/pre2 族
+
+## 十五、csort 位压缩/IPT 两连试(09-04)——未能复现 Ocean 2.5ms,存档收线
+
+- 位压缩(Sort 0..20 位):61.9→61.2ms 无感;bin6-7 换 512×8 小 IPT:61.7ms 无感
+  ⇒ 我们 radix 路径的瓶颈不在 pass 数/寄存器配置,计数 fused(26ms)仍是我们最优
+- **重新对账 pre2 全账**:Ocean numeric.hash 5.7 + epilogue.sort 2.5 = 8.2ms,而我们 accumulate
+  13.8 + compact 26 = 39.8ms —— **他们的 accumulate 也比我们快 2.4×**,不止 epilogue!
+  ⇒ 剩余差距不在"换排序器"层,在其 numeric 内核产出布局(疑似直写 CSR + 行内近序)——
+  需 ncu 对拍两内核的指令/访存画像才能定位,列入下 session 首项
+- 本轮结论:fused 计数排序保持默认;radix 位压缩代码保留(valid_bits 参数化,中性)
