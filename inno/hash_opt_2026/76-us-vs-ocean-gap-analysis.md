@@ -165,3 +165,27 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
   ⇒ 剩余差距不在"换排序器"层,在其 numeric 内核产出布局(疑似直写 CSR + 行内近序)——
   需 ncu 对拍两内核的指令/访存画像才能定位,列入下 session 首项
 - 本轮结论:fused 计数排序保持默认;radix 位压缩代码保留(valid_bits 参数化,中性)
+
+## 十六、ncu/nsys 双画像终稿(09-04,#26)——机制地图定案
+
+**Ocean pre2 每轮(≈14ms)内核分解**:
+| 内核 | ms | 含义 |
+|---|---|---|
+| **denseNumericKernel<8>** | **4.2** | **pre2 大块行量走 DENSE!** |
+| hashNumeric<8,1327> | 3.4 | hash 只收剩余(压缩表 1327 槽) |
+| sortOutputFused<16,192,**20 位**> | 1.7 | IDX_BITS=20 压缩 radix |
+| hashNumeric<9,2719>/<6,331> | 1.2+1.0 | 两个更小 hash 档 |
+| sortOutputFused<16,96,21 位> | 0.78 | |
+| dense/hash Symbolic ×3 | 1.6 | |
+
+**我们 pre2**:hash_spa 全收(accumulate 13.8)+ csort_fused(26)。
+
+**三个机制结论**:
+1. **pre2 的行量被 Ocean 分给 dense(4.2ms 免排序!),hash 只收边角** —— 我们全喂 hash(bin6/7
+   24 万行,est 1-4K)。**新杠杆 = dense 窗路线扩到 est 1024-2048 行**(现 diter 门 est≥2048 挡住
+   bin6;diter 的 span/dup 门它多半已过)
+2. sortOutputFused 确证 20-21 位压缩 radix(§14 推断落实)
+3. Ocean numeric.hash 快的部分原因是**它收的行少**(dense 分流),非内核本身神速 ——
+   §15 "accumulate 2.4×" 的归因修正:分流 + 每行成本共同作用
+**下一步(实锤刀口)**:diter 门 est 下限 2048→1024(或 Ocean 式 dense_bin 梯),
+电池 pre2/c-64/Ga 守卫族。
