@@ -3519,6 +3519,7 @@ static void hash_product(
     int h_tier_end[DENSE_TIER_COUNT] = {0};                // 每档【终点】(前缀差分)
     int h_big_off = 0;                                     // 超档段起点 = 老内核人群
     int h_tier_hmax = 0;                                   // 档内段最大 span(结构 count 窗)
+    int h_tier_w[DENSE_TIER_COUNT] = {0};                  // §26:每档段内实际最大 span(per-tier 窗宽自适应)
     auto dstr_split = [&]() {                              // §22d 分流体(dense_rows 就绪后调用)
         // 单次 D2H(融合 span+行号+est 三元组)+ 异步 H2D:同步点 3→1(nsys 定谳:prof 内同步
         // memcpy = 流水线停顿,in-2004 每迭代 ~1.5ms 空泡)
@@ -3555,6 +3556,17 @@ static void hash_product(
         h_big_off = off;
         h_tier_hmax = 0;                       // 档内段最大 span(档内非 span 序,取段内 max)
         for (int k = 0; k < off; k++) h_tier_hmax = h_tier_hmax > h_sp[idx[k]] ? h_tier_hmax : h_sp[idx[k]];
+        {   // §26 per-tier 窗宽自适应:窗 = 该档段内【实际】最大 span(非档上限)—— 段内每行
+            //   span ≤ 窗由构造保证;tier-5 固定 131KB 窗把刚过 7277 的行压到 1 block/SM,
+            //   按实际 hmax 缩窗(c-43 hmax 11125 → 100KB → 2/SM)。
+            int b = 0;
+            for (int t = 0; t < DENSE_TIER_COUNT; t++) {
+                int e = h_tier_end[t], w = 0;
+                for (int k = b; k < e; k++) w = w > h_sp[idx[k]] ? w : h_sp[idx[k]];
+                h_tier_w[t] = w;               // 0 = 空档
+                b = e;
+            }
+        }
         d_rows_sorted = decltype(d_rows_sorted)(dev_alloc((size_t)dense_nr * sizeof(int)));
         std::vector<int> h_rows(dense_nr);
         for (int k = 0; k < dense_nr; k++) h_rows[k] = h_dense[idx[k]];
@@ -4352,7 +4364,10 @@ static void hash_product(
                 for (int t = 0; t < DENSE_TIER_COUNT; t++) {
                     int nr_t = tier_end_p[t] - off;
                     if (nr_t > 0) {
-                        const int uwin = dense_tier_max(t);
+                        // §26:只缩【最大档】窗(tier-5 固定 131KB 把刚过 7277 的行压到 1 block/SM);
+                        // 低档不动 —— wb-edu 实测全档缩窗 +4%(占用↑ → 行工作集并发↑ → L2 局部性
+                        // 反损,与 §24 排序毁局部性同族),tier-5 缩窗只升不降(≥2/SM)
+                        const int uwin = (t == DENSE_TIER_COUNT - 1 && h_tier_w[t] > 0) ? h_tier_w[t] : dense_tier_max(t);
                         const int tblk = dense_tier_block(t);
                         size_t nsm = (size_t)uwin * sizeof(double) + (size_t)((uwin + 31) >> 5) * sizeof(unsigned) * 2 + 64;
                         CHECK_CUDA(cudaFuncSetAttribute(
