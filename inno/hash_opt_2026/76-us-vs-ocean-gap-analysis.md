@@ -135,3 +135,13 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
 - **结论**:c-64/Ga(diter)与 TSOPF(hash)的边界不在任何已测单行特征(est/dup/span·n 组合均反例),
   疑似矩阵级行分布形态(同 e=4096 的行在 c-64/Ga 要窗、在 TSOPF 要表)→ 需矩阵级判据或
   per-row 采样成本比较(如 OC 采样式);TSOPF −34% 收益锁在抽屉,待判据
+
+## 十三、compact 相位分解终稿(09-04,#24 前置完成)
+
+- pre2 compact 26.0ms = bin6 csort_fused **15.3ms** + bin7 **9.8ms** + 小桶 0.7 + retry 段 ~0.2
+  (首轮插桩误落 accumulate 循环,13.3≈accumulate 13.84 自洽后才定位)
+- **SEGRTS wash 悖论解开**:bin6 ≈ 3.5 亿项,cub 分段排序需 gather+sort+scatter 三过数据 ≈ csort 同价;
+  Ocean epilogue.sort 仅 2.5ms(323M nnz)是【表内槽序提取 + 全库单趟 radix】设计 —— 不是换排序器
+  能追的,是要让 accumulate 的提取天然按序(其 hash 表布局使桶序=列序的邻接)
+- **#24 正确形态修正**:不是"换排序器",是 Ocean 式"表布局→提取序"改造(hash 梯桶内 key 存储按
+  探测序?或 table 分 slot-band 使提取近似列序 + 单趟全库 radix 收尾)—— 工程量大,单列 v32+ 议题
