@@ -212,3 +212,14 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
   我们的行分布打回(c-64 窄 span 争用就是证据)。= 多日级版本工程,非电池可调
 - **session 收官账**:v28 1.388→v30 1.3686(五件套)→v31/v32 噪声带;ESC/SEGRTS/diter×3/
   csort×2/DSTRUCT 六役全电池定谳;docs/76 十八节 = 追平 Ocean 的完整作战地图
+
+## 二十、单窗帽第四试 + 最终解剖(09-04)
+
+- 单窗帽(win=917K 列)后 c-64 仍 +43% ⇒ 病因非多窗重扫,是 **atomicOr 争用本身**
+  (行乘积 1-3 万次打 ~1568 位图字);且 win 帽太宽(917K)形同虚设
+- **pre2 wash 的真因解剖**:我们 pre2 的 diter 行只有 2 行!DSTRUCT 只换了 2 行的 count 内核,
+  大队人马(est 1-4K 的 38 万行)全在 hash 桶 —— **缺的是路由,不是 count 内核**
+- Ocean 侧:pre2 大队走 denseNumeric<8>(4.2ms,nsys 实证)。我们的 diter 窗(21B/列多窗)
+  §17 实测无赢 ⇒ **唯一没试过的组合 = 方案5 管线(count→cnnz→直写)里把 21B 窗内核换成
+  Phase 1b 的 8.25B/列 dense_struct_numeric(已存在),路由 est 1-4K ∧ span 单窗行进方案5**
+  —— 这就是"五件咬合"在我们代码里的精确落点,下 session 一步可建
