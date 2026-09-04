@@ -233,3 +233,30 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
   **c-64 +95% 残余** = est1-4K ∧ span≤7277 ∧ dup~2.6 行仍输 hash
 - **收口方向(下 session 第一件事)**:档位梯加 **dup 维**(Ocean 分箱 span+乘积双维,我们缺 dup);
   修好 → in-2004 配方翻默认 → v33 全刷
+
+## §23 §22b:+95% 残余的真根因 = 档位梯【驱逐】了老赢家(09-04 定谳)
+
+§22 尾的"c-64 est1-4K∧span≤7277∧dup~2.6 行仍输 hash"是**误诊**。DUMP_ROUTING 仪表
+(路由后落盘 est/span/flop/bkid;scripts/routing_gate_check.py)还原真相:
+
+- c-64 默认 env(WIN=0):**19442 行走 diter**(est 4K-16K 中位 16K ∧ span≈50.3K(≈n_cols 全幅)
+  ∧ dup 2-8),由老窗口 cursor 内核服务(dense_direct 12.7ms,accumulate 仅 0.45ms)→ compute≈20ms
+- c-64 配方 env(WIN=-1):`span≤7277` 门把这 19442 行**全部驱逐回 hash 梯**
+  (diter bin=0!)→ accumulate 0.45→13.8ms → **+95% 全部来自驱逐**,一行 dense 都没跑
+- in-2004 配方:20498 行(est 中位 2860 ∧ span 中位 4851 ∧ **dup 中位 1**)全落档内 → 档位梯数值赢
+
+**修复 = 数值侧分流(路由不驱逐)**:
+span ≤ DENSE_TIER_SPAN_MAX → dense_struct_numeric **per-tier 发射**(每档独立窗/块宽/占用;
+取代 §22"全局 hmax 定档"——一行大 span 不再拖累全体行);span > 最大档 → 老窗口 cursor 内核
+(多窗数据驱动,这些行的既有赢家)。c-64 dump 档位分布 = 全员超档 → 100% 回老内核 = 恢复默认行态。
+
+**Ocean 双维判据正身**(Analysis.cuh L248-264 读码):不是"span+dup",是
+`dense_bin_id ≤ bin_id` —— **span 落 SMEM 预算梯的档位 vs est(ht) 落同一梯的档位比较**
+(= 连续形式 span×8.125B ≤ ht×12B,恰 SROUTE 字节比较的同源;平局 dense 先 = 免探测)。
+我们的 v4 门是一边倒 est≥1024,缺这个比较。已结构化移植(hash_tier_max_slots/dense_tier_of/
+hash_tier_of,DTIER_CMP=1 门);in-2004 校准:95.3% 通过,拦下 4.7% = est=1024∧span~5.9K
+(表便宜/窗贵,Ocean 形态)。Ocean 对 c-64 类 16K-est 全幅行用它们的 largest-hashmap 全局混合内核,
+我们用老窗口内核 —— 各自经济学独立成立,不照搬。
+
+**教训(方法论第 N 次)**:"+95% 残余"先入为主解释成"偷运行输给 hash",没先查路由量
+(diter bin=0 一行 dbg 就能看见)。异常归因前先看人口分布,不看人口一切归因都是猜。

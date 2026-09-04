@@ -335,3 +335,25 @@ SP_HD constexpr int dense_tier_block(int i) { // 档块宽 = 2048 线程 ÷ 并�
     return 2048 / dense_tier_occ(i) < 64 ? 64 : 2048 / dense_tier_occ(i);
 }
 constexpr int DENSE_TIER_SPAN_MAX = dense_tier_max(DENSE_TIER_COUNT - 1); // 7277 = 进 dense 的 span 上限
+
+// ── §22b Ocean 双维档位比较(Analysis.cuh L248-264 移植;09-04 dump 校准)─────────
+// Ocean 的 dense 分流不是单边门,是同一 SMEM 预算梯上的【档位比较】:
+//   dense 赢 ⟺ dense_tier_of(span) ≤ hash_tier_of(ht)
+//   即"我的窗口在并发梯上的档 ≤ 我的 hash 表在并发梯上的档"(同预算下 dense 不比 hash 贵;
+//   平局 dense 先 = 免探测)。连续形式 ≈ span×8.125B ≤ ht×12B(SROUTE 字节比较的同源)。
+// 校准(in-2004 20498 diter 行):95.3% 通过;拦下的 4.7% = est=1024 ∧ span~5.9K
+// (表便宜/窗贵)—— 正是 Ocean 送 hash 的形态。大 span(>最大档)行走老窗口内核,
+// 不适用单窗经济学,比较只作用于档内行(DTIER_CMP 门)。
+SP_HD constexpr int hash_tier_max_slots(int i) {  // 该档预算能容纳的最大表槽 = 预算梯 ÷ 12B/槽
+    return SMEM_MODEL_TOTAL / dense_tier_occ(i) / (HASH_BYTES_PER_SLOT_MILLI / 1000);  // = {341,682,1365,2730,5461}
+}
+SP_HD constexpr int dense_tier_of(long long span) { // span 落档;超最大档 = COUNT(不可单窗 dense)
+    return (span <= dense_tier_max(0)) ? 0 : (span <= dense_tier_max(1)) ? 1
+         : (span <= dense_tier_max(2)) ? 2 : (span <= dense_tier_max(3)) ? 3
+         : (span <= dense_tier_max(4)) ? 4 : DENSE_TIER_COUNT;
+}
+SP_HD constexpr int hash_tier_of(long long ht) {    // 表槽落档;超最大档 = COUNT(hash 最贵档,heavy/换出)
+    return (ht <= hash_tier_max_slots(0)) ? 0 : (ht <= hash_tier_max_slots(1)) ? 1
+         : (ht <= hash_tier_max_slots(2)) ? 2 : (ht <= hash_tier_max_slots(3)) ? 3
+         : (ht <= hash_tier_max_slots(4)) ? 4 : DENSE_TIER_COUNT;
+}

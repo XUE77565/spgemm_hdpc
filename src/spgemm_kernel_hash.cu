@@ -2291,8 +2291,11 @@ __global__ void compute_bucket_kernel(
     int diter_est_min = EST_DENSE_MIN / 2,  // docs/76 §16:diter est 下限(默认半默认档;Ocean dense 分流)
     int dstruct_win = 0,  // §21:span ≤ 此窗才进 diter;-1 = §22 档位梯(span ≤ DENSE_TIER_SPAN_MAX);
                           //      0 = 不限(旧行为);>0 = 手调单窗(实验兼容)
-    int dim2_on = 0)      // DIM2 独立门(n_cols 传参只为 largest 的 span 护栏;误点亮 dim2 曾把
+    int dim2_on = 0,     // DIM2 独立门(n_cols 传参只为 largest 的 span 护栏;误点亮 dim2 曾把
                           // bcsstk30 642 行送 BIN_DITER → +24.8%,2026-09-03 惊吓扫实证)
+    int dtier_cmp = 0)   // §22b Ocean 双维档位比较(DTIER_CMP=1 且 DSTRUCT_WIN=-1 时生效):
+                          //   档内行(span≤最大档)要求 dense 档 ≤ hash 档(窗口 vs 表,同一 SMEM
+                          //   预算梯);大 span 行走老窗口内核,比较不适用。in-2004 校准通过率 95.3%
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= A_rows) return;
@@ -2362,6 +2365,10 @@ __global__ void compute_bucket_kernel(
     //             flop≥16384 ∧ <64est ⟺ B_cont<24B×est/(flop−est) 的重行域(docs/37 实证)
     const long long fl64 = (long long)flop[i];
     const bool dup_ok = (fl64 < DUP_LIGHT * e) || (fl64 >= HASH_CAP && fl64 < DUP_HEAVY * e);  // 争用 vs compact 推导
+    // §22b Ocean 双维档位比较:档内行要求 dense 档 ≤ hash 档(ht = 本行梯子表槽,顶部已算);
+    // 大 span(>最大档)行将走老窗口 cursor 内核(多窗经济学),不适用单窗比较
+    const bool tier_cmp_ok = !dtier_cmp || dstruct_win >= 0 || sl0 > DENSE_TIER_SPAN_MAX
+        || dense_tier_of((long long)sl0) <= hash_tier_of((long long)ht);
     // ↑ dup<8:争用字节≈0(G-group 摊薄);dup<64∧flop≥16384:重行域的争用可容忍(docs/37)
     // docs/67 §6 自制双梯(LADDER=1):diter 候选行按两侧【实测成本律】裁决,取代手调门的方向。
     //   t_dense ≈ 30109·⌈span/5400⌉ + 2.55·flop       (120k 行 × 7 阵,R²=0.896)
@@ -2406,11 +2413,15 @@ __global__ void compute_bucket_kernel(
     // v4 拟合门(默认路径;常数附 docs/72 结构推导注释 4194b45)
     else if (diter_thr > 0 && dup_ok &&
              ((flop[i] >= diter_thr && e >= diter_est_min &&        // 表字节门(docs/72;参数化,host 默认 = 半默认档)
-               (dstruct_win == 0 || (dstruct_win < 0 ? sl0 <= DENSE_TIER_SPAN_MAX
-                                                    : sl0 <= dstruct_win)) &&   // §21-22 span 门(档位梯/单窗)
+               (dstruct_win <= 0 || sl0 <= dstruct_win) &&   // §21 span 门:>0 手调单窗;0/-1 不限
+                                                          // §22b(09-04 定谳):-1 = 档位梯【数值侧】分流
+                                                          // (≤最大档 → 档位梯数值;>最大档 → 老窗口 cursor 内核),
+                                                          // 路由不再驱逐 —— c-64 19442 行 span 7K-50K 被 §22
+                                                          // 驱逐回 hash → +95% 回归(老内核本就是它们的赢家)
                (long long)span_factor * flop[i] >= (long long)span_len[i])
               || (dim2 && flop[i] >= EST_DENSE_MIN && e <= HASH_CAP))
              && (!occgate || (long long)SPANF_COEFF * e >= (long long)sl0)  // OCCGATE:est×16 ≥ span(同 spanf 门系数)
+             && tier_cmp_ok
              && ladder_dense_ok) bid = BIN_DITER;
     else if (e > HASH_CAP) bid = BIN_HEAVY;          // heavy:全局表(2026-08-25,不再回退 merge)
     else {
@@ -3338,6 +3349,8 @@ static void hash_product(
         if (g_diter < 0) { const char *e = getenv("DITER_MIN_FLOP"); g_diter = (e && *e) ? atoi(e) : EST_DENSE_MIN; }
         static int g_dim2 = -1;
         if (g_dim2 < 0) { const char *e = getenv("DIM2"); g_dim2 = (e && *e) ? atoi(e) : 0; }   // docs/61:双维路由基建(默认关 —— c-big straggler 实测挂 v4 span 门 19491/19578,路由无解需窗口内核经济学升级)
+        static int g_dtier_cmp = -1;   // §22b Ocean 双维档位比较(默认关;电池 in-2004 95.3% 通过率校准)
+        if (g_dtier_cmp < 0) { const char *e = getenv("DTIER_CMP"); g_dtier_cmp = (e && *e) ? atoi(e) : 0; }
         static int g_spanf = -1;
         if (g_spanf < 0) { const char *e = getenv("SPANF"); g_spanf = (e && *e) ? atoi(e) : 16; }   // docs/62:重行 span 门系数(默认 16 = v4;净窗实验 4)
         static int g_occgate = -1;   // docs/67 占用轴:est≥span/16(Ga 族 3.6% 占用 O(span) 窗税实锤,
@@ -3354,7 +3367,7 @@ static void hash_product(
         if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 1; }
         // SROUTE 用的 hash 表槽 = 半 SM 预算÷12B(结构推导,与 est 无关的物理上界;行内再按 est 选小表)
         const int ht_sroute = g_sroute > 0 ? hash_slots_pow2(SMEM_BUDGET_2BLK()) : 0;
-        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dstruct_win, g_dim2);
+        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dstruct_win, g_dim2, g_dtier_cmp);
         if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
@@ -3375,6 +3388,30 @@ static void hash_product(
             d_tflop = nullptr; d_avg_gate = nullptr;
         }
         if (est_projected >= 0) total_est = est_projected;   // MHSAMP:d_est=min(flop,n) 的 scan 非 Σest 真值 → 投影覆写(dup 路由保持诚实)
+        // DUMP_ROUTING=<path>:路由决策数据落盘(est/span/flop/bkid 四数组;docs/76 §22 收口的
+        // 校准数据源 —— 档位梯双维门[span 档 vs est 档]的赢家/输家分离度验证,只跑一次)
+        if (const char *dp = getenv("DUMP_ROUTING")) {
+            static bool dumped = false;
+            if (!dumped) {
+                dumped = true;
+                FILE *df = fopen(dp, "wb");
+                if (df) {
+                    int hdr[2] = {A_rows, BIN_DITER};
+                    fwrite(hdr, sizeof(int), 2, df);
+                    auto dump_arr = [&](const char *src_name, int *d_src) {
+                        std::vector<int> tmp(A_rows);
+                        CHECK_CUDA(cudaMemcpy(tmp.data(), d_src, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToHost));
+                        fwrite(tmp.data(), sizeof(int), A_rows, df);
+                    };
+                    dump_arr("est", d_est);
+                    dump_arr("span", d_span_len);
+                    dump_arr("flop", d_flop);
+                    dump_arr("bkid", d_bkid);
+                    fclose(df);
+                    dbg("[%s] DUMP_ROUTING → %s (%d 行)\n", tag, dp, A_rows);
+                }
+            }
+        }
         dbg("[%s] diter bin=%d 行 / %d\n", tag, h_cnt[BIN_DITER], A_rows);   // TEMP:docs/24 路由观测
         if (getenv("BINS_DBG")) {   // 每 bin 行数分布(小行族定位:docs/13 v2/road 家族)
             for (int bi = 0; bi < N_BINS; bi++)
@@ -4158,84 +4195,117 @@ static void hash_product(
     int *d_smap = nullptr, *d_smap_off = nullptr;
     if (dense_nr > 0) {
         prof("dense_direct", [&]{
-            // 全局 cursor 区:每 dense 行 a_len 个 int,偏移 = alen 按行散射后的 inclusive scan(Σ ≤ nnz)
-            int *d_alen = decltype(d_alen)(dev_alloc((size_t)dense_nr * sizeof(int)));
-            d_smap_off = decltype(d_smap_off)(dev_alloc((A_rows + 1) * sizeof(int)));
-            alen_gather_kernel<<<(dense_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(dense_rows, dense_nr, dA_rp, d_alen);
-            CHECK_CUDA(cudaMemset(d_smap_off, 0, (size_t)(A_rows + 1) * sizeof(int)));
-            scatter_alen_kernel<<<(dense_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(dense_rows, dense_nr, d_alen, d_smap_off);
-            // ⚠ exclusive(偏移语义)+ 无槽位移位:off[i] = Σ_{r<i} alen[r];off[A_rows] = 总量。
-            //   (首版 inclusive+1 槽双错:行 chunk 右移互相覆盖 → 游标读到别行 B 位置 → j<0 →
-            //    SMEM 下越界 → "illegal instruction";docs/21 同款陷阱再现)
-            thrust::exclusive_scan(thrust::device_ptr<int>(d_smap_off),
-                                   thrust::device_ptr<int>(d_smap_off + A_rows + 1),
-                                   thrust::device_ptr<int>(d_smap_off));
-            int sm_tot;
-            CHECK_CUDA(cudaMemcpy(&sm_tot, d_smap_off + A_rows, sizeof(int), cudaMemcpyDeviceToHost));
-#ifdef DBG
-            {   // TEMP:offset 验证(首 dense 行 off 应=0;Σ 应=sm_tot)
-                int h0 = -1, h1 = -1, h2 = -1, r0 = -1, r1 = -1;
-                CHECK_CUDA(cudaMemcpy(&h0, d_smap_off, sizeof(int), cudaMemcpyDeviceToHost));
-                if (dense_rows) { CHECK_CUDA(cudaMemcpy(&r0, dense_rows, sizeof(int), cudaMemcpyDeviceToHost));
-                                 CHECK_CUDA(cudaMemcpy(&h1, d_smap_off + r0, sizeof(int), cudaMemcpyDeviceToHost)); }
-                CHECK_CUDA(cudaMemcpy(&h2, d_smap_off + 1, sizeof(int), cudaMemcpyDeviceToHost));
-                fprintf(stderr, "[pb2dbg] sm_tot=%d off[0]=%d first_dense_row=%d off[row0]=%d off[1]=%d\n",
-                        sm_tot, h0, r0, h1, h2);
-            }
-#endif
-            d_smap = decltype(d_smap)(dev_alloc((size_t)(sm_tot > 0 ? 2 * sm_tot : 1) * sizeof(int)));   // 2×:活动游标 + 本窗镜像
-            dev_free(d_alen);
-            size_t wsm = ((size_t)PB2_W * 9 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
-                       + 2 * (size_t)SMAP_SMEM_MAX * sizeof(int);
-            CHECK_CUDA(cudaFuncSetAttribute(hash_dense_direct_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)wsm));
-            static int g_pb2cur = -1;
-            if (g_pb2cur < 0) { const char *e = getenv("PB2_CURSOR"); g_pb2cur = (e && *e) ? atoi(e) : 1; }
-            // docs/66 §8 终审:dup≥4→search 门删除。三代证据:①逐行周期 cursor 六阵全胜 1.24-6.3×
-            // (mult_dcop/3Dspec2/brainpc2/TSOPF/c-58/c-64),无特征门可让 search 赢;②交替矩阵级
-            // cursor 5/6 不劣;③"Cube_Coup +263% 灾难"为幻影 —— 其 DD_ROWTIME 0 行,hash_dense_direct
-            // 对它零调用,uc 惰性(强制 cursor/search 两版 675-831ms 打平 = 同执行纯噪声)。
-            // docs/39 v4 与 docs/63 §6 的门均测于污染窗(web-Google 路由不变 ±70% 铁证)。
-            // PB2_CURSOR=0 仍可强制 search(实验用);2 = 兼容别名(恒 cursor)。
-            int uc = (g_pb2cur == 0) ? 0 : 1;
-            static int g_pb2avgb = -1;   // docs/66 §8 复审:avgB<64→search 门(docs/39 v3 遗产)
-            if (g_pb2avgb < 0) { const char *e = getenv("PB2_AVGB"); g_pb2avgb = (e && *e) ? atoi(e) : 0; }
-            // docs/72 Phase 1b:DSTRUCT=2 时 numeric 也走结构内核(位图字级前缀,无 warp0 串行)
+            // ---- §22b 分流决策(09-04 定谳;先于 cursor 机械:老内核只服务大 span 段)----
+            // docs/72 Phase 1b:DSTRUCT=2 时 numeric 走结构内核(位图字级前缀,无 warp0 串行)。
+            // dense 行按【自身 span】分两路:≤ DENSE_TIER_SPAN_MAX → dense_struct_numeric
+            // per-tier 发射(每档独立:窗=档宽,块宽=档块宽,占用=档并发;取代 §22"全局 hmax 定档"
+            // —— 一行大 span 拖累全体行);> 最大档 → 老窗口 cursor 内核(多窗数据驱动 —— 这些行的
+            // 既有赢家;路由不驱逐:c-64 19442 行 span 7K-50K 曾被 §22 门驱逐回 hash → +95% 回归)
             static int g_dstr2 = -1;
             if (g_dstr2 < 0) { const char *e = getenv("DSTRUCT"); g_dstr2 = (e && *e) ? atoi(e) : 0; }
-            if (g_dstr2 >= 2 && dense_rows) {
+            const bool dstr2_on = (g_dstr2 >= 2 && dense_rows);
+            int *d_rows_sorted = nullptr;          // span 升序行表(档位梯段在前,大 span 尾段在后)
+            int big_off = dense_nr;                // 大 span 段起点(=老内核人群)
+            int tier_end[DENSE_TIER_COUNT] = {0};  // 每档【终点】(前缀差分)
+            if (dstr2_on) {
                 int *d_sp = decltype(d_sp)(dev_alloc(dense_nr * sizeof(int)));
                 span_gather_kernel<<<(dense_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(dense_rows, dense_nr, d_span_len, d_sp);
-                int hmax_span2 = 0;
-                {   auto mx = thrust::max_element(thrust::device_ptr<int>(d_sp), thrust::device_ptr<int>(d_sp + dense_nr));
-                  CHECK_CUDA(cudaMemcpy(&hmax_span2, mx.get(), sizeof(int), cudaMemcpyDeviceToHost)); }
+                std::vector<int> h_sp(dense_nr);
+                CHECK_CUDA(cudaMemcpy(h_sp.data(), d_sp, (size_t)dense_nr * sizeof(int), cudaMemcpyDeviceToHost));
                 dev_free(d_sp);
-                // §22 档位梯:hmax_span 落哪档 → 窗宽 = 档上限(列),块宽 = 档块宽(占用联动);
-                // 超最大档(>7277)不该到这里(路由已挡),防御性回 1024 宽块
-                int tier = DENSE_TIER_COUNT - 1;
-                for (int t = 0; t < DENSE_TIER_COUNT; t++)
-                    if (hmax_span2 <= dense_tier_max(t)) { tier = t; break; }
-                const int uwin = dense_tier_max(tier);
-                const int tblk = dense_tier_block(tier);
-                size_t nsm = (size_t)uwin * sizeof(double) + (size_t)((uwin + 31) >> 5) * sizeof(unsigned) * 2 + 64;
-                CHECK_CUDA(cudaFuncSetAttribute(dense_struct_numeric_kernel<64>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)nsm));
-                CHECK_CUDA(cudaFuncSetAttribute(dense_struct_numeric_kernel<128>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)nsm));
-                CHECK_CUDA(cudaFuncSetAttribute(dense_struct_numeric_kernel<256>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)nsm));
-                CHECK_CUDA(cudaFuncSetAttribute(dense_struct_numeric_kernel<512>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)nsm));
-                CHECK_CUDA(cudaFuncSetAttribute(dense_struct_numeric_kernel<1024>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)nsm));
-                dbg("[%s] DSTRUCT-numeric 档位梯: max_span=%d → tier %d(窗 %d 块宽 %d)smem=%zuKB\n",
-                    tag, hmax_span2, tier, uwin, tblk, nsm / 1024);
-                if (tblk <= 64)      dense_struct_numeric_kernel<64><<<dense_nr, 64, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, dense_rows, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
-                else if (tblk <= 128) dense_struct_numeric_kernel<128><<<dense_nr, 128, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, dense_rows, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
-                else if (tblk <= 256) dense_struct_numeric_kernel<256><<<dense_nr, 256, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, dense_rows, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
-                else if (tblk <= 512) dense_struct_numeric_kernel<512><<<dense_nr, 512, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, dense_rows, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
-                else                  dense_struct_numeric_kernel<1024><<<dense_nr, 1024, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, dense_rows, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
+                std::vector<int> idx(dense_nr);
+                for (int k = 0; k < dense_nr; k++) idx[k] = k;
+                std::stable_sort(idx.begin(), idx.end(),
+                                 [&](int a, int b) { return h_sp[a] < h_sp[b]; });
+                int off = 0;
+                for (int t = 0; t < DENSE_TIER_COUNT; t++) {
+                    while (off < dense_nr && h_sp[idx[off]] <= dense_tier_max(t)) off++;
+                    tier_end[t] = off;
+                }
+                big_off = off;
+                d_rows_sorted = decltype(d_rows_sorted)(dev_alloc((size_t)dense_nr * sizeof(int)));
+                std::vector<int> h_dense(dense_nr);          // dense_rows 是设备指针 —— 先拷回主机再按 idx 重排
+                CHECK_CUDA(cudaMemcpy(h_dense.data(), dense_rows, (size_t)dense_nr * sizeof(int), cudaMemcpyDeviceToHost));
+                std::vector<int> h_rows(dense_nr);
+                for (int k = 0; k < dense_nr; k++) h_rows[k] = h_dense[idx[k]];
+                CHECK_CUDA(cudaMemcpy(d_rows_sorted, h_rows.data(), (size_t)dense_nr * sizeof(int), cudaMemcpyHostToDevice));
+                dbg("[%s] §22b 数值分流:档位梯 %d 行(每档 %d/%d/%d/%d/%d)+ 老窗口 %d 行\n",
+                    tag, big_off, tier_end[0], tier_end[1] - tier_end[0], tier_end[2] - tier_end[1],
+                    tier_end[3] - tier_end[2], tier_end[4] - tier_end[3], dense_nr - big_off);
+            }
+            const int *old_rows = dstr2_on ? (big_off < dense_nr ? d_rows_sorted + big_off : nullptr) : dense_rows;
+            const int  old_nr   = dstr2_on ? (dense_nr - big_off) : dense_nr;
+            // ---- 老 kernel 人群的 cursor 机械(全局 cursor 区:每行 a_len 个 int,偏移 = alen 按行
+            //      散射后的 inclusive scan;Σ ≤ nnz)----
+            int sm_tot = 0, uc = 1;
+            static int g_pb2avgb = -1;   // docs/66 §8 复审:avgB<64→search 门(docs/39 v3 遗产)
+            if (g_pb2avgb < 0) { const char *e = getenv("PB2_AVGB"); g_pb2avgb = (e && *e) ? atoi(e) : 0; }
+            if (old_nr > 0) {
+                int *d_alen = decltype(d_alen)(dev_alloc((size_t)old_nr * sizeof(int)));
+                d_smap_off = decltype(d_smap_off)(dev_alloc((A_rows + 1) * sizeof(int)));
+                alen_gather_kernel<<<(old_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(old_rows, old_nr, dA_rp, d_alen);
+                CHECK_CUDA(cudaMemset(d_smap_off, 0, (size_t)(A_rows + 1) * sizeof(int)));
+                scatter_alen_kernel<<<(old_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(old_rows, old_nr, d_alen, d_smap_off);
+                // ⚠ exclusive(偏移语义)+ 无槽位移位:off[i] = Σ_{r<i} alen[r];off[A_rows] = 总量。
+                //   (首版 inclusive+1 槽双错:行 chunk 右移互相覆盖 → 游标读到别行 B 位置 → j<0 →
+                //    SMEM 下越界 → "illegal instruction";docs/21 同款陷阱再现)
+                thrust::exclusive_scan(thrust::device_ptr<int>(d_smap_off),
+                                       thrust::device_ptr<int>(d_smap_off + A_rows + 1),
+                                       thrust::device_ptr<int>(d_smap_off));
+                CHECK_CUDA(cudaMemcpy(&sm_tot, d_smap_off + A_rows, sizeof(int), cudaMemcpyDeviceToHost));
+                d_smap = decltype(d_smap)(dev_alloc((size_t)(sm_tot > 0 ? 2 * sm_tot : 1) * sizeof(int)));   // 2×:活动游标 + 本窗镜像
+                dev_free(d_alen);
+                size_t wsm = ((size_t)PB2_W * 9 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
+                           + 2 * (size_t)SMAP_SMEM_MAX * sizeof(int);
+                CHECK_CUDA(cudaFuncSetAttribute(hash_dense_direct_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)wsm));
+                static int g_pb2cur = -1;
+                if (g_pb2cur < 0) { const char *e = getenv("PB2_CURSOR"); g_pb2cur = (e && *e) ? atoi(e) : 1; }
+                // docs/66 §8 终审:dup≥4→search 门删除。三代证据:①逐行周期 cursor 六阵全胜 1.24-6.3×
+                // (mult_dcop/3Dspec2/brainpc2/TSOPF/c-58/c-64),无特征门可让 search 赢;②交替矩阵级
+                // cursor 5/6 不劣;③"Cube_Coup +263% 灾难"为幻影 —— 其 DD_ROWTIME 0 行,hash_dense_direct
+                // 对它零调用,uc 惰性(强制 cursor/search 两版 675-831ms 打平 = 同执行纯噪声)。
+                // docs/39 v4 与 docs/63 §6 的门均测于污染窗(web-Google 路由不变 ±70% 铁证)。
+                // PB2_CURSOR=0 仍可强制 search(实验用);2 = 兼容别名(恒 cursor)。
+                uc = (g_pb2cur == 0) ? 0 : 1;
+            }
+            // ---- 档位梯 per-tier 发射(窗 = 档上限,块宽 = 档块宽;1:1 落 5 个显式实例)----
+            if (dstr2_on) {
+                int off = 0;
+                for (int t = 0; t < DENSE_TIER_COUNT; t++) {
+                    int nr_t = tier_end[t] - off;
+                    if (nr_t > 0) {
+                        const int uwin = dense_tier_max(t);
+                        const int tblk = dense_tier_block(t);
+                        size_t nsm = (size_t)uwin * sizeof(double) + (size_t)((uwin + 31) >> 5) * sizeof(unsigned) * 2 + 64;
+                        CHECK_CUDA(cudaFuncSetAttribute(
+                            (tblk <= 64) ? dense_struct_numeric_kernel<64>
+                            : (tblk <= 128) ? dense_struct_numeric_kernel<128>
+                            : (tblk <= 256) ? dense_struct_numeric_kernel<256>
+                            : (tblk <= 512) ? dense_struct_numeric_kernel<512>
+                                            : dense_struct_numeric_kernel<1024>,
+                            cudaFuncAttributeMaxDynamicSharedMemorySize, (int)nsm));
+                        if (tblk <= 64)        dense_struct_numeric_kernel<64><<<nr_t, 64, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
+                        else if (tblk <= 128) dense_struct_numeric_kernel<128><<<nr_t, 128, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
+                        else if (tblk <= 256) dense_struct_numeric_kernel<256><<<nr_t, 256, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
+                        else if (tblk <= 512) dense_struct_numeric_kernel<512><<<nr_t, 512, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
+                        else                   dense_struct_numeric_kernel<1024><<<nr_t, 1024, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
+                        dbg("[%s]   tier %d:%d 行(窗 %d 块宽 %d smem %zuKB)\n", tag, t, nr_t, uwin, tblk, nsm / 1024);
+                    }
+                    off = tier_end[t];
+                }
                 CHECK_CUDA(cudaGetLastError());
-            } else
-            hash_dense_direct_kernel<<<dense_nr, MAX_BLOCK_THREADS, wsm>>>(
-                dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, A_cols,
-                dC_rp, dC_ci, d_val, d_row_nnz, dense_rows, dense_rows ? d_span_lo : nullptr,
-                d_flop, d_maxbl, d_smap, d_smap_off, sm_tot, uc, d_ddrt, d_ddmode, g_pb2avgb);
-            CHECK_CUDA(cudaGetLastError());
+            }
+            // ---- 老窗口 cursor 内核(大 span 段;或 DSTRUCT<2 的全体 dense 行)----
+            if (old_nr > 0) {
+                size_t wsm = ((size_t)PB2_W * 9 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
+                           + 2 * (size_t)SMAP_SMEM_MAX * sizeof(int);
+                hash_dense_direct_kernel<<<old_nr, MAX_BLOCK_THREADS, wsm>>>(
+                    dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, A_cols,
+                    dC_rp, dC_ci, d_val, d_row_nnz, old_rows, old_rows ? d_span_lo : nullptr,
+                    d_flop, d_maxbl, d_smap, d_smap_off, sm_tot, uc, d_ddrt, d_ddmode, g_pb2avgb);
+                CHECK_CUDA(cudaGetLastError());
+            }
+            if (d_rows_sorted) dev_free(d_rows_sorted);
         });
         if (d_ddrt) {   // docs/66 §8:逐行周期 + 路径模式落盘(cursor/search 判据采数)
             std::vector<unsigned long long> h_rt(A_rows);
