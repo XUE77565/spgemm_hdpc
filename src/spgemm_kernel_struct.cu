@@ -87,6 +87,7 @@ __global__ void dense_struct_count_kernel(
 // + Phase 1b 的位图字级前缀(替 warp0 串行)。全部常数从 structural_params.cuh。
 // G 推导:blockDim×a_len 的负载均衡 — G ≈ 2^round(log2(avg_B×a_len/(blockDim×avg_B+a_len×avg_B)))
 // 简化:G = 2^clamp(floor(log2(avg_B)), 1, log2(blockDim))(与 local_load_balance 同语义,注释推导)
+template<int TPB>
 __global__ void dense_struct_numeric_kernel(
     const int *A_rp, const int *A_ci, const double *A_val,
     const int *B_rp, const int *B_ci, const double *B_val,
@@ -187,3 +188,10 @@ __global__ void dense_struct_numeric_kernel(
     }
     if (tid == 0) row_nnz[i] = out;
 }
+
+// §22 档位梯显式实例(跨编译单元模板链接所需;档宽 = dense_tier_block)
+template __global__ void dense_struct_numeric_kernel<64>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
+template __global__ void dense_struct_numeric_kernel<128>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
+template __global__ void dense_struct_numeric_kernel<256>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
+template __global__ void dense_struct_numeric_kernel<512>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
+template __global__ void dense_struct_numeric_kernel<1024>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);

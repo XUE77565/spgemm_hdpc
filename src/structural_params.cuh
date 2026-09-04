@@ -319,3 +319,19 @@ constexpr int ESC_SUBW8_MAX  = WARP_SIZE / 4;  // 8:flop≤8 → 8 线程子组(
 constexpr int ESC_SUBW16_MAX = WARP_SIZE / 2;  // 16:flop≤16(Ocean NUMERIC_USPARSE 同款档位)
 constexpr int ESC_DUP_MAX = 2;  // v4 门:counting O(flop·SUBW) vs 表 O(est+ht) 的盈亏平衡 dup≈2
                                  // (germany 1.4 赢/patents ≥2 输,分相实证;DUP_LIGHT 同族推导)
+
+// ── v33 Ocean 式 span 档位梯(docs/76 §21-22 用户钦定优先)──────────────────────
+// 档 i 上限 = (SMEM 模型 ÷ 并发梯[i]) ÷ (val 8B + flag 1B) − 4(Ocean Common.h 同公式);
+// 与 SMEM_MODEL_TOTAL/占用梯共用推导源。行按 span 落档:窗宽/块宽/驻块数随档联动,
+// span > 最大档 → hash(DENSE_NUMERIC_BIN_SIZES 哲学:塞进档还能保设计占用才进 dense)。
+constexpr int DENSE_TIER_COUNT = 5;
+SP_HD constexpr int dense_tier_occ(int i) {   // 并发梯(占用梯同源;constexpr 数组不可 device 索引故逐档)
+    return (i == 0) ? 32 : (i == 1) ? 16 : (i == 2) ? 8 : (i == 3) ? 4 : 2;
+}
+SP_HD constexpr int dense_tier_max(int i) {   // 档上限 = (SMEM 模型 ÷ 并发) ÷ (val 8 + flag 1) − 4(Ocean 同公式)
+    return SMEM_MODEL_TOTAL / dense_tier_occ(i) / (8 + 1) - 4;            // = {451,906,1816,3636,7277}
+}
+SP_HD constexpr int dense_tier_block(int i) { // 档块宽 = 2048 线程 ÷ 并发(占用单位;下限 64 = 合法块)
+    return 2048 / dense_tier_occ(i) < 64 ? 64 : 2048 / dense_tier_occ(i);
+}
+constexpr int DENSE_TIER_SPAN_MAX = dense_tier_max(DENSE_TIER_COUNT - 1); // 7277 = 进 dense 的 span 上限
