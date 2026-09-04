@@ -339,6 +339,14 @@ SP_HD constexpr int dense_tier_block(int i) { // 档块宽 = 2048 线程 ÷ 并�
 }
 constexpr int DENSE_TIER_SPAN_MAX = dense_tier_max(DENSE_TIER_COUNT - 1); // 14543 = 档内上限(超过 → 老内核)
 
+// ── §22d 档内路径的路由地板(翻默认值;结构推导)────────────────────────────
+// flop 地板 2048 = SMEM_DEFAULT_MAX/12/2:行 flop 达到半默认档(2×est×12B = 48KB 满档的一半)
+//   —— 表成本开始占据一个默认档时,dense 窗与表的比较才有意义(v33d 电池 §22 验证同值);
+// est 地板 1024 = SMEM_DEFAULT_MAX/12/4:表 ≥ 24KB = 四分之一默认档(§22 电池 DITER_EST_MIN 验证)。
+// 超档(老内核)路径不受此影响 —— 门内结构化钳制到 EST_DENSE_MIN / EST_DENSE_MIN/2(v28-v32 验证域)。
+constexpr int DITER_FLOP_TIER = SMEM_DEFAULT_MAX / 12 / 2;   // = 2048
+constexpr int DITER_EST_TIER  = SMEM_DEFAULT_MAX / 12 / 4;   // = 1024
+
 // ── §22b Ocean 双维档位比较(Analysis.cuh L248-264 移植;09-04 dump 校准)─────────
 // Ocean 的 dense 分流不是单边门,是同一 SMEM 预算梯上的【档位比较】:
 //   dense 赢 ⟺ dense_tier_of(span) ≤ hash_tier_of(ht)

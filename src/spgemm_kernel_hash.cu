@@ -984,6 +984,12 @@ __global__ void span_gather_kernel(const int *rows, int nr, const int *span_len,
     if (j < nr) out[j] = span_len[rows[j]];   // docs/70 BCNT:dense 行 span 收集
 }
 
+// §22d 分流体:span+行号 融合收集到 [nr, 2nr) 单缓冲(单次 D2H 取双数组,省 2 个同步点)
+__global__ void span_row_gather_kernel(const int *rows, int nr, const int *span_len, int *out2n) {
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j < nr) { out2n[j] = span_len[rows[j]]; out2n[nr + j] = rows[j]; }
+}
+
 // docs/70 §6②:合格行(span≤8×est ∧ ≤cap)的 span,否则 0 —— 供 host 定位图 SMEM 上限
 __global__ void elig_span_kernel(const int *rows, int nr, const int *est, const int *span_len,
                                  long long cap, int *out) {
@@ -3348,17 +3354,17 @@ static void hash_product(
     static int g_esc = -1;       // docs/76 v31-④:零表 counting-sort 短行
     if (g_esc < 0) { const char *e = getenv("ESC_K"); g_esc = (e && *e) ? atoi(e) : 1; }
     static int g_diter_est_min = -1;   // docs/76 §16:diter est 下限(默认 EST_DENSE_MIN/2;Ocean dense 分流启示)
-    if (g_diter_est_min < 0) { const char *e = getenv("DITER_EST_MIN"); g_diter_est_min = (e && *e) ? atoi(e) : EST_DENSE_MIN/2; }
+    if (g_diter_est_min < 0) { const char *e = getenv("DITER_EST_MIN"); g_diter_est_min = (e && *e) ? atoi(e) : DITER_EST_TIER; }   // v33d 翻默认:档内行结构档 1024(超档老路径在 kernel 内钳 2048)
     static int g_dstruct_win = -2;    // §22:-1 = 档位梯(span≤7277 五档联动);0 = 关;>0 = 手调单窗
-    if (g_dstruct_win == -2) { const char *e = getenv("DSTRUCT_WIN"); g_dstruct_win = (e && *e) ? atoi(e) : 0; }   // 电池 11/11 全绿翻默认
+    if (g_dstruct_win == -2) { const char *e = getenv("DSTRUCT_WIN"); g_dstruct_win = (e && *e) ? atoi(e) : -1; }   // v33d 翻默认:-1 = 档位梯分流(数值侧按 span 分两路,路由不驱逐)
     prof("binning", [&]{
         CHECK_CUDA(cudaMemset(d_cnt, 0, N_BINS * sizeof(int)));   // 先清零(fused kernel 内 atomicAdd 累加)
         static int g_diter = -1;   // dense-iter 重行阈值(DITER_MIN_FLOP,默认 4096;0=关)
-        if (g_diter < 0) { const char *e = getenv("DITER_MIN_FLOP"); g_diter = (e && *e) ? atoi(e) : EST_DENSE_MIN; }
+        if (g_diter < 0) { const char *e = getenv("DITER_MIN_FLOP"); g_diter = (e && *e) ? atoi(e) : DITER_FLOP_TIER; }   // v33d 翻默认:档内 2048(超档老路径 kernel 内钳 EST_DENSE_MIN)
         static int g_dim2 = -1;
         if (g_dim2 < 0) { const char *e = getenv("DIM2"); g_dim2 = (e && *e) ? atoi(e) : 0; }   // docs/61:双维路由基建(默认关 —— c-big straggler 实测挂 v4 span 门 19491/19578,路由无解需窗口内核经济学升级)
         static int g_dtier_cmp = -1;   // §22b Ocean 双维档位比较(默认关;电池 in-2004 95.3% 通过率校准)
-        if (g_dtier_cmp < 0) { const char *e = getenv("DTIER_CMP"); g_dtier_cmp = (e && *e) ? atoi(e) : 0; }
+        if (g_dtier_cmp < 0) { const char *e = getenv("DTIER_CMP"); g_dtier_cmp = (e && *e) ? atoi(e) : 1; }   // v33d 翻默认:Ocean 双维档位比较(只作用档内行)
         static int g_spanf = -1;
         if (g_spanf < 0) { const char *e = getenv("SPANF"); g_spanf = (e && *e) ? atoi(e) : 16; }   // docs/62:重行 span 门系数(默认 16 = v4;净窗实验 4)
         static int g_occgate = -1;   // docs/67 占用轴:est≥span/16(Ga 族 3.6% 占用 O(span) 窗税实锤,
@@ -3501,17 +3507,21 @@ static void hash_product(
     // span 排序分两段 —— 档内段(≤DENSE_TIER_SPAN_MAX)走档位梯;超档段走老窗口内核。
     // (count 侧同分:c-64 定谳 —— 50K 全幅行在位图结构 count 里多窗重扫乘积,1.8→8.8ms 主凶)
     static int g_dstr2 = -1;   // docs/72 Phase 1b:DSTRUCT=2 时 numeric 走结构内核(位图字级前缀)
-    if (g_dstr2 < 0) { const char *e = getenv("DSTRUCT"); g_dstr2 = (e && *e) ? atoi(e) : 0; }
+    if (g_dstr2 < 0) { const char *e = getenv("DSTRUCT"); g_dstr2 = (e && *e) ? atoi(e) : 2; }   // v33d 翻默认:结构数值 + 双侧分流
     int *d_rows_sorted = nullptr;                          // span 升序行表(档内段在前,超档尾段在后)
     int h_tier_end[DENSE_TIER_COUNT] = {0};                // 每档【终点】(前缀差分)
     int h_big_off = 0;                                     // 超档段起点 = 老内核人群
     int h_tier_hmax = 0;                                   // 档内段最大 span(结构 count 窗)
     auto dstr_split = [&]() {                              // §22d 分流体(dense_rows 就绪后调用)
-        int *d_sp = decltype(d_sp)(dev_alloc(dense_nr * sizeof(int)));
-        span_gather_kernel<<<(dense_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(dense_rows, dense_nr, d_span_len, d_sp);
-        std::vector<int> h_sp(dense_nr);
-        CHECK_CUDA(cudaMemcpy(h_sp.data(), d_sp, (size_t)dense_nr * sizeof(int), cudaMemcpyDeviceToHost));
+        // 单次 D2H(融合 span+行号到一缓冲)+ 异步 H2D:同步点 3→1(nsys 定谳:prof 内同步
+        // memcpy = 流水线停顿,in-2004 每迭代 ~1.5ms 空泡)
+        int *d_sp = decltype(d_sp)(dev_alloc(2 * (size_t)dense_nr * sizeof(int)));
+        span_row_gather_kernel<<<(dense_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(dense_rows, dense_nr, d_span_len, d_sp);
+        std::vector<int> h_both(2 * dense_nr);
+        CHECK_CUDA(cudaMemcpy(h_both.data(), d_sp, 2 * (size_t)dense_nr * sizeof(int), cudaMemcpyDeviceToHost));
         dev_free(d_sp);
+        const int *h_sp = h_both.data();                    // [0, n) = span
+        const int *h_dense = h_both.data() + dense_nr;      // [n, 2n) = 行号
         std::vector<int> idx(dense_nr);
         for (int k = 0; k < dense_nr; k++) idx[k] = k;
         // ⚠ 按【档位索引】稳定排序,不按 span 排:稳定 = 同档内保持行号序(nsys 定谳:span 升序
@@ -3528,11 +3538,9 @@ static void hash_product(
         h_tier_hmax = 0;                       // 档内段最大 span(档内非 span 序,取段内 max)
         for (int k = 0; k < off; k++) h_tier_hmax = h_tier_hmax > h_sp[idx[k]] ? h_tier_hmax : h_sp[idx[k]];
         d_rows_sorted = decltype(d_rows_sorted)(dev_alloc((size_t)dense_nr * sizeof(int)));
-        std::vector<int> h_dense(dense_nr);        // dense_rows 是设备指针 —— 先拷回主机再按 idx 重排
-        CHECK_CUDA(cudaMemcpy(h_dense.data(), dense_rows, (size_t)dense_nr * sizeof(int), cudaMemcpyDeviceToHost));
         std::vector<int> h_rows(dense_nr);
         for (int k = 0; k < dense_nr; k++) h_rows[k] = h_dense[idx[k]];
-        CHECK_CUDA(cudaMemcpy(d_rows_sorted, h_rows.data(), (size_t)dense_nr * sizeof(int), cudaMemcpyHostToDevice));
+        CHECK_CUDA(cudaMemcpyAsync(d_rows_sorted, h_rows.data(), (size_t)dense_nr * sizeof(int), cudaMemcpyHostToDevice, (cudaStream_t)0));
         dbg("[%s] §22d 分流:档内 %d 行(每档 %d/%d/%d/%d/%d/%d,hmax=%d)+ 超档 %d 行\n",
             tag, h_big_off, h_tier_end[0], h_tier_end[1] - h_tier_end[0], h_tier_end[2] - h_tier_end[1],
             h_tier_end[3] - h_tier_end[2], h_tier_end[4] - h_tier_end[3],
@@ -3595,7 +3603,7 @@ static void hash_product(
                 // docs/72 Phase 1a 结构化(DSTRUCT=1):dense_struct_count 替代所有 count 变体,
                 // 窗宽/档位全部由 structural_params.cuh 推导(零拟合常数),span ≤ 档 → 单窗免重搜。
                 static int g_dstruct = -1;
-                if (g_dstruct < 0) { const char *e = getenv("DSTRUCT"); g_dstruct = (e && *e) ? atoi(e) : 0; }
+                if (g_dstruct < 0) { const char *e = getenv("DSTRUCT"); g_dstruct = (e && *e) ? atoi(e) : 2; }   // v33d 翻默认:结构 count + 分流
                 bool bcnt_launched = false;
                 if (g_dstruct && dense_rows) {
                     // §22d:DSTRUCT≥2 且分流已完成 → 档内段走结构位图 count(窗 = 档内 hmax,
