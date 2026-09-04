@@ -3377,7 +3377,7 @@ static void hash_product(
         static int g_dim2 = -1;
         if (g_dim2 < 0) { const char *e = getenv("DIM2"); g_dim2 = (e && *e) ? atoi(e) : 0; }   // docs/61:双维路由基建(默认关 —— c-big straggler 实测挂 v4 span 门 19491/19578,路由无解需窗口内核经济学升级)
         static int g_dtier_cmp = -1;   // §22b Ocean 双维档位比较(默认关;电池 in-2004 95.3% 通过率校准)
-        if (g_dtier_cmp < 0) { const char *e = getenv("DTIER_CMP"); g_dtier_cmp = (e && *e) ? atoi(e) : 1; }   // v33d 翻默认:Ocean 双维档位比较(只作用档内行)
+        if (g_dtier_cmp < 0) { const char *e = getenv("DTIER_CMP"); g_dtier_cmp = (e && *e) ? atoi(e) : 0; }   // v34 翻关:隔离电池定谳 cmp 害大于利(Zd −33.7/c-43 −5/in-2004 +0.6 中性/bundle1 类驱逐税)
         static int g_spanf = -1;
         if (g_spanf < 0) { const char *e = getenv("SPANF"); g_spanf = (e && *e) ? atoi(e) : 16; }   // docs/62:重行 span 门系数(默认 16 = v4;净窗实验 4)
         static int g_occgate = -1;   // docs/67 占用轴:est≥span/16(Ga 族 3.6% 占用 O(span) 窗税实锤,
