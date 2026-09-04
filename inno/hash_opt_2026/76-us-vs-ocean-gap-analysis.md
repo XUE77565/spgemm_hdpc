@@ -189,3 +189,15 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
    §15 "accumulate 2.4×" 的归因修正:分流 + 每行成本共同作用
 **下一步(实锤刀口)**:diter 门 est 下限 2048→1024(或 Ocean 式 dense_bin 梯),
 电池 pre2/c-64/Ga 守卫族。
+
+## 十七、dense 分流杠杆两试(09-04 终)——wash,关线
+
+- DITER_MIN_FLOP 4096→2048:pre2 −0.1 / in-2004 −5.7(单项)/ crankseg −2.1 / 守卫稳
+- DITER_EST_MIN→1024(BINS_DBG 确认 bin6 行拿到资格):pre2 +0.2 全 wash
+  ⇒ bin6 行(est 1-2K、大 span)进了 diter 资格也不赢窗——**spanf 门(16flop≥span)仍拦**或
+  多窗重扫吃掉收益;Ocean 的 dense 优势在其 **span 级窗口内核本身**(symbolic 1-bit/numeric 9B/列
+  + 档位窗宽),非我们现有 21B/列 diter 窗的门控可及
+- **§16 杠杆正式关线**;DITER_EST_MIN 参数化保留(默认不变,中性)
+- **本 session 中行族战果总结**:pre2 差距 45.8 vs 15.3 的结构地图完整(docs/76 §10-17),
+  可动刀口收敛到【Ocean 式 span 窗内核族 = 位图 symbolic + 9B/列 numeric + 档位窗宽】=
+  v32+ 的版本级工程(即 docs/70 的 BCNT/DSTRUCT 路线升级版)
