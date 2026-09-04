@@ -145,3 +145,13 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
   能追的,是要让 accumulate 的提取天然按序(其 hash 表布局使桶序=列序的邻接)
 - **#24 正确形态修正**:不是"换排序器",是 Ocean 式"表布局→提取序"改造(hash 梯桶内 key 存储按
   探测序?或 table 分 slot-band 使提取近似列序 + 单趟全库 radix 收尾)—— 工程量大,单列 v32+ 议题
+
+## 十四、Ocean epilogue 终审(09-04,源码读毕)
+
+- epilogue.sort = **逐行 sortOutputFused(cub BlockRadixSort)**,排序位 `0..IDX_BITS` =
+  压缩列位宽(13-20 位)非全 32 位;`my_elements ≤ NUM_HASH_INPLACE_SORT_THRESHOLD → no sort just copy`
+- 其 hash = 标准 open addressing(murmur%SIZE),**提取非序**——"表布局序"假设不成立(§13 修正);
+  2.5ms 的真来源 = ①压缩位宽砍 radix passes ②多数行走 no-sort-copy 阈值(小表行在表内近乎有序?)待核
+- 我们:radix 内核 `Sort(col,val,0,32)` 全 32 位(NOCSF 实测 61.9ms 反劣:radix+额外 copy);fused 计数 26ms 已是两者较优
+- **可动刀口**:csort_radix 压缩位版(Sort(col,val,0,log2(A_cols)) 或 bin 级 IDX_BITS)—— 与 valid_bits
+  参数同源,估计 bin6/7 15.3+9.8 → 5-8ms(直逼 Ocean);工程小,净赢 8-12ms/pre2 族
