@@ -990,6 +990,13 @@ __global__ void span_row_gather_kernel(const int *rows, int nr, const int *span_
     if (j < nr) { out2n[j] = span_len[rows[j]]; out2n[nr + j] = rows[j]; }
 }
 
+// §25 密度三元组:span+行号+est → [nr,3nr)(密度门:结构内核成本∝span、老内核∝est;
+// est/span 稀疏行结构窗扫描白付 → 2×est≥span 才进结构,失败并老内核段)
+__global__ void span_row_est_gather_kernel(const int *rows, int nr, const int *span_len, const int *est, int *out3n) {
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j < nr) { out3n[j] = span_len[rows[j]]; out3n[nr + j] = rows[j]; out3n[2 * nr + j] = est[rows[j]]; }
+}
+
 // docs/70 §6②:合格行(span≤8×est ∧ ≤cap)的 span,否则 0 —— 供 host 定位图 SMEM 上限
 __global__ void elig_span_kernel(const int *rows, int nr, const int *est, const int *span_len,
                                  long long cap, int *out) {
@@ -3513,25 +3520,36 @@ static void hash_product(
     int h_big_off = 0;                                     // 超档段起点 = 老内核人群
     int h_tier_hmax = 0;                                   // 档内段最大 span(结构 count 窗)
     auto dstr_split = [&]() {                              // §22d 分流体(dense_rows 就绪后调用)
-        // 单次 D2H(融合 span+行号到一缓冲)+ 异步 H2D:同步点 3→1(nsys 定谳:prof 内同步
+        // 单次 D2H(融合 span+行号+est 三元组)+ 异步 H2D:同步点 3→1(nsys 定谳:prof 内同步
         // memcpy = 流水线停顿,in-2004 每迭代 ~1.5ms 空泡)
-        int *d_sp = decltype(d_sp)(dev_alloc(2 * (size_t)dense_nr * sizeof(int)));
-        span_row_gather_kernel<<<(dense_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(dense_rows, dense_nr, d_span_len, d_sp);
-        std::vector<int> h_both(2 * dense_nr);
-        CHECK_CUDA(cudaMemcpy(h_both.data(), d_sp, 2 * (size_t)dense_nr * sizeof(int), cudaMemcpyDeviceToHost));
+        int *d_sp = decltype(d_sp)(dev_alloc(3 * (size_t)dense_nr * sizeof(int)));
+        span_row_est_gather_kernel<<<(dense_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(dense_rows, dense_nr, d_span_len, d_est, d_sp);
+        std::vector<int> h_both(3 * dense_nr);
+        CHECK_CUDA(cudaMemcpy(h_both.data(), d_sp, 3 * (size_t)dense_nr * sizeof(int), cudaMemcpyDeviceToHost));
         dev_free(d_sp);
         const int *h_sp = h_both.data();                    // [0, n) = span
         const int *h_dense = h_both.data() + dense_nr;      // [n, 2n) = 行号
+        const int *h_est = h_both.data() + 2 * dense_nr;    // [2n, 3n) = est(密度门;est 置零前快照)
         std::vector<int> idx(dense_nr);
         for (int k = 0; k < dense_nr; k++) idx[k] = k;
         // ⚠ 按【档位索引】稳定排序,不按 span 排:稳定 = 同档内保持行号序(nsys 定谳:span 升序
         //   打乱行号 → CSR 访存失局部性 → count/direct 同内核同人口 +15-20%;行号序 = bin 散射序
         //   的既有赢家形态)。超档行 = 档 6,同样保序。
-        auto tier_key = [&](int s) { int t = 0; while (t < DENSE_TIER_COUNT && s > dense_tier_max(t)) t++; return t; };
-        std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) { return tier_key(h_sp[a]) < tier_key(h_sp[b]); });
+        // §25 密度门(DDENS,默认开):2×est < span 的档内行也并入老内核段 —— 结构内核成本
+        //   ∝ span(窗扫描/位图前缀),老内核 ∝ est(乘积);est/span 稀疏行(c-43 族 0.34,
+        //   in-2004 0.59)结构窗白扫 → c-43 count 2.15→~0.3 / numeric 1.26→0.80 实测定谳。
+        static int g_ddens = -1;   // §25 密度门(默认关:in-2004 定谳 —— 档内稀疏行进老内核反 +28ms,
+        if (g_ddens < 0) { const char *e = getenv("DDENS"); g_ddens = (e && *e) ? atoi(e) : 0; }  // 老内核成本含 a_len 维,密度单维不构成判据;代码留档)
+        auto tier_key = [&](int k_row) {
+            int s = h_sp[k_row];
+            int t = 0; while (t < DENSE_TIER_COUNT && s > dense_tier_max(t)) t++;
+            if (g_ddens && t < DENSE_TIER_COUNT && 2 * (long long)h_est[k_row] < (long long)s) t = DENSE_TIER_COUNT;   // 稀疏档内行 → 老内核段
+            return t;
+        };
+        std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) { return tier_key(a) < tier_key(b); });
         int off = 0;
         for (int t = 0; t < DENSE_TIER_COUNT; t++) {
-            while (off < dense_nr && h_sp[idx[off]] <= dense_tier_max(t)) off++;
+            while (off < dense_nr && tier_key(idx[off]) <= t) off++;   // 边界按【键】走(密度失败行键=6 但 span 小,span 序已破)
             h_tier_end[t] = off;
         }
         h_big_off = off;
@@ -3604,13 +3622,17 @@ static void hash_product(
                 // 窗宽/档位全部由 structural_params.cuh 推导(零拟合常数),span ≤ 档 → 单窗免重搜。
                 static int g_dstruct = -1;
                 if (g_dstruct < 0) { const char *e = getenv("DSTRUCT"); g_dstruct = (e && *e) ? atoi(e) : 2; }   // v33d 翻默认:结构 count + 分流
+                static int g_dcnt = -2;   // §25 count 侧 A/B 旋钮:0=恒老窗式 / 2=分流(默认,=DSTRUCT 语义);
+                if (g_dcnt == -2) { const char *e = getenv("DCNT"); g_dcnt = (e && *e) ? atoi(e) : 0; }   //  §25 电池定谳翻默认 0=恒老窗式(c-43 −35.8/3dtube −17.6/c-58 −15.5/Zd −11.4;唯一代价 in-2004 +1.5)
                 bool bcnt_launched = false;
-                if (g_dstruct && dense_rows) {
+                const bool cnt_struct_on = (g_dcnt >= 0) ? (g_dcnt > 0) : (g_dstruct > 0);   // §25:DCNT 覆盖(count 侧内核选择)
+                const bool cnt_split_on  = (g_dcnt >= 0) ? (g_dcnt == 2) : (g_dstruct >= 2);
+                if (cnt_struct_on && dense_rows) {
                     // §22d:DSTRUCT≥2 且分流已完成 → 档内段走结构位图 count(窗 = 档内 hmax,
                     // 单窗免重扫);超档段走老窗式 count(50K 全幅行位图 count 多窗重扫乘积,
                     // c-64 实测 1.8→8.8ms 主凶 —— 2026-09-04 count 相分解定谳)。
                     // DSTRUCT=1(无分流)保持原行为:全体 dense 行单发结构 count。
-                    const bool split_cnt = (g_dstr2 >= 2 && d_rows_sorted);
+                    const bool split_cnt = (cnt_split_on && g_dstr2 >= 2 && d_rows_sorted);
                     int hmax_span = 0;
                     if (!split_cnt) {
                         int *d_sp = decltype(d_sp)(dev_alloc(dense_nr * sizeof(int)));
