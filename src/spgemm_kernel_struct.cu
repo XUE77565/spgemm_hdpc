@@ -83,6 +83,10 @@ __global__ void dense_struct_count_kernel(
     if (tid == 0) row_nnz[i] = total;
 }
 
+// §26 采数:struct numeric 逐行周期(host 经 cudaMemcpyToSymbol 装 ptr;0 = 关)。
+// 与 DD_ROWTIME 同语义(clock64 对 DVFS 免疫)—— a_len 维成本律的拟合原料。
+__device__ unsigned long long *g_dsn_rt = nullptr;
+
 // Phase 1b-v2:numeric 直写(G-group 乘积 + 位图前缀发射)。继承旧 kernel 的 G-group(降争用)
 // + Phase 1b 的位图字级前缀(替 warp0 串行)。全部常数从 structural_params.cuh。
 // G 推导:blockDim×a_len 的负载均衡 — G ≈ 2^round(log2(avg_B×a_len/(blockDim×avg_B+a_len×avg_B)))
@@ -98,6 +102,7 @@ __global__ void dense_struct_numeric_kernel(
 {
     int i = bucket_rows[blockIdx.x];
     if (i >= A_rows) return;
+    unsigned long long rt0 = g_dsn_rt ? clock64() : 0;   // §26 采数
     int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     int lo0 = span_lo[i], span = span_len[i];
     int rs = A_rp[i], re = A_rp[i + 1];
@@ -186,7 +191,7 @@ __global__ void dense_struct_numeric_kernel(
         __syncthreads();
         out += (words > 0) ? pref[words - 1] + __popc(bmp[words - 1]) : 0;
     }
-    if (tid == 0) row_nnz[i] = out;
+    if (tid == 0) { row_nnz[i] = out; if (g_dsn_rt) g_dsn_rt[i] = clock64() - rt0; }   // §26 逐行周期
 }
 
 // §22 档位梯显式实例(跨编译单元模板链接所需;档宽 = dense_tier_block)
@@ -195,3 +200,6 @@ template __global__ void dense_struct_numeric_kernel<128>(const int*, const int*
 template __global__ void dense_struct_numeric_kernel<256>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
 template __global__ void dense_struct_numeric_kernel<512>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
 template __global__ void dense_struct_numeric_kernel<1024>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
+
+// §26 采数:host 侧装/卸逐行周期指针(device symbol 跨 TU 不可见 → 本 TU 内代理)
+void dsn_rt_attach(unsigned long long *p) { cudaMemcpyToSymbol(g_dsn_rt, &p, sizeof(void*)); }

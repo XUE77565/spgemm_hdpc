@@ -34,6 +34,7 @@ extern __global__ void dense_struct_count_kernel(
     int win_cols, int *row_nnz);
 
 // docs/72 Phase 1b:numeric 直写(位图字级 popcount 前缀发射,无 warp0 串行)
+void dsn_rt_attach(unsigned long long *p);        // §26 采数代理(struct.cu 内 device symbol)
 template<int TPB>
 extern __global__ void dense_struct_numeric_kernel(
     const int *A_rp, const int *A_ci, const double *A_val,
@@ -990,11 +991,16 @@ __global__ void span_row_gather_kernel(const int *rows, int nr, const int *span_
     if (j < nr) { out2n[j] = span_len[rows[j]]; out2n[nr + j] = rows[j]; }
 }
 
-// §25 密度三元组:span+行号+est → [nr,3nr)(密度门:结构内核成本∝span、老内核∝est;
-// est/span 稀疏行结构窗扫描白付 → 2×est≥span 才进结构,失败并老内核段)
-__global__ void span_row_est_gather_kernel(const int *rows, int nr, const int *span_len, const int *est, int *out3n) {
+// §25 密度三元组 → §26 四元组:span+行号+est+a_len → [nr,4nr)
+// (a_len = A_row_ptr 差分,在内核里算免多传一数组)
+__global__ void span_row_est_gather_kernel(const int *rows, int nr, const int *span_len, const int *est,
+                                           const int *A_rp, int *out4n) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (j < nr) { out3n[j] = span_len[rows[j]]; out3n[nr + j] = rows[j]; out3n[2 * nr + j] = est[rows[j]]; }
+    if (j < nr) {
+        int r = rows[j];
+        out4n[j] = span_len[r]; out4n[nr + j] = r; out4n[2 * nr + j] = est[r];
+        out4n[3 * nr + j] = A_rp[r + 1] - A_rp[r];
+    }
 }
 
 // docs/70 §6②:合格行(span≤8×est ∧ ≤cap)的 span,否则 0 —— 供 host 定位图 SMEM 上限
@@ -3428,6 +3434,12 @@ static void hash_product(
                     dump_arr("span", d_span_len);
                     dump_arr("flop", d_flop);
                     dump_arr("bkid", d_bkid);
+                    {   // §26:a_len 维(A_row_ptr 差分;成本律拟合原料)
+                        std::vector<int> rp(A_rows + 1), al(A_rows);
+                        CHECK_CUDA(cudaMemcpy(rp.data(), dA_rp, (size_t)(A_rows + 1) * sizeof(int), cudaMemcpyDeviceToHost));
+                        for (int r = 0; r < A_rows; r++) al[r] = rp[r + 1] - rp[r];
+                        fwrite(al.data(), sizeof(int), A_rows, df);
+                    }
                     fclose(df);
                     dbg("[%s] DUMP_ROUTING → %s (%d 行)\n", tag, dp, A_rows);
                 }
@@ -3523,14 +3535,15 @@ static void hash_product(
     auto dstr_split = [&]() {                              // §22d 分流体(dense_rows 就绪后调用)
         // 单次 D2H(融合 span+行号+est 三元组)+ 异步 H2D:同步点 3→1(nsys 定谳:prof 内同步
         // memcpy = 流水线停顿,in-2004 每迭代 ~1.5ms 空泡)
-        int *d_sp = decltype(d_sp)(dev_alloc(3 * (size_t)dense_nr * sizeof(int)));
-        span_row_est_gather_kernel<<<(dense_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(dense_rows, dense_nr, d_span_len, d_est, d_sp);
-        std::vector<int> h_both(3 * dense_nr);
-        CHECK_CUDA(cudaMemcpy(h_both.data(), d_sp, 3 * (size_t)dense_nr * sizeof(int), cudaMemcpyDeviceToHost));
+        int *d_sp = decltype(d_sp)(dev_alloc(4 * (size_t)dense_nr * sizeof(int)));
+        span_row_est_gather_kernel<<<(dense_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(dense_rows, dense_nr, d_span_len, d_est, dA_rp, d_sp);
+        std::vector<int> h_both(4 * dense_nr);
+        CHECK_CUDA(cudaMemcpy(h_both.data(), d_sp, 4 * (size_t)dense_nr * sizeof(int), cudaMemcpyDeviceToHost));
         dev_free(d_sp);
         const int *h_sp = h_both.data();                    // [0, n) = span
         const int *h_dense = h_both.data() + dense_nr;      // [n, 2n) = 行号
-        const int *h_est = h_both.data() + 2 * dense_nr;    // [2n, 3n) = est(密度门;est 置零前快照)
+        const int *h_est = h_both.data() + 2 * dense_nr;    // [2n, 3n) = est(est 置零前快照)
+        const int *h_alen = h_both.data() + 3 * dense_nr;   // [3n, 4n) = a_len(§26 成本律维)
         std::vector<int> idx(dense_nr);
         for (int k = 0; k < dense_nr; k++) idx[k] = k;
         // ⚠ 按【档位索引】稳定排序,不按 span 排:稳定 = 同档内保持行号序(nsys 定谳:span 升序
@@ -3541,10 +3554,13 @@ static void hash_product(
         //   in-2004 0.59)结构窗白扫 → c-43 count 2.15→~0.3 / numeric 1.26→0.80 实测定谳。
         static int g_ddens = -1;   // §25 密度门(默认关:in-2004 定谳 —— 档内稀疏行进老内核反 +28ms,
         if (g_ddens < 0) { const char *e = getenv("DDENS"); g_ddens = (e && *e) ? atoi(e) : 0; }  // 老内核成本含 a_len 维,密度单维不构成判据;代码留档)
+        static int g_alen_old = -1;   // §26 a_len 门(默认关):单维门第三次证伪 —— 28440 行周期律在
+        if (g_alen_old < 0) { const char *e = getenv("ALEN_OLD"); g_alen_old = (e && *e) ? atoi(e) : 0; }  // 4 采样阵上 a_len≤32 老内核 97-100% 赢,但 wb-edu +18.8/3dtube +30.5 反噬(赢家家族行形态未入样本);v34 需 a_len×est×span 多维模型,旋钮留档
         auto tier_key = [&](int k_row) {
             int s = h_sp[k_row];
             int t = 0; while (t < DENSE_TIER_COUNT && s > dense_tier_max(t)) t++;
-            if (g_ddens && t < DENSE_TIER_COUNT && 2 * (long long)h_est[k_row] < (long long)s) t = DENSE_TIER_COUNT;   // 稀疏档内行 → 老内核段
+            if (g_alen_old && t < DENSE_TIER_COUNT && h_alen[k_row] <= WARP_SIZE) t = DENSE_TIER_COUNT;   // §26 短链行 → 老内核段
+            if (g_ddens && t < DENSE_TIER_COUNT && 2 * (long long)h_est[k_row] < (long long)s) t = DENSE_TIER_COUNT;   // (§25 密度门,默认关)
             return t;
         };
         std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) { return tier_key(a) < tier_key(b); });
@@ -4310,6 +4326,16 @@ static void hash_product(
             static int g_dtier_single = -1;   // §22c:1 = 档内行单发最大档(实验开关;三臂实验定谳:
             if (g_dtier_single < 0) { const char *e = getenv("DTIER_SINGLE"); g_dtier_single = (e && *e) ? atoi(e) : 0; }  // per-tier vs 单档数值差异 ~0.2ms 噪声级,真凶是 count 窗与行序局部性,非块宽)
             const bool dstr2_on = (g_dstr2 >= 2 && dense_rows);
+            // §26 采数:DSN_RT=path → struct numeric 逐行周期落盘(a_len 维成本律原料;
+            // 指针经 cudaMemcpyToSymbol 装入,免改 5 个模板实例签名)
+            unsigned long long *dsn_rt_dev = nullptr; FILE *dsn_f = nullptr;
+            if (const char *dp = getenv("DSN_RT")) {
+                if (dsn_rt_dev = decltype(dsn_rt_dev)(dev_alloc((size_t)A_rows * sizeof(unsigned long long)))) {
+                    CHECK_CUDA(cudaMemset(dsn_rt_dev, 0, (size_t)A_rows * sizeof(unsigned long long)));
+                    dsn_rt_attach(dsn_rt_dev);
+                    dsn_f = fopen(dp, "w");
+                }
+            }
             const int big_off = dstr2_on ? h_big_off : dense_nr;   // 超档段起点(=老内核人群)
             const int *tier_end_p = h_tier_end;
             const int *old_rows = dstr2_on ? (big_off < dense_nr ? d_rows_sorted + big_off : nullptr) : dense_rows;
@@ -4400,6 +4426,15 @@ static void hash_product(
                 CHECK_CUDA(cudaGetLastError());
             }
             if (d_rows_sorted) dev_free(d_rows_sorted);
+            if (dsn_f) {   // §26:struct numeric 逐行周期落盘(非零行 = 档位梯人群)
+                std::vector<unsigned long long> rt(A_rows);
+                CHECK_CUDA(cudaMemcpy(rt.data(), dsn_rt_dev, (size_t)A_rows * sizeof(unsigned long long), cudaMemcpyDeviceToHost));
+                for (int r = 0; r < A_rows; r++) if (rt[r]) fprintf(dsn_f, "%d %llu\n", r, rt[r]);
+                fclose(dsn_f);
+                dsn_rt_attach(nullptr);
+                dev_free(dsn_rt_dev);
+                dbg("[%s] DSN_RT 落盘\n", tag);
+            }
         });
         if (d_ddrt) {   // docs/66 §8:逐行周期 + 路径模式落盘(cursor/search 判据采数)
             std::vector<unsigned long long> h_rt(A_rows);
