@@ -3554,8 +3554,8 @@ static void hash_product(
         //   in-2004 0.59)结构窗白扫 → c-43 count 2.15→~0.3 / numeric 1.26→0.80 实测定谳。
         static int g_ddens = -1;   // §25 密度门(默认关:in-2004 定谳 —— 档内稀疏行进老内核反 +28ms,
         if (g_ddens < 0) { const char *e = getenv("DDENS"); g_ddens = (e && *e) ? atoi(e) : 0; }  // 老内核成本含 a_len 维,密度单维不构成判据;代码留档)
-        static int g_alen_old = -1;   // §26 a_len 门(默认关):单维门第三次证伪 —— 28440 行周期律在
-        if (g_alen_old < 0) { const char *e = getenv("ALEN_OLD"); g_alen_old = (e && *e) ? atoi(e) : 0; }  // 4 采样阵上 a_len≤32 老内核 97-100% 赢,但 wb-edu +18.8/3dtube +30.5 反噬(赢家家族行形态未入样本);v34 需 a_len×est×span 多维模型,旋钮留档
+        static int g_alen_old = -1;   // §26 a_len 门(v34 翻默认开,×5 中位电池背书:c-43 −4.0/in-2004
+        if (g_alen_old < 0) { const char *e = getenv("ALEN_OLD"); g_alen_old = (e && *e) ? atoi(e) : 1; }  // −2.2/Zd/bbmat/std1/3dtube 噪声带;wb-edu/c-64/nd24k no-op 零 a_len≤32 档内行)
         auto tier_key = [&](int k_row) {
             int s = h_sp[k_row];
             int t = 0; while (t < DENSE_TIER_COUNT && s > dense_tier_max(t)) t++;
