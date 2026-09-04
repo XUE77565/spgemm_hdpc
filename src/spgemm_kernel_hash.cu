@@ -2287,6 +2287,7 @@ __global__ void compute_bucket_kernel(
     int batch_s_max = 0,  // docs/13 v2:est≤此值 ∧ kc≤warp → BIN_BATCH_S(64 槽表;0=关)
     int largest_on = 0,   // docs/74:Ocean-D straggler 行位图窗(0=关)
     int esc_on = 0,       // docs/76 v31-④:零表 counting-sort 短行(flop≤ESC_FLOP_MAX;0=关)
+    int diter_est_min = EST_DENSE_MIN / 2,  // docs/76 §16:diter est 下限(默认半默认档;Ocean dense 分流)
     int dim2_on = 0)      // DIM2 独立门(n_cols 传参只为 largest 的 span 护栏;误点亮 dim2 曾把
                           // bcsstk30 642 行送 BIN_DITER → +24.8%,2026-09-03 惊吓扫实证)
 {
@@ -2401,7 +2402,7 @@ __global__ void compute_bucket_kernel(
     }
     // v4 拟合门(默认路径;常数附 docs/72 结构推导注释 4194b45)
     else if (diter_thr > 0 && dup_ok &&
-             ((flop[i] >= diter_thr && e >= EST_DENSE_MIN/2 &&  // 表字节 ≥ 半默认档(docs/72 推导)
+             ((flop[i] >= diter_thr && e >= diter_est_min &&        // 表字节门(docs/72;参数化,host 默认 = 半默认档)
                (long long)span_factor * flop[i] >= (long long)span_len[i])
               || (dim2 && flop[i] >= EST_DENSE_MIN && e <= HASH_CAP))
              && (!occgate || (long long)SPANF_COEFF * e >= (long long)sl0)  // OCCGATE:est×16 ≥ span(同 spanf 门系数)
@@ -3321,7 +3322,9 @@ static void hash_product(
     static int g_largest = -1;   // docs/74:Ocean-D straggler 位图窗(函数级:binning 传参用)
     if (g_largest < 0) { const char *e = getenv("LARGEST"); g_largest = (e && *e) ? atoi(e) : 1; }
     static int g_esc = -1;       // docs/76 v31-④:零表 counting-sort 短行
-    if (g_esc < 0) { const char *e = getenv("ESC_K"); g_esc = (e && *e) ? atoi(e) : 1; }   // 电池 11/11 全绿翻默认
+    if (g_esc < 0) { const char *e = getenv("ESC_K"); g_esc = (e && *e) ? atoi(e) : 1; }
+    static int g_diter_est_min = -1;   // docs/76 §16:diter est 下限(默认 EST_DENSE_MIN/2;Ocean dense 分流启示)
+    if (g_diter_est_min < 0) { const char *e = getenv("DITER_EST_MIN"); g_diter_est_min = (e && *e) ? atoi(e) : EST_DENSE_MIN/2; }   // 电池 11/11 全绿翻默认
     prof("binning", [&]{
         CHECK_CUDA(cudaMemset(d_cnt, 0, N_BINS * sizeof(int)));   // 先清零(fused kernel 内 atomicAdd 累加)
         static int g_diter = -1;   // dense-iter 重行阈值(DITER_MIN_FLOP,默认 4096;0=关)
@@ -3344,7 +3347,7 @@ static void hash_product(
         if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 1; }
         // SROUTE 用的 hash 表槽 = 半 SM 预算÷12B(结构推导,与 est 无关的物理上界;行内再按 est 选小表)
         const int ht_sroute = g_sroute > 0 ? hash_slots_pow2(SMEM_BUDGET_2BLK()) : 0;
-        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_dim2);
+        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dim2);
         if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
