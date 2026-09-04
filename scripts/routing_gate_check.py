@@ -9,9 +9,9 @@ import sys, struct
 import numpy as np
 
 SMEM_TOTAL = 128 * 1024
-OCC = [32, 16, 8, 4, 2]                       # dense_tier_occ
-DENSE_MAX = [SMEM_TOTAL // o // 9 - 4 for o in OCC]     # {451,906,1816,3636,7277}
-HASH_SLOT_MAX = [SMEM_TOTAL // o // 12 for o in OCC]    # {341,682,1365,2730,5461}
+OCC = [32, 16, 8, 4, 2, 1]                    # dense_tier_occ(§22d 六档)
+DENSE_MAX = [SMEM_TOTAL // o // 9 - 4 for o in OCC]     # {451,906,1816,3636,7277,14543}
+HASH_SLOT_MAX = [SMEM_TOTAL // o // 12 for o in OCC]    # {341,682,1365,2730,5461,10922}
 TIER_SPAN_MAX = DENSE_MAX[-1]
 
 def ht_of(e, doubling_thr=4096, cap=8192):

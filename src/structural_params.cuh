@@ -320,21 +320,24 @@ constexpr int ESC_SUBW16_MAX = WARP_SIZE / 2;  // 16:flop≤16(Ocean NUMERIC_USP
 constexpr int ESC_DUP_MAX = 2;  // v4 门:counting O(flop·SUBW) vs 表 O(est+ht) 的盈亏平衡 dup≈2
                                  // (germany 1.4 赢/patents ≥2 输,分相实证;DUP_LIGHT 同族推导)
 
-// ── v33 Ocean 式 span 档位梯(docs/76 §21-22 用户钦定优先)──────────────────────
+// ── v33 Ocean 式 span 档位梯(docs/76 §21-22 用户钦定优先;§22d 六档扩)───────────
 // 档 i 上限 = (SMEM 模型 ÷ 并发梯[i]) ÷ (val 8B + flag 1B) − 4(Ocean Common.h 同公式);
 // 与 SMEM_MODEL_TOTAL/占用梯共用推导源。行按 span 落档:窗宽/块宽/驻块数随档联动,
-// span > 最大档 → hash(DENSE_NUMERIC_BIN_SIZES 哲学:塞进档还能保设计占用才进 dense)。
-constexpr int DENSE_TIER_COUNT = 5;
+// span > 最大档 → 老窗口 cursor 内核(§22d;这些行的既有赢家,如 c-64 全幅行)。
+// 第 6 档(occ 1,窗 14543,131KB ≤ H100 opt-in 227KB):in-2004 怪物行定谳 —— est≥4096 ∧
+// span 7278-18924 卡在 5 档梯外,老内核对 est≫span 行有病态模式(48M 周期/行),档内化后走结构数值。
+constexpr int DENSE_TIER_COUNT = 6;
 SP_HD constexpr int dense_tier_occ(int i) {   // 并发梯(占用梯同源;constexpr 数组不可 device 索引故逐档)
-    return (i == 0) ? 32 : (i == 1) ? 16 : (i == 2) ? 8 : (i == 3) ? 4 : 2;
+    return (i == 0) ? 32 : (i == 1) ? 16 : (i == 2) ? 8 : (i == 3) ? 4 : (i == 4) ? 2 : 1;
 }
 SP_HD constexpr int dense_tier_max(int i) {   // 档上限 = (SMEM 模型 ÷ 并发) ÷ (val 8 + flag 1) − 4(Ocean 同公式)
-    return SMEM_MODEL_TOTAL / dense_tier_occ(i) / (8 + 1) - 4;            // = {451,906,1816,3636,7277}
+    return SMEM_MODEL_TOTAL / dense_tier_occ(i) / (8 + 1) - 4;            // = {451,906,1816,3636,7277,14543}
 }
-SP_HD constexpr int dense_tier_block(int i) { // 档块宽 = 2048 线程 ÷ 并发(占用单位;下限 64 = 合法块)
-    return 2048 / dense_tier_occ(i) < 64 ? 64 : 2048 / dense_tier_occ(i);
+SP_HD constexpr int dense_tier_block(int i) { // 档块宽 = 2048 线程 ÷ 并发(占用单位;[64,1024] = 合法块区间)
+    int b = 2048 / dense_tier_occ(i);
+    return b < 64 ? 64 : (b > 1024 ? 1024 : b);   // occ 1 → 2048 超硬件上限,取 1024
 }
-constexpr int DENSE_TIER_SPAN_MAX = dense_tier_max(DENSE_TIER_COUNT - 1); // 7277 = 进 dense 的 span 上限
+constexpr int DENSE_TIER_SPAN_MAX = dense_tier_max(DENSE_TIER_COUNT - 1); // 14543 = 档内上限(超过 → 老内核)
 
 // ── §22b Ocean 双维档位比较(Analysis.cuh L248-264 移植;09-04 dump 校准)─────────
 // Ocean 的 dense 分流不是单边门,是同一 SMEM 预算梯上的【档位比较】:
