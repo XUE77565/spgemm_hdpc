@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import compare_methods as CM
 
 CSV = "compare/ocean337/methods_cmp_v33.csv"
-THRESH = 2.0
+THRESH = 10.0
 
 def _num(x):
     try: return float(x)
@@ -31,15 +31,16 @@ for i, (m, a33, a32) in enumerate(todo):
     res = CM.run_spgemm_method(p, "adaptive", timeout=900, exp_cnnz=old_cnnz)
     if res is None:
         print(f"[{i+1}/{len(todo)}] {m}: 失败/超时,保留原值", flush=True); continue
+    t_new, nnz_new, choice_new = res[0], res[2], res[3]   # (compute, wall, nnz, choice)
     for r in rows:
         if r["matrix"] == m:
-            r["Auto"] = f"{res['time']:.3f}"
-            if res.get("cnnz"): r["cnnz"] = str(res["cnnz"])
-            if res.get("choice"): r["Auto_choice"] = res["choice"]
+            r["Auto"] = f"{t_new:.3f}"
+            if nnz_new: r["cnnz"] = str(nnz_new)
+            if choice_new: r["Auto_choice"] = choice_new
             break
     d_old = (a33 / a32 - 1) * 100 if a32 else 0
-    d_new = (res["time"] / a32 - 1) * 100 if a32 else 0
-    print(f"[{i+1}/{len(todo)}] {m}: {a33:.1f}→{res['time']:.1f}(vs v32 {d_old:+.1f}%→{d_new:+.1f}%)", flush=True)
+    d_new = (t_new / a32 - 1) * 100 if a32 else 0
+    print(f"[{i+1}/{len(todo)}] {m}: {a33:.1f}→{t_new:.1f}(vs v32 {d_old:+.1f}%→{d_new:+.1f}%)", flush=True)
 
 with open(CSV, "w", newline="") as f:
     w = _csv.DictWriter(f, fieldnames=rows[0].keys())
