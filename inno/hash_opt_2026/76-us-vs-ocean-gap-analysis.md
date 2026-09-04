@@ -201,3 +201,14 @@ Ocean:  analysis(乘积+ER+3%采样CR) → 工作流三选一(免估计/上界/H
 - **本 session 中行族战果总结**:pre2 差距 45.8 vs 15.3 的结构地图完整(docs/76 §10-17),
   可动刀口收敛到【Ocean 式 span 窗内核族 = 位图 symbolic + 9B/列 numeric + 档位窗宽】=
   v32+ 的版本级工程(即 docs/70 的 BCNT/DSTRUCT 路线升级版)
+
+## 十八、v32 span 窗内核族 Phase 1a 电池(09-04 终)
+
+- DSTRUCT=1(位图 symbolic count):pre2/in-2004 wash,c-64 **+36%**(atomicOr 窄 span 争用,
+  c-73/gupta3 同款教训),crankseg +6% —— **净负,Phase 1a 否决**
+- 至此中行族全部已知杠杆(排序器/门控/位图化)逐一电池定谳:wash 或负
+- **终局判断**:Ocean dense 优势 = 其 symbolic+numeric+binning 三者**咬合的整体**(行按
+  span/乘积双维分 7 档,每档窗口/并发/布局协同),移植必须整体走,单件移植每件都被
+  我们的行分布打回(c-64 窄 span 争用就是证据)。= 多日级版本工程,非电池可调
+- **session 收官账**:v28 1.388→v30 1.3686(五件套)→v31/v32 噪声带;ESC/SEGRTS/diter×3/
+  csort×2/DSTRUCT 六役全电池定谳;docs/76 十八节 = 追平 Ocean 的完整作战地图
