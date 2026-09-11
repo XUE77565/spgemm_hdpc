@@ -4116,9 +4116,34 @@ static void hash_product(
                         dA_rp, dA_ci, dA_val, rows_ptr, n, ht, PRIV_W, d_off,
                         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow);
                 } else {
-                    // docs/44 per-bin block 梯(Ocean BLOCK_SIZES 同哲学):
-                    // 小表(ht≤512)64T×32CTA/SM = 最大行并行;中表 256T;大表(≥2048)512T
-                    int hblk = (bi <= ilog2c(SMALL_SPAN_MAX / WARP_SIZE)) ? HASH_BLOCK_STRUCT / 4 : (bi <= ilog2c(CSORT_HT / WARP_SIZE)) ? HASH_BLOCK_STRUCT : DENSE_BLK;
+                    // docs/44 per-bin block 梯(Ocean BLOCK_SIZES 同哲学)+ v37 修正梯(study/06 §7 F2 对拍):
+                    //   默认 = 旧三档 64/256/512 + bi≥8→1024T(修 occupancy 缺陷:ht≥8192 表 ≥96KB ×512T
+                    //   只驻 2 CTA = 1024 线程;1024T 恢复满格 2048。F2/电池已证)。
+                    //   HASH_BLK_LADDER=legacy 纯旧三档;=6:384,7:768 逐档覆写(32 倍数,免重编)。
+                    static int g_blk_lad[HASH_LADDER_MAX_BIN + 1];
+                    static int g_blk_init = -1;
+                    if (g_blk_init < 0) {
+                        for (int b = 0; b <= HASH_LADDER_MAX_BIN; b++)
+                            g_blk_lad[b] = (b <= ilog2c(SMALL_SPAN_MAX / WARP_SIZE)) ? HASH_BLOCK_STRUCT / 4
+                                             : (b <= ilog2c(CSORT_HT / WARP_SIZE)) ? HASH_BLOCK_STRUCT : DENSE_BLK;
+                        const char *e = getenv("HASH_BLK_LADDER");
+                        if (e && !strcmp(e, "legacy")) {
+                            // 纯旧梯,不加默认覆写
+                        } else if (e && *e) {
+                            // 用户逐档覆写全权(不再叠加默认)
+                            for (char *s = strdup(e), *tok = strtok(s, ","); tok; tok = strtok(nullptr, ","))
+                            {
+                                int b, t;
+                                if (sscanf(tok, "%d:%d", &b, &t) == 2 && b >= 0 && b <= HASH_LADDER_MAX_BIN &&
+                                    t > 0 && t <= 1024 && (t & 31) == 0)
+                                    g_blk_lad[b] = t;
+                            }
+                        } else {
+                            for (int b = 8; b <= HASH_LADDER_MAX_BIN; b++) g_blk_lad[b] = 1024;   // 默认(×5 电池已证)
+                        }
+                        g_blk_init = 1;
+                    }
+                    int hblk = g_blk_lad[bi <= HASH_LADDER_MAX_BIN ? bi : HASH_LADDER_MAX_BIN];
                     hash_spa_kernel<0><<<n, hblk, smem_flat, cur_s>>>(
                         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                         rows_ptr, n, ht, d_off,
@@ -4498,6 +4523,8 @@ static void hash_product(
         }
     }
     prof("compact+sort", [&]{
+        static int g_cs_v2 = -1;   // CSORT_LADDER:默认 v2 开(×5 电池 geomean −6.4%,study/07);=legacy 回旧
+        if (g_cs_v2 < 0) { const char *e = getenv("CSORT_LADDER"); g_cs_v2 = (e && !strcmp(e, "legacy")) ? 0 : 1; }
         if (!in_place)
             CHECK_CUDA(cudaMemcpy(dC, dC_rp, C_rp_sz, cudaMemcpyDeviceToDevice));   // row_ptr 落位(~A_rows ints,微秒级,纳入计时)
         for (int bi = 0; bi < ((dense_mode || dense_win_mode) ? 1 : N_BINS); bi++) {
@@ -4538,10 +4565,23 @@ static void hash_product(
                 // Fix#11(审查):warp-per-row(8 行/CTA)替 1CTA/行 —— 万行级 bin 的 CTA 数砍 8×
                 hash_compact_copy_warp_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
             } else if (bi <= ilog2c(TABLE_DOUBLING_THR / WARP_SIZE)) {
-                if (A_cols < csort_fused_max_cols(CSORT_TPB_A, CSORT_IPT_A) && !getenv("NOCSF"))   // 融合键:pos 12 位(CAP=4096)→ 列位宽约束
-                    launch_csort_fused<CSORT_TPB_A, CSORT_IPT_A>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
-                else
-                    launch_csort<CSORT_TPB_A, CSORT_IPT_A>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                // v37 csort 细梯(study/06 §7):CSORT_LADDER=v2 → bin6 <128,16>(CAP 2048 紧贴表容,
+                // 旧 <512,8> 冗余 2× 挤 occupancy)/ bin7 <256,16>(同 CAP 4096,IPT×2 线程减半)。
+                // CAP ≥ row_nnz ≤ ht 不变式保持;溢出行 row_nnz=flop 重试值可超 CAP → 只排前 CAP 项
+                // 写废,末段 retry 善后整行覆写(同旧语义,csort_fused 本就不带 skip)。
+                const bool cs_v2 = g_cs_v2;
+                const int mx = cs_v2 ? (bi == 6 ? csort_fused_max_cols(CSORT_TPB_C, CSORT_IPT_C)
+                                                : csort_fused_max_cols(CSORT_TPB_D, CSORT_IPT_D))
+                                     : csort_fused_max_cols(CSORT_TPB_A, CSORT_IPT_A);   // 融合键:pos 位 → 列位宽约束
+                if (A_cols < mx && !getenv("NOCSF")) {
+                    if (cs_v2 && bi == 6)  launch_csort_fused<CSORT_TPB_C, CSORT_IPT_C>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
+                    else if (cs_v2)        launch_csort_fused<CSORT_TPB_D, CSORT_IPT_D>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
+                    else                   launch_csort_fused<CSORT_TPB_A, CSORT_IPT_A>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
+                } else {
+                    if (cs_v2 && bi == 6)  launch_csort<CSORT_TPB_C, CSORT_IPT_C>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                    else if (cs_v2)        launch_csort<CSORT_TPB_D, CSORT_IPT_D>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                    else                   launch_csort<CSORT_TPB_A, CSORT_IPT_A>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                }
                 CHECK_CUDA(cudaGetLastError());
             } else if (bi <= 9) {
                 static int g_segrts = -1;   // v31-①':bin≥7 csort O(n²) → cub 分段基数排序(靶纸:pre2 排序税 26ms=57%)
@@ -4551,6 +4591,8 @@ static void hash_product(
                                       d_tmp_key, d_tmp_val, d_row_ovf);
                     CHECK_CUDA(cudaGetLastError());
                 } else if (A_cols < csort_fused_max_cols(CSORT_TPB_B, CSORT_IPT_B) && !getenv("NOCSF")) {   // pos 14 位(CAP=16384)
+                    // v2 不动 bin8-9:<512,32> 实测 157 regs×512T = 80384 > 65536 块限额 launch 不可
+                    // (ptxas 定罪);旧 <256,64> 229×256=58624 贴线可跑,且 bin8-9 行稀无证据
                     launch_csort_fused<CSORT_TPB_B, CSORT_IPT_B>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
                 } else {
                     launch_csort<CSORT_TPB_B, CSORT_IPT_B>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);

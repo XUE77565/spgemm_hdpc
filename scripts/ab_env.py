@@ -7,7 +7,7 @@ import os, sys, re, subprocess, statistics
 
 BIN = os.environ.get("SPGEMM_BIN", "./spgemm_test")
 DIR = "data/ocean/square"
-RUNS = 3
+RUNS = int(os.environ.get("AB_RUNS", "3"))   # 口径纪律:正式电池 AB_RUNS=5(×3 只作烟雾)
 
 def one(mtx, env_str):
     env = dict(os.environ, MP_HOST_MB="8192", USE_MEMPOOL="1", METHOD="adaptive", DBG="1")

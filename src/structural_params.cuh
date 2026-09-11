@@ -263,6 +263,13 @@ constexpr int CSORT_TPB_A = HASH_BLOCK_STRUCT * 2;               // 512:bin6-7(h
 constexpr int CSORT_IPT_A = TABLE_DOUBLING_THR / CSORT_TPB_A;    // 8 → CAP = 4096
 constexpr int CSORT_TPB_B = HASH_BLOCK_STRUCT;                   // 256:bin8-9(ht ≤ 16384)
 constexpr int CSORT_IPT_B = (HYBRID_HT_MAX_STRUCT / 2) / CSORT_TPB_B;  // 64 → CAP = 16384
+// ── csort v2 细梯(study/06 F2 对拍,Ocean sortOutputFused 哲学 = IPT 恒 16、TPB 紧贴表容)──
+//   旧 <512,8> 对 bin6 CAP 冗余 2× → BlockRadixSort TempStorage 挤 occupancy(主档排序 5× 差主因)。
+//   CAP ≥ row_nnz ≤ ht 不变式保持;CSORT_LADDER=v2 启用(默认关,电池过了才翻默认)。
+constexpr int CSORT_TPB_C = 128;                                // v2 bin6(ht2048):CAP=2048 紧贴
+constexpr int CSORT_IPT_C = 16;
+constexpr int CSORT_TPB_D = 256;                                // v2 bin7(ht4096):CAP=4096 同容,线程减半
+constexpr int CSORT_IPT_D = 16;
 
 // ── MinHash 表防护帽 ────────────────────────────────────────────────────────
 constexpr unsigned long long MH_TABLE_MAX_BYTES = 256ull << 20;  // 256MB:鲸鱼阵防护(超限回退老流程)
