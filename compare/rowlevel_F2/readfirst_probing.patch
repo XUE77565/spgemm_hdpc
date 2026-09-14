@@ -1,0 +1,66 @@
+diff --git a/src/spgemm_kernel_hash.cu b/src/spgemm_kernel_hash.cu
+index a94059b..77f35a3 100644
+--- a/src/spgemm_kernel_hash.cu
++++ b/src/spgemm_kernel_hash.cu
+@@ -1614,8 +1614,14 @@ __global__ void hash_spa_kernel(
+             unsigned slot = ((unsigned)(j * 2654435761u)) & mask;   // Knuth 乘法 hash
+             int probes = 0;
+             while (true) {
+-                int old = atomicCAS(&sh_col[slot], -1, j);
+-                if (old == -1 || old == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; }
++                // read-first 探测(study/09 命中税:dup=每键命中数,旧式每探测 atomicCAS → 税 ∝ dup;
++                // Ocean/spECK 同款 = 命中零原子,空槽才 CAS;竞争失败者前进)
++                int old = sh_col[slot];
++                if (old == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; }
++                if (old == -1) {
++                    int prev = atomicCAS(&sh_col[slot], -1, j);
++                    if (prev == -1 || prev == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; }
++                }
+                 slot = (slot + 1) & mask;                            // 线性探测
+                 if (++probes >= ht_size) {                          // 溢出 → 记录行交重试
+                     atomicExch(overflow_flag, 1);
+@@ -1753,8 +1759,12 @@ __global__ void hash_spa_hkv_kernel(
+             unsigned slot = ((unsigned)(j * 2654435761u)) & mask;
+             int probes = 0;
+             while (true) {
+-                int old = atomicCAS(&sh_col[slot], -1, j);
+-                if (old == -1 || old == j) { atomicAdd(&gval[gb + slot], v); break; }
++                int old = sh_col[slot];               // read-first:命中零原子(同主 kernel,study/09)
++                if (old == j) { atomicAdd(&gval[gb + slot], v); break; }
++                if (old == -1) {
++                    int prev = atomicCAS(&sh_col[slot], -1, j);
++                    if (prev == -1 || prev == j) { atomicAdd(&gval[gb + slot], v); break; }
++                }
+                 slot = (slot + 1) & mask;
+                 if (++probes >= ht_size) {
+                     atomicExch(overflow_flag, 1);
+@@ -1863,8 +1873,12 @@ __global__ void hash_spa_priv_kernel(
+                 unsigned slot = ((unsigned)(c * 2654435761u)) & mask;
+                 int probes = 0;
+                 while (true) {
+-                    int old = atomicCAS(&sh_col[slot], -1, c);
+-                    if (old == -1 || old == c) { atomicAdd(&sh_val[slot], v); break; }
++                    int old = sh_col[slot];               // read-first:命中零原子(同主 kernel,study/09)
++                    if (old == c) { atomicAdd(&sh_val[slot], v); break; }
++                    if (old == -1) {
++                        int prev = atomicCAS(&sh_col[slot], -1, c);
++                        if (prev == -1 || prev == c) { atomicAdd(&sh_val[slot], v); break; }
++                    }
+                     slot = (slot + 1) & mask;
+                     if (++probes >= ht_size) { atomicExch(overflow_flag, 1); break; }
+                 }
+@@ -2030,8 +2044,12 @@ __global__ void hash_global_kernel(
+             unsigned slot = ((unsigned)(j * 2654435761u)) & mask;
+             int probes = 0;                    // 有界探测:必终止
+             while (true) {
+-                int old = atomicCAS(&sh_col[slot], -1, j);
+-                if (old == -1 || old == j) { atomicAdd(&sh_val[slot], v); break; }
++                int old = sh_col[slot];               // read-first:命中零原子(同主 kernel,study/09)
++                if (old == j) { atomicAdd(&sh_val[slot], v); break; }
++                if (old == -1) {
++                    int prev = atomicCAS(&sh_col[slot], -1, j);
++                    if (prev == -1 || prev == j) { atomicAdd(&sh_val[slot], v); break; }
++                }
+                 slot = (slot + 1) & mask;
+                 if (++probes >= ht_size) {
+                     atomicExch(overflow_flag, 1);
