@@ -1,0 +1,50 @@
+diff --git a/src/spgemm_kernel_hash.cu b/src/spgemm_kernel_hash.cu
+index 3ce1260..f067376 100644
+--- a/src/spgemm_kernel_hash.cu
++++ b/src/spgemm_kernel_hash.cu
+@@ -1611,12 +1611,13 @@ __global__ void hash_spa_kernel(
+             int j = B_col_idx[q];
+             if (upper_tri && j < i) continue;                // ATT 上三角过滤(j≥i)
+             double v = (MODE == 1) ? 0.0 : a_ik * B_val[q];  // count-only 免乘免值写(docs/31)
+-            unsigned slot = ((unsigned)(j * 2654435761u)) & mask;   // Knuth 乘法 hash
++            // Lemire 高位归约:hash×ht>>32,任意表容免取模(study/11 中间档梯;2 幂表同合法)
++            unsigned slot = (unsigned)(((unsigned long long)(unsigned)(j * 2654435761u) * (unsigned)ht_size) >> 32);
+             int probes = 0;
+             while (true) {
+                 int old = atomicCAS(&sh_col[slot], -1, j);
+                 if (old == -1 || old == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; }
+-                slot = (slot + 1) & mask;                            // 线性探测
++                if (++slot >= (unsigned)ht_size) slot = 0;           // wrap 线性探测(替代 mask)
+                 if (++probes >= ht_size) {                          // 溢出 → 记录行交重试
+                     atomicExch(overflow_flag, 1);
+                     if (!atomicExch(&row_ovf[i], 1)) { int p = atomicAdd(ovf_cnt, 1); ovf_rows[p] = i; }
+@@ -1750,12 +1751,12 @@ __global__ void hash_spa_hkv_kernel(
+             int j = B_col_idx[q];
+             if (upper_tri && j < i) continue;
+             double v = a_ik * B_val[q];
+-            unsigned slot = ((unsigned)(j * 2654435761u)) & mask;
++            unsigned slot = (unsigned)(((unsigned long long)(unsigned)(j * 2654435761u) * (unsigned)ht_size) >> 32);   // Lemire 同主 kernel
+             int probes = 0;
+             while (true) {
+                 int old = atomicCAS(&sh_col[slot], -1, j);
+                 if (old == -1 || old == j) { atomicAdd(&gval[gb + slot], v); break; }
+-                slot = (slot + 1) & mask;
++                if (++slot >= (unsigned)ht_size) slot = 0;
+                 if (++probes >= ht_size) {
+                     atomicExch(overflow_flag, 1);
+                     if (!atomicExch(&row_ovf[i], 1)) { int p = atomicAdd(ovf_cnt, 1); ovf_rows[p] = i; }
+@@ -4105,7 +4106,14 @@ static void hash_product(
+                         total_est, n, d_seg_beg, d_seg_end));
+                 }
+             } else {
++                // 中间档刀(study/11):HASH_FIT_PCT<100 时表 = pct%×2幂档(bi≥4)——2 幂梯没有合身档
++                // (bin5 est=512 行只有 512[尾部行爆] 或 1024[白付 1.5×init] 两选;Ocean 素数 673 卡中间)。
++                // 探测已 Lemire 化(免 mask),任意表容合法。默认 100 = 旧 2 幂行为零差。
++                static int g_fit_pct = -1;
++                if (g_fit_pct < 0) { const char *e = getenv("HASH_FIT_PCT"); g_fit_pct = (e && *e) ? atoi(e) : 100; }
+                 int ht = WARP_SIZE << bi;
++                if (g_fit_pct != 100 && bi >= 4)
++                    ht = (int)((long long)ht * g_fit_pct / 100) & ~31;   // 32 倍数(warp 对齐)
+                 size_t smem_flat = (size_t)ht * (sizeof(int) + sizeof(double));
+                 size_t smem_priv = (size_t)PRIV_W * ht * (sizeof(int) + sizeof(double));
+                 if (d_gv && ht >= TABLE_DOUBLING_THR) {
