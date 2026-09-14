@@ -1559,7 +1559,90 @@ __global__ void hash_spa_batched_kernel(
 // 按桶跑:ht_size = 该桶 hash 表大小;轻行小表、重行大表,distinct>ht_size → overflow_flag
 // MODE:0=legacy(gapped tmp + packed key,compact 阶段善后)1=count-only(只插 key 出精确 row_nnz,
 // 方案5 扩展到 hash 行,docs/31)2=direct(exact_rp 精确偏移直写 dC_ci/d_val,行内无序,原地 csort 善后)
+// ── Ocean 体移植(study/15 对拍):同环境逐变量对照 ─────────────────────────────
+// hashNumericKernel 的探测机理(read-first + wrap 前进 + id*11 hash)移植进我们的发射
+// 环境(同 est/bin/block/rowtime);其余(init/k-j 循环/extract/溢出守卫)全用我们的。
+// HASH_OCEAN=1 启用。差异只剩探测体本身 → 1.64× 若仍在此,凶手在循环别的部位。
+__global__ void hash_spa_ocean_kernel(
+    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
+    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
+    int upper_tri, const int *bucket_rows, int n_in_bucket, int ht_size,
+    const long long *row_off,
+    unsigned long long *tmp_key, double *tmp_val,
+    int *row_nnz, int *overflow_flag, int *ovf_rows, int *ovf_cnt, int *row_ovf,
+    unsigned long long *rowtime)
+{
+    int idx = blockIdx.x;
+    if (idx >= n_in_bucket) return;
+    int i = bucket_rows[idx];
+    int tid = threadIdx.x;
+    unsigned long long rt0 = rowtime ? clock64() : 0;
+    // FIT<100 时表非 2 幂:Lemire 高位归约支持任意表容(study/12 补丁的合体位)
+
+    extern __shared__ __align__(8) int smem[];
+    int   *sh_col = smem;
+    double *sh_val = (double*)(smem + ht_size);
+    for (int s2 = tid; s2 < ht_size; s2 += blockDim.x) { sh_col[s2] = -1; sh_val[s2] = 0.0f; }
+    __syncthreads();
+
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    int logG = hash_logG(ht_size);
+    int G = 1 << logG;
+    int num_groups = blockDim.x / G;
+    int my_group = tid / G, my_id = tid % G;
+    for (int p = rs + my_group; p < re; p += num_groups) {
+        int k = A_col_idx[p];
+        double a_ik = A_val[p];
+        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
+        for (int q = ks + my_id; q < ke; q += G) {
+            int j = B_col_idx[q];
+            if (upper_tri && j < i) continue;
+            double v = a_ik * B_val[q];
+            // ── 彼探测体(Hashmap.cuh operator[] 逐行对齐)──
+            unsigned slot = ((unsigned)(j * 11)) & (unsigned)(ht_size - 1);   // 彼 hash+mask(FIT 死路;Lemire −9% 已证)
+            int probes = 0;
+            while (true) {
+                int entry = sh_col[slot];                       // read-first:命中零原子
+                if (entry == j) { atomicAdd(&sh_val[slot], v); break; }
+                if (entry == -1) {
+                    int prev = atomicCAS(&sh_col[slot], -1, j); // 空槽才 CAS 占位
+                    if (prev == -1 || prev == j) { atomicAdd(&sh_val[slot], v); break; }
+                }
+                if (++slot >= (unsigned)ht_size) slot = 0;      // wrap 前进(彼同款;任意表容)
+                if (++probes >= ht_size) {                      // 溢出守卫(我们的,防死循环)
+                    atomicExch(overflow_flag, 1);
+                    if (!atomicExch(&row_ovf[i], 1)) { int pr = atomicAdd(ovf_cnt, 1); ovf_rows[pr] = i; }
+                    break;
+                }
+            }
+        }
+    }
+    __syncthreads();
+    // extract:与主 kernel 同(大表无序写 tmp;ht≤CSORT_HT 走 count-sort 有序写)
+    __shared__ int cnt;
+    if (tid == 0) cnt = 0;
+    __syncthreads();
+    long long base = row_off[i];
+    long long cap = row_off[i + 1] - row_off[i];
+    for (int s2 = tid; s2 < ht_size; s2 += blockDim.x) {
+        int c = sh_col[s2];
+        if (c >= 0) {
+            int pos = atomicAdd(&cnt, 1);
+            if (pos >= cap) { atomicExch(overflow_flag, 1); continue; }
+            tmp_key[base + pos] = ((unsigned long long)i << 32) | (unsigned int)c;
+            tmp_val[base + pos] = sh_val[s2];
+        }
+    }
+    __syncthreads();
+    if (tid == 0) {
+        if (cnt > cap) { if (!atomicExch(&row_ovf[i], 1)) { int pr = atomicAdd(ovf_cnt, 1); ovf_rows[pr] = i; } }
+        row_nnz[i] = (cnt <= cap) ? cnt : (int)cap;
+        if (rowtime) rowtime[i] = clock64() - rt0;
+    }
+}
+
 template<int MODE>
+
 __global__ void hash_spa_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,   // 内层 j 来源:AA=A,ATT=Aᵀ(CSC)
@@ -1575,7 +1658,8 @@ __global__ void hash_spa_kernel(
     const int *exact_rp = nullptr, int *dC_ci = nullptr, double *dC_val = nullptr,   // MODE=2
     unsigned long long *rowtime = nullptr,   // HASH_ROWTIME:逐行执行周期(docs/66;周期对 DVFS 免疫)
     const int *d5b_skip_est = nullptr,       // docs/70 §6②:MODE=1 跳过位图-合格行(交 hash_row_bcnt)
-    const int *d5b_skip_span = nullptr)
+    const int *d5b_skip_span = nullptr,
+    int force_logG = 0)                     // GFORCE(study/15 诊断):强制 G=2^force_logG;0=走正常梯
 {
     int idx = blockIdx.x;
     if (idx >= n_in_bucket) return;
@@ -1597,7 +1681,9 @@ __global__ void hash_spa_kernel(
     // G 选择:默认按 ht_size 静态梯(重行→G 大);LLB=1 改按行 (a_len, flop, max_b_len) 动态 2^k
     // (Ocean localLoadBalance 同款语义,治 Ge99 类 4.4× 的负载不均;G 可到 HASH_BLOCK=整 block/k)
     int logG;
-    if (llb && row_flop && row_maxbl)
+    if (force_logG)
+        logG = min(force_logG, 31 - __clz((unsigned)blockDim.x));   // GFORCE 诊断:可超 WARP(跨 warp 协作一个 k)
+    else if (llb && row_flop && row_maxbl)
         logG = local_load_balance(re - rs, row_flop[i], row_maxbl[i], 2 /*G_min=4*/, 31 - __clz((unsigned)blockDim.x));
     else
         logG = hash_logG(ht_size);  // 表大小梯:表每 ×8 槽 G ×2(G ≤ WARP_SIZE 免跨 warp 同步)
@@ -3498,6 +3584,12 @@ static void hash_product(
         size_t maxsm = (size_t)HASH_CAP * (sizeof(int) + sizeof(double));   // sh_col[int]+sh_val[double]
         if (maxsm > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM)
             CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        {   // study/15:移植体同款 opt-in(HASH_OCEAN 路径 >48KB 表)
+            static int g_oc2 = -1;
+            if (g_oc2 < 0) { const char *e = getenv("HASH_OCEAN"); g_oc2 = (e && *e) ? atoi(e) : 1; }
+            if (g_oc2)
+                CHECK_CUDA(cudaFuncSetAttribute(hash_spa_ocean_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        }
     }
     // 2b-priv: warp 私有 SPA 门控(HASH_PRIV=1,HASH_PRIV_W 默认 8);仅 SMEM 可容纳的桶走 priv
     static int g_priv = -1, g_privW = PRIV_W_MAX;
@@ -4124,6 +4216,10 @@ static void hash_product(
                         dA_rp, dA_ci, dA_val, rows_ptr, n, ht, PRIV_W, d_off,
                         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow);
                 } else {
+                    static int g_ocean = -1;      // HASH_OCEAN 默认开(study/15 ×5 geomean −2.4%,accumulate −4~−13%):彼体移植(read-first 探测)
+                    if (g_ocean < 0) { const char *e = getenv("HASH_OCEAN"); g_ocean = (e && *e) ? atoi(e) : 1; }   // =0 回我 CAS 体
+                    static int g_force_logG = -1;   // GFORCE(study/15 诊断):强制 G;0=正常梯。跨 warp 协作一个 k(治发散+L2 乱流)
+                    if (g_force_logG < 0) { const char *e = getenv("GFORCE"); g_force_logG = (e && *e) ? __builtin_ctz(atoi(e)) : 0; }
                     // docs/44 per-bin block 梯(Ocean BLOCK_SIZES 同哲学)+ v37 修正梯(study/06 §7 F2 对拍):
                     //   默认 = 旧三档 64/256/512 + bi≥8→1024T(修 occupancy 缺陷:ht≥8192 表 ≥96KB ×512T
                     //   只驻 2 CTA = 1024 线程;1024T 恢复满格 2048。F2/电池已证)。
@@ -4152,11 +4248,23 @@ static void hash_product(
                         g_blk_init = 1;
                     }
                     int hblk = g_blk_lad[bi <= HASH_LADDER_MAX_BIN ? bi : HASH_LADDER_MAX_BIN];
+                    static int g_fit_pct = -1;   // HASH_FIT_PCT:移植路径表 = pct%×2幂档(study/15 合体;100=legacy)
+                    if (g_fit_pct < 0) { const char *e = getenv("HASH_FIT_PCT"); g_fit_pct = (e && *e) ? atoi(e) : 100; }
+                    int ht_oc = ht;
+                    if (g_ocean && g_fit_pct != 100 && bi >= 4)
+                        ht_oc = (int)((long long)ht * g_fit_pct / 100) & ~31;
+                    if (g_ocean) {
+                        hash_spa_ocean_kernel<<<n, hblk, smem_flat, cur_s>>>(
+                            dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
+                            rows_ptr, n, ht_oc, d_off,
+                            d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, d_rt);
+                        CHECK_CUDA(cudaGetLastError());   // study/15:移植体发射即时检查
+                    } else
                     hash_spa_kernel<0><<<n, hblk, smem_flat, cur_s>>>(
                         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                         rows_ptr, n, ht, d_off,
                         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                        d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt);
+                        d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG);
                 }
             }
         }
