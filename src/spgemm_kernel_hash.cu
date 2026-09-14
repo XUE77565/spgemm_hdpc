@@ -323,6 +323,7 @@ __global__ void mh_merge_kernel(
     const unsigned int *b_mh,           // [B_rows * MH_M] uint32 from Phase 1
     const int *row_flop,                // [A_rows] 每行精确乘积数(精确上界,封顶 MinHash 高估)
     double expand,                      // EST_EXPAND(运行时:小阵 1.4 免重试 / 大阵 1.15 省内存)
+    int est_cont,                       // EST_CONT=1:est 连续不 snap 2 幂(study/12;配 HASH_TGT_ALPHA<200 单次吸附)
     int *est_nnz,                       // [A_rows] output
     int sample_stride = 0,              // MHSAMP:>1 时紧凑采样 grid(S 块,块→行 = bid×stride;实测
                                         // 28k 空块早退仍收全价 = dispatch/延迟限制,mod-skip 无效)
@@ -409,8 +410,8 @@ __global__ void mh_merge_kernel(
         int temp = (int)(E * expand);
         if (temp < 1) temp = 1;
         int est;
-        if (temp <= EST_ULTRA_THR) {                                      // ultra:线性 kernel,est 保留紧 temp
-            est = temp;
+        if (temp <= EST_ULTRA_THR || est_cont) {                          // ultra / EST_CONT:连续 temp(study/12:
+            est = temp;                                                   //  双重 pow2 吸附 2.3-4.6× 的根源)
         } else {                                                          // snap 到 next_pow2 × 2 余量
             int ht = WARP_SIZE;                                                  // (2× 余量治小/中行低估表满;>HASH_CAP 交 heavy)
             while (ht < temp && ht < GLOBAL_HT_MAX_SLOTS) ht <<= 1;
@@ -2991,6 +2992,8 @@ static void hash_product(
     const char *tag = att ? "atth" : "hash";
     dbg("[%s] start (HASH_CAP=%d)\n", tag, HASH_CAP);
     HashProf prof(att ? "atth-prof" : "hash-prof");
+    static int g_est_cont = -1;   // EST_CONT 默认开(study/13 ×5 电池 geomean −13.6%:est 连续 + expand 扛余量
+    if (g_est_cont < 0) { const char *e = getenv("EST_CONT"); g_est_cont = (e && *e) ? atoi(e) : 1; }   // 替代双重 pow2 吸附;=0 回旧
     dev_pool_reset();   // device arena:本调用所有 device buffer 复用(省 ~13 cudaMalloc/Free)
 
     size_t A_rp_sz = (A_rows + 1) * sizeof(int);
@@ -3201,6 +3204,7 @@ static void hash_product(
         static int g_adapt_expand = -1;
         if (g_adapt_expand < 0) { const char *e = getenv("ADAPT_EXPAND"); g_adapt_expand = (e && *e) ? atoi(e) : 0; }   // 08-30 裁决:进程内比较天然有偏(v3 在 F2/Flan 上误判,惩罚落在比较点之后的相位)→ 自适应移 harness 层(compare_methods 双 expand 取优);binary 默认固定 1.15
         if (g_adapt_expand && (g_ovf_hint_expand == 1 || g_ovf_hint_expand == 4)) est_expand = EST_EXPAND_SMALL;
+        if (g_est_cont && !getenv("HASH_EXPAND") && !getenv("EST_CONT")) est_expand = 1.8;   // study/13:连续 est 余量由 expand 扛(Ocean HLL 同位 1.5-2.0;F2 ovf 1319→0)
         if (const char *e = getenv("HASH_EXPAND")) est_expand = atof(e);
         if (oc_on && !getenv("HASH_EXPAND")) est_expand = 1.0;   // OCEAN_C:原始估计,采样后统一缩放
         dbg("[%s] est_expand=%.2f(total_flop=%lld)\n", tag, est_expand, total_flop);
@@ -3219,7 +3223,7 @@ static void hash_product(
             prof("mh_merge", [&]{   // 采样 pass(紧凑 grid = S 块;计入 mh_merge 相位)
                 CHECK_CUDA(cudaMemset(d_est, 0, (size_t)A_rows * sizeof(int)));
                 mh_merge_kernel<<<S, p2_block, smem_p2>>>(
-                    dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, d_est, samp_stride, mh_k);
+                    dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, g_est_cont, d_est, samp_stride, mh_k);
                 CHECK_CUDA(cudaGetLastError());
             });
             long long s_sum = thrust::reduce(
@@ -3243,7 +3247,7 @@ static void hash_product(
         if (samp_stride == 0) {
             prof("mh_merge", [&]{
                 mh_merge_kernel<<<A_rows, p2_block, smem_p2>>>(
-                    dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, d_est, 0, mh_k,
+                    dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, g_est_cont, d_est, 0, mh_k,
                     pfuse ? d_avg_gate : nullptr);
                 CHECK_CUDA(cudaGetLastError());
             });
@@ -3373,8 +3377,8 @@ static void hash_product(
     static int g_dstruct_win = -2;    // §22:-1 = 档位梯(span≤7277 五档联动);0 = 关;>0 = 手调单窗
     if (g_dstruct_win == -2) { const char *e = getenv("DSTRUCT_WIN"); g_dstruct_win = (e && *e) ? atoi(e) : -1; }   // v33d 翻默认:-1 = 档位梯分流(数值侧按 span 分两路,路由不驱逐)
     prof("binning", [&]{
-        static int g_tgt_alpha = -1;   // HASH_TGT_ALPHA(百分比;200=legacy 2×;study/10 表配刀)
-        if (g_tgt_alpha < 0) { const char *e = getenv("HASH_TGT_ALPHA"); g_tgt_alpha = (e && *e) ? atoi(e) : 200; }
+        static int g_tgt_alpha = -1;   // HASH_TGT_ALPHA(表配 target=α%×est;连续 est 下默认 150 单次吸附,study/13)
+        if (g_tgt_alpha < 0) { const char *e = getenv("HASH_TGT_ALPHA"); g_tgt_alpha = (e && *e) ? atoi(e) : (g_est_cont ? 150 : 200); }
         CHECK_CUDA(cudaMemset(d_cnt, 0, N_BINS * sizeof(int)));   // 先清零(fused kernel 内 atomicAdd 累加)
         static int g_diter = -1;   // dense-iter 重行阈值(DITER_MIN_FLOP,默认 4096;0=关)
         if (g_diter < 0) { const char *e = getenv("DITER_MIN_FLOP"); g_diter = (e && *e) ? atoi(e) : DITER_FLOP_TIER; }   // v33d 翻默认:档内 2048(超档老路径 kernel 内钳 EST_DENSE_MIN)
