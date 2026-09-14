@@ -1,0 +1,151 @@
+diff --git a/Makefile b/Makefile
+index 7f20482..80e2c8d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,7 +1,7 @@
+ NVCC = nvcc
+ CXX = nvcc
+-Compute_Capability = sm_80
+-CFLAGS = -std=c++14 -O3 
++Compute_Capability = sm_90
++CFLAGS = -std=c++17 -O3 
+ #--generate-line-info
+ NVFLAGS = -gencode=arch=compute_61,code=$(Compute_Capability) -Xptxas=-v -O3 -Xcompiler -Wall -D_FORCE_INLINES --expt-extended-lambda -use_fast_math --expt-relaxed-constexpr
+ # A too high compute would enable Independent Thread Scheduling, which may lead to performance degradation for some kernels.
+diff --git a/include/Common.h b/include/Common.h
+index 32494bc..18238bc 100644
+--- a/include/Common.h
++++ b/include/Common.h
+@@ -11,8 +11,8 @@ typedef double data_t;
+ namespace somespgemm {
+ 
+ /* Hardware related params */
+-#define NUM_SM 108
+-#define SHARED_MEMORY_KB 128  /* Choices: 128, 96, 80 . HAS TO BE ONE OF THEM*/
++#define NUM_SM 114
++#define SHARED_MEMORY_KB 128
+ 
+ #define WARP_SIZE 32
+ #define MAX_THREADS_PER_SM 2048    // MAX Threads per SM
+diff --git a/kernels/AccumulatorESC.cuh b/kernels/AccumulatorESC.cuh
+index 4a9bbcb..2abd40f 100644
+--- a/kernels/AccumulatorESC.cuh
++++ b/kernels/AccumulatorESC.cuh
+@@ -26,7 +26,7 @@ __device__ __forceinline__ int countSortCompactFused(
+         scratch_index[subwarp_tidx] = key;
+         scratch_data[subwarp_tidx] = value;
+     } else {
+-        scratch_index[subwarp_tidx] = cuda::std::numeric_limits<index_t>::max();
++        scratch_index[subwarp_tidx] = 0x7FFFFFFF;
+         leading = false;
+     }
+     value = 0.0;
+diff --git a/kernels/AccumulatorHash.cuh b/kernels/AccumulatorHash.cuh
+index d37aa5d..3f742b2 100644
+--- a/kernels/AccumulatorHash.cuh
++++ b/kernels/AccumulatorHash.cuh
+@@ -5,6 +5,9 @@
+ 
+ namespace somespgemm {
+ 
++// ROWCYCLES 逐行周期采数(host 经 cudaMemcpyToSymbol 装载;null=零开销)
++__device__ unsigned long long *g_row_cycles = nullptr;
++
+ 
+ // The input global Hashmap should be all 0xFF
+ // Overflow is possible only when we use assisted symbolic step
+@@ -527,6 +530,8 @@ __global__ __launch_bounds__(1<<LOG_NTHR, 2048>>LOG_NTHR) void hashNumericKernel
+ 
+     extern __shared__ uint8_t dynamicShared[];
+     index_t tid = threadIdx.x;
++    // ROWCYCLES 逐行周期采数(对拍我方 HASH_ROWTIME;同 clock64 同 co-residency 口径)
++    const unsigned long long rc0 = g_row_cycles ? clock64() : 0;
+ 
+     NumericHashmap<HASH_SIZE> hmap;
+ 
+@@ -618,6 +623,7 @@ __global__ __launch_bounds__(1<<LOG_NTHR, 2048>>LOG_NTHR) void hashNumericKernel
+                     releaseGlobalBuffer(global_buffer_bitmap, global_buffer_idx);
+                 }
+             }
++            if (tid == 0 && g_row_cycles) g_row_cycles[my_row] = clock64() - rc0;   // ROWCYCLES:溢出早退也记
+             return; // we stop processing if the hashmap is full
+         }
+     }
+@@ -647,6 +653,7 @@ __global__ __launch_bounds__(1<<LOG_NTHR, 2048>>LOG_NTHR) void hashNumericKernel
+             releaseGlobalBuffer(global_buffer_bitmap, global_buffer_idx);
+         }
+     }
++    if (tid == 0 && g_row_cycles) g_row_cycles[my_row] = clock64() - rc0;   // ROWCYCLES:正常尾部
+     return;
+ }
+ 
+diff --git a/src/main.cu b/src/main.cu
+index ad76a8e..9719ac2 100644
+--- a/src/main.cu
++++ b/src/main.cu
+@@ -1,5 +1,6 @@
+ #include <iostream>
+ #include <fstream>
++#include <chrono>
+ #include <cuda_runtime.h>
+ #include <cub/cub.cuh>
+ #include "SpGEMM.cuh"
+@@ -60,11 +61,45 @@ int main(int argc, char** argv) {
+ 
+     somespgemm::SpGEMM spgemm{config};
+ 
++    // ROWCYCLES=path:hashNumeric 逐行周期采数(对拍我方 HASH_ROWTIME;末次迭代值)
++    unsigned long long *d_row_cycles = nullptr;
++    const char *rowcycles_path = std::getenv("ROWCYCLES");
++    if (rowcycles_path && *rowcycles_path) {
++        cudaMalloc(&d_row_cycles, sizeof(unsigned long long) * matrix_a->rows);
++        cudaMemset(d_row_cycles, 0, sizeof(unsigned long long) * matrix_a->rows);
++        cudaMemcpyToSymbol(somespgemm::g_row_cycles, &d_row_cycles, sizeof(d_row_cycles));
++        std::cerr << "[ROWCYCLES] armed " << matrix_a->rows << " rows -> " << rowcycles_path << std::endl;
++    }
++
++    // ★ 加 H2D/D2H 计时(对比端到端用)
++    cudaFree(0); cudaDeviceSynchronize();   // 预热 CUDA context,排除冷启动开销
++    auto _t0 = std::chrono::high_resolution_clock::now();
+     auto d_A = std::make_shared<somespgemm::cuCSR>(*matrix_a);
+     auto d_B = std::make_shared<somespgemm::cuCSR>(*matrix_b);
++    cudaDeviceSynchronize();
++    auto _t1 = std::chrono::high_resolution_clock::now();
+ 
+     auto result = spgemm.run(d_A, d_B);
++
++    auto _t2 = std::chrono::high_resolution_clock::now();
+     auto result_host = std::make_shared<somespgemm::CSR>(*result);
++    cudaDeviceSynchronize();
++    auto _t3 = std::chrono::high_resolution_clock::now();
++
++    double _h2d = std::chrono::duration<double, std::milli>(_t1 - _t0).count();
++    double _d2h = std::chrono::duration<double, std::milli>(_t3 - _t2).count();
++    std::cout << "H2D_time: " << _h2d << " ms" << std::endl;
++    std::cout << "D2H_time: " << _d2h << " ms" << std::endl;
++
++    if (d_row_cycles && rowcycles_path && *rowcycles_path) {
++        std::vector<unsigned long long> h_rc(matrix_a->rows);
++        cudaMemcpy(h_rc.data(), d_row_cycles, sizeof(unsigned long long) * matrix_a->rows, cudaMemcpyDeviceToHost);
++        std::ofstream rf(rowcycles_path);
++        for (long long r = 0; r < (long long)matrix_a->rows; r++)
++            if (h_rc[r]) rf << r << " " << h_rc[r] << "\n";
++        rf.close();
++        std::cerr << "[ROWCYCLES] dumped -> " << rowcycles_path << std::endl;
++    }
+ 
+     if (config.check_correctness) {
+         auto ground_truth = somespgemm::loadMatrix(config.ground_truth_file);
+diff --git a/utils/download.py b/utils/download.py
+index 4861b53..49ab3e1 100644
+--- a/utils/download.py
++++ b/utils/download.py
+@@ -37,7 +37,7 @@ if __name__ == "__main__":
+             
+             if not os.path.exists(matrix_path):
+                 print(f"Downloading {matrix_name}...")
+-                matrix_url = f"http://sparse-files.engr.tamu.edu/MM/{cur_row[1]}/{cur_row[2]}.tar.gz"
++                matrix_url = f"https://sparse.tamu.edu/MM/{cur_row[1]}/{cur_row[2]}.tar.gz"
+                 tar_file = os.path.join(download_dir, matrix_name + ".tar.gz")
+                 
+                 # Download
