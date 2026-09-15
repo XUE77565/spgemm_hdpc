@@ -417,7 +417,20 @@ int main(int argc, char **argv) {
             double C_sparsity = 100.0 * (1.0 - (double)C_nnz / ((double)C_rows * C_cols));
             LOG_BOTH("Result C: %d x %d, nnz = %d, sparsity = %.2f%%\n",
                      C_rows, C_cols, C_nnz, C_sparsity);
-            LOG_BOTH("Time: %.3f ms\n", elapsed.count());
+
+            #if WRITE_MTX
+            {   // T4f adaptive 值级对拍输出(此前缺写 → 历史"bit-exact"实为 cu-vs-cu 空对照,study/16 勘误)
+                char *Cb = (char*)C_buffer;
+                size_t rp_sz = (C_rows + 1) * sizeof(int);
+                size_t ci_sz = (size_t)C_nnz * sizeof(int);
+                int *rp = (int*)Cb;
+                int *ci = (int*)(Cb + ALIGN8(rp_sz));
+                double *val = (double*)(Cb + ALIGN8(rp_sz) + ALIGN8(ci_sz));
+                std::string op = result_dir + "/self_product_adaptive.mtx";
+                write_matrix_market(op.c_str(), rp, ci, val, C_rows, C_cols, C_nnz);
+                LOG_BOTH("Saved to  %s\n", op.c_str());
+            }
+            #endif            LOG_BOTH("Time: %.3f ms\n", elapsed.count());
         }
 
         if (C_buffer) pinned_free(C_buffer);

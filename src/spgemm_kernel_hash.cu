@@ -2289,6 +2289,16 @@ struct ToLL {   // thrust scan 输入升 64 位(thrust 按输入 value_type 累�
 
 // prep:ht = pow2(2×min(flop, ncols))(每行 distinct ≤ min(flop,n),高 dup 行 flop 是 distinct 的
 // 几千倍,裸 flop 定表 = 内存爆炸根源之一,docs/21);超全局表上限 → 不可重试(保持 overflow → 整阵回退)
+// v40 SMEM 重试车配套:ovf 行的 flop 收集(host 求 max 定重试表)
+__global__ void gather_flop_kernel(const int *rows, int n, const int *flop, int *out, int ncols)
+{
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= n) return;
+    long long f = flop[rows[t]];
+    if (f > ncols) f = ncols;
+    out[t] = (int)f;
+}
+
 __global__ void retry_prep_kernel(
     const int *rows, int n, const int *flop,
     long long *rht, int *row_ovf, int *overflow_flag, int ncols)
@@ -2298,7 +2308,10 @@ __global__ void retry_prep_kernel(
     int row = rows[t];
     long long f = flop[row];
     if (f > ncols) f = ncols;                              // distinct ≤ ncols(数学封顶)
-    if (2 * f > (long long)GLOBAL_HT_MAX_SLOTS) return;   // 不可重试:overflow 已置
+    if (2 * f > (long long)GLOBAL_HT_MAX_SLOTS) {         // 不可重试:overflow 已置。Fix(study/16 排雷):
+        rht[t] = 2LL * HASH_CAP;                          // 仍写合法表值——裸 alloc 无 memset,早退留垃圾
+        return;                                           // 进 exclusive_scan → tab_off 垃圾 → hash_global 越界写
+    }
     long long h = 2 * HASH_CAP;
     while (h < 2 * f) h <<= 1;
     rht[t] = h;
@@ -4331,12 +4344,77 @@ static void hash_product(
                     rk  = decltype(rk)(dev_alloc((size_t)r_slots * sizeof(unsigned long long)));
                     rv  = decltype(rv)(dev_alloc((size_t)r_slots * sizeof(double)));
                     // docs/54:retry 免排序(仅 h_ovf<1000;web-Google 8720 行 +16% 教训 = 大集 csort 慢于 cub)
+                    // v40 SMEM 重试车(study/16 ①:溢出载体——治"保险系数被迫开大"的根)。
+                    // ovf 行 2×flop 表装得下 SMEM → 复用 port 体(hash_spa_ocean_kernel)走 SMEM 原子;
+                    // ht = pow2 ≥ 2×min(flop,ncols) ≥ 2×true → 数学上不可再溢;RETRY_SMEM=0 回老全局表路。
+                    // v40 SMEM 重试车(study/16 ①:溢出载体——治"保险系数被迫开大"的根)。
+                    // 按行分流:2×flop ≤ HASH_CAP 的行走 port 体(SMEM 原子,单批统一 ht=2×max,数学不可再溢);
+                    // 鲸鱼行单独留老全局表路(positional 数组按子集重建,arena 复用)。RETRY_SMEM=0 全走老路。
+                    static int g_retry_smem = -1;
+                    if (g_retry_smem < 0) { const char *e = getenv("RETRY_SMEM"); g_retry_smem = (e && *e) ? atoi(e) : 1; }
+                    int h_ovf_g = h_ovf;
+                    if (g_retry_smem && h_ovf > 0) {
+                        int *d_ovf_flop = decltype(d_ovf_flop)(dev_alloc((size_t)h_ovf * sizeof(int)));
+                        gather_flop_kernel<<<(h_ovf + 255) / 256, 256>>>(d_ovf_rows, h_ovf, d_flop, d_ovf_flop, A_cols);
+                        std::vector<int> hf(h_ovf), hr(h_ovf);
+                        CHECK_CUDA(cudaMemcpy(hf.data(), d_ovf_flop, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
+                        CHECK_CUDA(cudaMemcpy(hr.data(), d_ovf_rows, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
+                        dev_free(d_ovf_flop);
+                        std::vector<int> rows_s, rows_g;
+                        long long mf = 0;
+                        for (int t = 0; t < h_ovf; t++) {
+                            // hf≈0 = 异源溢出标记(dense 组合路径,flop 无效)→ 留老路吃默认大表;
+                            // 正常 hash 行:2×flop ≤ HASH_CAP 且 flop ≥ 2^10 才上 SMEM 车
+                            if (hf[t] >= (1 << 10) && 2LL * hf[t] <= HASH_CAP) { rows_s.push_back(hr[t]); mf = std::max(mf, (long long)hf[t]); }
+                            else rows_g.push_back(hr[t]);
+                        }
+                        int h_ovf_s = (int)rows_s.size(); h_ovf_g = (int)rows_g.size();
+                        if (h_ovf_s) {
+                            int rht = WARP_SIZE;
+                            while (rht < 2 * mf) rht <<= 1;
+                            int *d_rows_s = decltype(d_rows_s)(dev_alloc((size_t)h_ovf_s * sizeof(int)));
+                            CHECK_CUDA(cudaMemcpy(d_rows_s, rows_s.data(), (size_t)h_ovf_s * sizeof(int), cudaMemcpyHostToDevice));
+                            size_t smem_r = (size_t)rht * (sizeof(int) + sizeof(double));
+                            hash_spa_ocean_kernel<<<h_ovf_s, 512, smem_r>>>(
+                                dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
+                                d_rows_s, h_ovf_s, rht, d_roff,
+                                rk, rv, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, nullptr);
+                            CHECK_CUDA(cudaGetLastError());
+                            dev_free(d_rows_s);
+                            dbg("[hash] v40 SMEM 重试车: %d/%d 行 ht=%d(SMEM=%.0fKB);鲸鱼全局路 %d 行\n",
+                                h_ovf_s, h_ovf, rht, smem_r / 1024.0, h_ovf_g);
+                        }
+                    }
                     bool retry_sortfree = h_ovf < RETRY_SORTFREE_MAX;
-                    hash_global_kernel<<<h_ovf, HASH_BLOCK>>>(
-                        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
-                        d_ovf_rows, h_ovf, d_rht, d_rtab, rtc, rtv,
-                        d_roff, d_rslot, r_slots, rk, rv, d_row_nnz, d_overflow,
-                        d_ovf_rows, d_ovf_cnt, d_row_ovf);
+                    if (h_ovf_g) {
+                        const int *glb_rows = d_ovf_rows; int glb_n = h_ovf;
+                        long long *rht_g = d_rht, *rtab_g = d_rtab;
+                        if (h_ovf_g != h_ovf) {   // 子集:positional 重建成(arena 复用,子集总量 ≤ 全量)
+                            int *d_rows_g = decltype(d_rows_g)(dev_alloc((size_t)h_ovf_g * sizeof(int)));
+                            std::vector<int> rg; rg.reserve(h_ovf_g);
+                            int *d_ovf_flop2 = decltype(d_ovf_flop2)(dev_alloc((size_t)h_ovf * sizeof(int)));
+                            gather_flop_kernel<<<(h_ovf + 255) / 256, 256>>>(d_ovf_rows, h_ovf, d_flop, d_ovf_flop2, A_cols);
+                            std::vector<int> hf2(h_ovf), hr2(h_ovf);
+                            CHECK_CUDA(cudaMemcpy(hf2.data(), d_ovf_flop2, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
+                            CHECK_CUDA(cudaMemcpy(hr2.data(), d_ovf_rows, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
+                            dev_free(d_ovf_flop2);
+                            for (int t = 0; t < h_ovf; t++) if (2LL * hf2[t] > HASH_CAP) rg.push_back(hr2[t]);
+                            CHECK_CUDA(cudaMemcpy(d_rows_g, rg.data(), (size_t)h_ovf_g * sizeof(int), cudaMemcpyHostToDevice));
+                            rht_g = decltype(rht_g)(dev_alloc((size_t)h_ovf_g * sizeof(long long)));
+                            rtab_g = decltype(rtab_g)(dev_alloc((size_t)(h_ovf_g + 1) * sizeof(long long)));
+                            retry_prep_kernel<<<(h_ovf_g + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
+                                d_rows_g, h_ovf_g, d_flop, rht_g, d_row_ovf, d_overflow, A_cols);
+                            thrust::exclusive_scan(thrust::device_ptr<long long>(rht_g),
+                                                   thrust::device_ptr<long long>(rht_g + h_ovf_g),
+                                                   thrust::device_ptr<long long>(rtab_g));
+                            glb_rows = d_rows_g; glb_n = h_ovf_g;
+                        }
+                        hash_global_kernel<<<glb_n, HASH_BLOCK>>>(
+                            dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
+                            glb_rows, glb_n, rht_g, rtab_g, rtc, rtv,
+                            d_roff, d_rslot, r_slots, rk, rv, d_row_nnz, d_overflow,
+                            d_ovf_rows, d_ovf_cnt, d_row_ovf);
+                    }
                     // retry_prep 遇不可重试行会重置 overflow → 仍有则整阵回退
                     d_retry_rows = d_ovf_rows; d_retry_n = h_ovf;
                     d_retry_off = d_roff; d_retry_key = rk; d_retry_val = rv;
