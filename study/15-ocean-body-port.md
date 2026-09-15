@@ -43,4 +43,25 @@
 
 - 代码:hash_spa_ocean_kernel + HASH_OCEAN(默认 1)+ HASH_FIT_PCT(移植路径,实验遗留)+ GFORCE
 - /tmp/bin_pre_port(翻默认前二进制);compare/port_battery.log
+
+---
+
+## 勘误(2026-09-16 转正刀,两则 + 一条路线修正)
+
+**勘误一:v39 的 −2.4% geomean 掺了"免排序"水分,且移植周输出 C 小表行无序(存量正确性 bug #2)。**
+移植体 extract 注释称"与主 kernel 同(ht≤CSORT_HT 走 count-sort 有序写)",但代码只有无序写一条路;下游小 bin(`bi ≤ ilog2c(CSORT_HT/32)`)只做 compact_copy(假设上游已序)→ 无序行直达 C。nnz 红旗与值级 set 对比均序盲,一周未察。实测(WRITE_MTX dump + 行内严格升序检查):
+
+| 阵 | 移植体输出乱序违规 | 转正后 |
+|---|---|---|
+| crankseg_2 | 6,908 处(首例 row 1783) | **0** |
+| F2 | 2,277,120 处(首例 row 7) | **0** |
+
+∴ 本篇 −2.4% geomean 与 commit 1c4d254 的系统级声明须加注:其中含跳过排序作业的成分;**accumulate 相位的机理归因(read-first 体差 13.5%,clock64 逐行口径)不受影响,仍然成立**。
+
+**勘误二:转正刀已执行——机理以自有形态并入 `hash_spa_kernel`,移植体整块删除。**
+- read-first 探测(命中普通读零原子/空槽 CAS 占位)进 `hash_spa_kernel` 内层循环,`template<int MODE, int PROBE_RF=1>` 编译期分支,主 bin/retry(MODE=0)/count(MODE=1)/direct(MODE=2)全发射点统一;逃生门 `HASH_PROBE_RF=0`(=CAS-first,v38 语义)
+- `hash_spa_ocean_kernel`/`HASH_OCEAN`/`HASH_FIT_PCT` 全库零残留;散列常数 Knuth 2654435761u 本就自有;注释引 nsparse `kernel_spgemm_hash_s.cu:298-315`/spECK `HashMap.cuh` 公共先例
+- diff −132/+84;值级三绿(msc10848 default/storm/CAS 门,DITER off);小表行有序合同恢复(上表)
+
+**路线修正:extract 路径成为新刀候选。** 三点定位(crankseg accumulate):v38(CAS+kernel 内 count-sort,有序)24.4ms → 移植体(RF+无序)21.1ms → 转正版(RF+count-sort,有序)22.9ms。read-first 机理净赚 −6.2%(对 v38);移植体对转正版多出的 8.5% = 它欠的排序作业。若把小 bin 的排序从 kernel 内 O(count²) count-sort 挪到下游 csort_fused 基数排序(v37 细梯已证 bin6/7 便宜),有望同时拿"无序 extract 的便宜 + 有序合同"——待独立成刀验证。
 - 创新点池更新:**"对拍驱动的内核体移植+同环境逐变量归因"方法学**;bin 级 dup 条件化(体已统一,此点并入 G/配置)
