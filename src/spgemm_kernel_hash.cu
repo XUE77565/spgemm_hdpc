@@ -3427,7 +3427,9 @@ static void hash_product(
         if (g_tgt_alpha < 0) { const char *e = getenv("HASH_TGT_ALPHA"); g_tgt_alpha = (e && *e) ? atoi(e) : (g_est_cont ? 150 : 200); }
         CHECK_CUDA(cudaMemset(d_cnt, 0, N_BINS * sizeof(int)));   // 先清零(fused kernel 内 atomicAdd 累加)
         static int g_diter = -1;   // dense-iter 重行阈值(DITER_MIN_FLOP,默认 4096;0=关)
-        if (g_diter < 0) { const char *e = getenv("DITER_MIN_FLOP"); g_diter = (e && *e) ? atoi(e) : DITER_FLOP_TIER; }   // v33d 翻默认:档内 2048(超档老路径 kernel 内钳 EST_DENSE_MIN)
+        if (g_diter < 0) { const char *e = getenv("DITER_MIN_FLOP"); g_diter = (e && *e) ? atoi(e) : 0; }   // 2026-09-17 默认关:diter 数值相 rank 塌缩竞态未根因(msc 3261 垃圾行,study/18 DDUMP 探针:
+                                                                                                                                 // out==cap 但尾槽全 0 + 轮间不确定);修复后 DITER_MIN_FLOP=2048 复归。正确性优先铁律。
+                                                                                                                                 // 旧默认 DITER_FLOP_TIER=2048(v33d 档内)
         static int g_dim2 = -1;
         if (g_dim2 < 0) { const char *e = getenv("DIM2"); g_dim2 = (e && *e) ? atoi(e) : 0; }   // docs/61:双维路由基建(默认关 —— c-big straggler 实测挂 v4 span 门 19491/19578,路由无解需窗口内核经济学升级)
         static int g_dtier_cmp = -1;   // §22b Ocean 双维档位比较(默认关;电池 in-2004 95.3% 通过率校准)
@@ -4675,6 +4677,20 @@ static void hash_product(
                 CHECK_CUDA(cudaGetLastError());
             }
             if (d_rows_sorted) dev_free(d_rows_sorted);
+            if (getenv("DDUMP_ROW")) {   // diter 雷探针(study/18):指定行的 dC_ci 切片 + 修正后 row_nnz
+                int dr = atoi(getenv("DDUMP_ROW"));
+                int b2, rn2, rn0;
+                CHECK_CUDA(cudaMemcpy(&b2, dC_rp + dr, sizeof(int), cudaMemcpyDeviceToHost));
+                CHECK_CUDA(cudaMemcpy(&rn2, d_row_nnz + dr, sizeof(int), cudaMemcpyDeviceToHost));
+                int cap0 = b2 + (rn2 > 0 ? rn2 : 0);
+                CHECK_CUDA(cudaMemcpy(&cap0, dC_rp + dr + 1, sizeof(int), cudaMemcpyDeviceToHost));
+                static int h_ci[4096];
+                int n2 = cap0 - b2; if (n2 > 4096) n2 = 4096;
+                CHECK_CUDA(cudaMemcpy(h_ci, dC_ci + b2, (size_t)n2 * sizeof(int), cudaMemcpyDeviceToHost));
+                dbg("[DDUMP] row %d: base=%d prefix_len=%d corrected_row_nnz=%d 首12列=", dr, b2, cap0 - b2, rn2);
+                for (int t = 0; t < 12 && t < n2; t++) dbg("%d ", h_ci[t]);
+                dbg("\n");
+            }
             if (dsn_f) {   // §26:struct numeric 逐行周期落盘(非零行 = 档位梯人群)
                 std::vector<unsigned long long> rt(A_rows);
                 CHECK_CUDA(cudaMemcpy(rt.data(), dsn_rt_dev, (size_t)A_rows * sizeof(unsigned long long), cudaMemcpyDeviceToHost));
