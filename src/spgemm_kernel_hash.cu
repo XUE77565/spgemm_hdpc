@@ -1576,6 +1576,16 @@ __global__ void hash_spa_batched_kernel(
 // 按桶跑:ht_size = 该桶 hash 表大小;轻行小表、重行大表,distinct>ht_size → overflow_flag
 // MODE:0=legacy(gapped tmp + packed key,compact 阶段善后)1=count-only(只插 key 出精确 row_nnz,
 // 方案5 扩展到 hash 行,docs/31)2=direct(exact_rp 精确偏移直写 dC_ci/d_val,行内无序,原地 csort 善后)
+// ④ 交织 B(inno/79):B 的 (col,val) 两窄流 → 16B 对齐 uint4 单条(col 4|pad 4|val 8);行结构/下标不变。
+// 靶:B 流 L1 9%/sec-req 3.51/请求 2.5×(study/15 尸检);一次 LDG.128 携带双域,载入指令减半。
+__global__ void b_interleave_kernel(const int *col, const double *val, int n, uint4 *out) {
+    int q = blockIdx.x * blockDim.x + threadIdx.x;
+    if (q >= n) return;
+    unsigned long long bits; double v = val[q]; memcpy(&bits, &v, 8);
+    out[q] = make_uint4((unsigned)col[q], 0u,
+                        (unsigned)(bits & 0xffffffffu), (unsigned)(bits >> 32));
+}
+
 // 探测体选择(逃生门):HASH_PROBE_RF 默认 1 = read-first;=0 回 CAS-first(study/15 前原始形态)。
 // 全部发射点(主 bin / retry / count<1> / direct<2>)统一走它。
 static inline bool probe_rf_on() {
@@ -1607,9 +1617,10 @@ __global__ void hash_spa_kernel(
     const int *d5b_skip_est = nullptr,       // docs/70 §6②:MODE=1 跳过位图-合格行(交 hash_row_bcnt)
     const int *d5b_skip_span = nullptr,
     int force_logG = 0,                     // GFORCE(study/15 诊断):强制 G=2^force_logG;0=走正常梯
-    int uo_extract = 0)                     // HASH_UO_XTRACT=1(口径对齐仪器):MODE=0 强制无序 extract,
+    int uo_extract = 0,                     // HASH_UO_XTRACT=1(口径对齐仪器):MODE=0 强制无序 extract,
                                             // 对齐 ocean ROWCYCLES 口径(彼方排序在计时窗外)。输出将无序,
                                             // 仅用于逐行对拍计时,勿入电池/默认。
+    const uint4 *B16 = nullptr)             // HASH_BI=1(④ 交织 B):16B 单股流;null = 走双数组(默认)
 {
     int idx = blockIdx.x;
     if (idx >= n_in_bucket) return;
@@ -1645,9 +1656,13 @@ __global__ void hash_spa_kernel(
         double a_ik = A_val[p];
         int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];        // B 的行 k(AA=A;ATT=Aᵀ)
         for (int q = ks + my_id; q < ke; q += G) {           // 组内 G 线程并行 j
-            int j = B_col_idx[q];
+            int j; double bv;
+            if (B16) {                                        // ④ 交织 B:一次 128b 携带 col+val
+                uint4 e = B16[q];
+                j = (int)e.x; bv = __hiloint2double(e.w, e.z);
+            } else { j = B_col_idx[q]; bv = B_val[q]; }
             if (upper_tri && j < i) continue;                // ATT 上三角过滤(j≥i)
-            double v = (MODE == 1) ? 0.0 : a_ik * B_val[q];  // count-only 免乘免值写(docs/31)
+            double v = (MODE == 1) ? 0.0 : a_ik * bv;        // count-only 免乘免值写(docs/31)
             unsigned slot = ((unsigned)(j * 2654435761u)) & mask;   // Knuth 乘法散列(自有常数,全值域)
             int probes = 0;
             while (true) {
@@ -3144,6 +3159,16 @@ static void hash_product(
         dB_rp = dA_rp; dB_ci = dA_ci; dB_val = dA_val;
     }
     const int upper_tri = att ? 1 : 0;
+    // ④ 交织 B(inno/79 规格;HASH_BI=1 开,默认关):B16 = B 条目的 16B 单股流,B_row_ptr 复用
+    uint4 *dB16 = nullptr;
+    static int g_bi = -1;   // ④ 交织 B:×5 电池 8胜2平1负 geomean −1.9%(Ga3 −8.2/c-43 −5.9;msc +4.2=小阵构建税)
+    if (g_bi < 0) { const char *e = getenv("HASH_BI"); g_bi = (e && *e) ? atoi(e) : 1; }   // 默认开;HASH_BI=0 逃生门回双数组
+    if (g_bi) {
+        dB16 = decltype(dB16)(dev_alloc((size_t)A_nnz * sizeof(uint4)));
+        b_interleave_kernel<<<(A_nnz + 255) / 256, 256>>>(dB_ci, dB_val, A_nnz, dB16);
+        CHECK_CUDA(cudaGetLastError());
+        dbg("[%s] HASH_BI: B16 交织 %d 项(+%.1fMB)\n", tag, A_nnz, A_nnz * 16.0 / 1048576.0);
+    }
 
     // Ocean-C v1(docs/64 机制 C):采样行精确计数 → est/exact q05 → 数据驱动 expand 替换
     // 手调 1.15/1.4(Ana2 的 safe=avg−z·√var 同哲学)。默认关;开时 mh_merge 给 1.0 原始
@@ -4238,13 +4263,13 @@ static void hash_product(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16);
                     else
                         hash_spa_kernel<0,0><<<n, hblk, smem_flat, cur_s>>>(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16);
                     CHECK_CUDA(cudaGetLastError());   // 发射即时检查(>48KB 表 opt-in 类问题即抓)
                 }
             }
@@ -4466,7 +4491,7 @@ static void hash_product(
         dev_free(dA); dev_free(d_off); dev_free(d_row_nnz);
         dev_free(d_overflow); dev_free(d_tmp_key); dev_free(d_tmp_val);
         dev_free(d_bkid); dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos); dev_free(d_sort); dev_free(d_est); dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); dev_free(d_gv); dev_free(d_gv_off);
-        dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val);
+        dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val); dev_free(dB16);
         dev_free(d_heavy_ht); dev_free(d_heavy_tab_off); dev_free(d_tab_col); dev_free(d_tab_val);
         dev_free(d_seg_beg); dev_free(d_seg_end); dev_free(d_scr_key); dev_free(d_scr_val); dev_free(d_cub_tmp);
         dev_free(d_ovf_rows); dev_free(d_ovf_cnt); dev_free(d_row_ovf);
@@ -4508,7 +4533,7 @@ static void hash_product(
         dev_free(d_overflow); dev_free(d_tmp_key); dev_free(d_tmp_val);
         dev_free(d_bkid); dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos); dev_free(d_sort); dev_free(d_est); dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); dev_free(d_gv); dev_free(d_gv_off);
         dev_free(dC_rp);
-        dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val);
+        dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val); dev_free(dB16);
         dev_free(d_heavy_ht); dev_free(d_heavy_tab_off); dev_free(d_tab_col); dev_free(d_tab_val);
         dev_free(d_seg_beg); dev_free(d_seg_end); dev_free(d_scr_key); dev_free(d_scr_val); dev_free(d_cub_tmp);
         dev_free(d_ovf_rows); dev_free(d_ovf_cnt); dev_free(d_row_ovf);
@@ -4769,7 +4794,7 @@ static void hash_product(
             dev_free(d_gv); dev_free(d_gv_off); dev_free(d_ovf_rows); dev_free(d_ovf_cnt); dev_free(d_row_ovf);
             dev_free(d_heavy_ht); dev_free(d_heavy_tab_off); dev_free(d_tab_col); dev_free(d_tab_val);
             dev_free(d_seg_beg); dev_free(d_seg_end); dev_free(d_scr_key); dev_free(d_scr_val); dev_free(d_cub_tmp);
-            dev_free(d_smap); dev_free(d_smap_off); dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val);
+            dev_free(d_smap); dev_free(d_smap_off); dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val); dev_free(dB16);
             return;
         }
     }
@@ -4935,7 +4960,7 @@ static void hash_product(
     dev_free(dA); dev_free(d_off); dev_free(d_row_nnz);
     dev_free(d_overflow); dev_free(d_tmp_key); dev_free(d_tmp_val);
     dev_free(dC_rp); dev_free(dC);   // dC_ci/d_val 是 dC 的偏移别名,随 dC 一起释放
-    dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val);   // ATT 的 Aᵀ(AA 时为 null,no-op)
+    dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val); dev_free(dB16);   // ATT 的 Aᵀ(AA 时为 null,no-op)
     dev_free(d_heavy_ht); dev_free(d_heavy_tab_off); dev_free(d_tab_col); dev_free(d_tab_val);
     dev_free(d_seg_beg); dev_free(d_seg_end); dev_free(d_scr_key); dev_free(d_scr_val); dev_free(d_cub_tmp);
     dev_free(d_ovf_rows); dev_free(d_ovf_cnt); dev_free(d_row_ovf);
