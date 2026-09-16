@@ -43,3 +43,7 @@
 | diter 路径(bin13) | ❌ 已知未修 | — | 全表 DITER off 口径 |
 
 另:本轮追加 **HASH_UO_XTRACT 口径开关**(MODE=0 强制无序 extract,对齐 ocean ROWCYCLES 窗口径;F2 实测窗内排序税 5.9%)——口径 A(机理对照)与口径 B(有序产出)从此可分;仪器禁入电池默认。
+
+## 勘误三(09-17):历史值级 PASS 均为"6 位精度口径"
+
+crankseg_2 首次获得真值(scipy 17 位;**cuSPARSE 对稠密行大阵 error 11 跑不通——此类阵历史上从未有过真值**)后 FAIL:486 坏点比值全 =1.0,test 恰为 ref 的 6 位舍入——根因 `write_matrix_market` 的 `file << val[j]`(ostream 默认 6 位有效数字)。已修(std::setprecision(17))。**影响**:此前全部 PASS(msc/pre2/F2/c-43/web-Google/Zd)实为 6 位精度下通过——对粗错类(2×/1.5×/denormal/垃圾)仍然有效捕获(误差量 ≫ 6 位),但精度假象上界 ~1e-6 相对;自本勘误起值级标准 = 17 位对 17 位。**教训:验证器自身的精度也要验证**——盲区家族第六成员(空对照/序盲/nnz 盲/set 盲/精度盲…)。

@@ -1,6 +1,7 @@
 #include "spgemm.h"
 #include <iostream>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <vector>
 #include <string>
@@ -182,6 +183,8 @@ bool write_matrix_market(const char *filename,
 
     file << "%%MatrixMarket matrix coordinate real general\n";
     file << rows << " " << cols << " " << nnz << "\n";
+    file << std::setprecision(17);   // ostream 默认 6 位 = 值级对比精度假象源(study/18 勘误:
+                                     // crankseg 486 坏点全为 6 位舍入、比值=1.0;历史 PASS 均为 6 位精度口径)
 
     for (int i = 0; i < rows; i++) {
         for (int j = row_ptr[i]; j < row_ptr[i + 1]; j++) {
