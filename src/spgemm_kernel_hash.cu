@@ -1356,12 +1356,12 @@ __global__ void bsearch_symbolic_kernel(
     if (warp >= n_in_bucket) return;
     int i = bucket_rows[warp];
 
-    __shared__ int bsmem[BATCH_WPB][4 * BATCH_HT];
+    __shared__ int bsmem[BATCH_WPB][5 * BATCH_HT];   // t_col | t_val(2HT int) | pack_col | pack_slot(分离,同 batched 修)
     __shared__ int w_cnt[BATCH_WPB];
     int *t_col = bsmem[warp & (BATCH_WPB - 1)];
     double *t_val = (double*)(bsmem[warp & (BATCH_WPB - 1)] + BATCH_HT);
-    int *pack_col = bsmem[warp & (BATCH_WPB - 1)] + 2 * BATCH_HT;
-    int *pack_slot = bsmem[warp & (BATCH_WPB - 1)] + 3 * BATCH_HT;
+    int *pack_col = bsmem[warp & (BATCH_WPB - 1)] + 3 * BATCH_HT;
+    int *pack_slot = bsmem[warp & (BATCH_WPB - 1)] + 4 * BATCH_HT;
 
     if (lane == 0) w_cnt[warp & (BATCH_WPB - 1)] = 0;
     for (int s = lane; s < BATCH_HT; s += 32) { t_col[s] = -1; t_val[s] = 0.0; }
@@ -1484,8 +1484,11 @@ __global__ void hash_spa_batched_kernel(
     if (warp >= n_in_bucket) return;
     int i = bucket_rows[warp];
 
-    // 静态 SMEM:每 warp 段 = col[HT] | val[HT](8B 对齐) | pack_col[HT] | pack_slot[HT]
-    __shared__ int bsmem[WPB][4 * HT];
+    // 静态 SMEM:每 warp 段 = col[HT] | val(2×HT int = HT double) | pack_col[HT] | pack_slot[HT]
+    // ⚠ 旧布局 4×HT 把 pack_col 放 +2HT —— 落在 t_val(double 占 [HT,3HT) int)背衬区:extract 写
+    //   pack_col[pos] 半改写高槽位(≥HT/2)条目的 val → 整型比特 denormal 垃圾(study/18 雷 #3-b,
+    //   pre2 696 点/bit=两列号;est≤64 且哈希槽≥HT/2 的行才中招,三周未察)。改 5×HT 分离。
+    __shared__ int bsmem[WPB][5 * HT];
     __shared__ int w_cnt[WPB];
     int *t_col = bsmem[warp & (WPB - 1)];
     // 方案4修正: HYBRID 模式下 value 在全局(L2 原子吞吐高,CAS 仍在 SMEM)
@@ -1493,10 +1496,10 @@ __global__ void hash_spa_batched_kernel(
     if (global_val) {
         t_val = global_val + (size_t)(warp) * HT;  // 全局池,每 warp 一段
     } else {
-        t_val = (double*)(bsmem[warp & (WPB - 1)] + HT);
+        t_val = (double*)(bsmem[warp & (WPB - 1)] + HT);   // int [HT, 3HT)
     }
-    int *pack_col = bsmem[warp & (WPB - 1)] + 2 * HT;
-    int *pack_slot = bsmem[warp & (WPB - 1)] + 3 * HT;
+    int *pack_col = bsmem[warp & (WPB - 1)] + 3 * HT;      // int [3HT, 4HT)
+    int *pack_slot = bsmem[warp & (WPB - 1)] + 4 * HT;     // int [4HT, 5HT)
 
     if (lane == 0) w_cnt[warp & (WPB - 1)] = 0;
     for (int s = lane; s < HT; s += 32) { t_col[s] = -1; t_val[s] = 0.0; }
@@ -1589,7 +1592,10 @@ __global__ void hash_spa_kernel(
     unsigned long long *rowtime = nullptr,   // HASH_ROWTIME:逐行执行周期(docs/66;周期对 DVFS 免疫)
     const int *d5b_skip_est = nullptr,       // docs/70 §6②:MODE=1 跳过位图-合格行(交 hash_row_bcnt)
     const int *d5b_skip_span = nullptr,
-    int force_logG = 0)                     // GFORCE(study/15 诊断):强制 G=2^force_logG;0=走正常梯
+    int force_logG = 0,                     // GFORCE(study/15 诊断):强制 G=2^force_logG;0=走正常梯
+    int uo_extract = 0)                     // HASH_UO_XTRACT=1(口径对齐仪器):MODE=0 强制无序 extract,
+                                            // 对齐 ocean ROWCYCLES 口径(彼方排序在计时窗外)。输出将无序,
+                                            // 仅用于逐行对拍计时,勿入电池/默认。
 {
     int idx = blockIdx.x;
     if (idx >= n_in_bucket) return;
@@ -1671,7 +1677,7 @@ __global__ void hash_spa_kernel(
     if (tid == 0) cnt = 0;
     __syncthreads();
     long long base = row_off[i];
-    if (ht_size <= CSORT_HT) {
+    if (ht_size <= CSORT_HT && !(uo_extract && MODE == 0)) {   // HASH_UO_XTRACT:口径对齐仪器(签名注)
         // compact 到前部:chunked 读进寄存器→sync→写前部(read-before-write 防 race)
         for (int it = 0; it < (ht_size + blockDim.x - 1) / blockDim.x; it++) {
             int s = it * blockDim.x + tid;
@@ -2749,7 +2755,7 @@ __global__ void hash_esc_kernel(
         double ov = __shfl_sync(full_mask, my_val, sub_base + k);
         if (ok == 0x7fffffff || ok == -1) continue;          // 哨兵/过滤项
         if (ok < my_key) smaller |= (1u << k);
-        else if (ok == my_key) { sum += ov; if (k < t) leader = false; }
+        else if (ok == my_key) { if (k != t) sum += ov; if (k < t) leader = false; }   // k==t 是自己:sum 已含 my_val,再 += = 自加倍(v31-④ 起全量值 2×/1.5× 雷,study/18;单键 2.0×,双键 v1≈v2 时 1.5×)
     }
     __syncwarp();
     unsigned leaders = __ballot_sync(full_mask, leader && my_key != 0x7fffffff && my_key != -1);
@@ -3936,6 +3942,11 @@ static void hash_product(
     const long long tmp_slots = (dense_nr > 0 || d5h_rows > 0) ? tmp_slots_dev : total_est;
     d_tmp_key = decltype(d_tmp_key)(dev_alloc((size_t)tmp_slots * sizeof(unsigned long long)));
     d_tmp_val = decltype(d_tmp_val)(dev_alloc((size_t)tmp_slots * sizeof(double)));
+    {   // INITDBG=1:值区清零分叉实验(study/18 残余雷定位:denormal 垃圾=未写槽 or 主动写垃圾)
+        static int g_initdbg = -1;
+        if (g_initdbg < 0) { const char *e = getenv("INITDBG"); g_initdbg = (e && *e) ? atoi(e) : 0; }
+        if (g_initdbg) CHECK_CUDA(cudaMemset(d_tmp_val, 0, (size_t)tmp_slots * sizeof(double)));
+    }
     if (dense_nr > 0 && (dense_mode || dense_win_mode)) {
         // 方案5 矩阵级:count 已出精确 row_nnz,数值 pass 在 cnnz_scan 后直写(此分支无 accumulate)
     } else
@@ -4205,18 +4216,20 @@ static void hash_product(
                     }
                     int hblk = g_blk_lad[bi <= HASH_LADDER_MAX_BIN ? bi : HASH_LADDER_MAX_BIN];
                     // read-first 探测已并入 hash_spa_kernel 本体(PROBE_RF 模板参;逃生门 HASH_PROBE_RF=0)
+                    static int g_uo_x = -1;   // HASH_UO_XTRACT=1(口径对齐仪器):MODE=0 无序 extract,对齐彼 ROWCYCLES 口径
+                    if (g_uo_x < 0) { const char *e = getenv("HASH_UO_XTRACT"); g_uo_x = (e && *e && atoi(e) > 0) ? 1 : 0; }
                     if (probe_rf_on())
                         hash_spa_kernel<0,1><<<n, hblk, smem_flat, cur_s>>>(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x);
                     else
                         hash_spa_kernel<0,0><<<n, hblk, smem_flat, cur_s>>>(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x);
                     CHECK_CUDA(cudaGetLastError());   // 发射即时检查(>48KB 表 opt-in 类问题即抓)
                 }
             }
@@ -4291,6 +4304,10 @@ static void hash_product(
                     static int g_retry_smem = -1;
                     if (g_retry_smem < 0) { const char *e = getenv("RETRY_SMEM"); g_retry_smem = (e && *e) ? atoi(e) : 1; }
                     int h_ovf_g = h_ovf;
+                    std::vector<int> rows_s, rows_g;   // v40 按行分流结果,提升到两层可见:鲸鱼子集重建
+                    long long mf = 0;                  // 必须复用 rows_g 本体(study/17 雷:二次重筛条件
+                                                       // ≠ 分流补集 → h_ovf_g > rg.size() → 拷未初始化尾段
+                                                       // = 垃圾行号 → retry_prep flop[]/row_ovf[] 越界读写)
                     if (g_retry_smem && h_ovf > 0) {
                         int *d_ovf_flop = decltype(d_ovf_flop)(dev_alloc((size_t)h_ovf * sizeof(int)));
                         gather_flop_kernel<<<(h_ovf + 255) / 256, 256>>>(d_ovf_rows, h_ovf, d_flop, d_ovf_flop, A_cols);
@@ -4298,8 +4315,6 @@ static void hash_product(
                         CHECK_CUDA(cudaMemcpy(hf.data(), d_ovf_flop, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
                         CHECK_CUDA(cudaMemcpy(hr.data(), d_ovf_rows, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
                         dev_free(d_ovf_flop);
-                        std::vector<int> rows_s, rows_g;
-                        long long mf = 0;
                         for (int t = 0; t < h_ovf; t++) {
                             // hf≈0 = 异源溢出标记(dense 组合路径,flop 无效)→ 留老路吃默认大表;
                             // 正常 hash 行:2×flop ≤ HASH_CAP 且 flop ≥ 2^10 才上 SMEM 车
@@ -4335,15 +4350,11 @@ static void hash_product(
                         long long *rht_g = d_rht, *rtab_g = d_rtab;
                         if (h_ovf_g != h_ovf) {   // 子集:positional 重建成(arena 复用,子集总量 ≤ 全量)
                             int *d_rows_g = decltype(d_rows_g)(dev_alloc((size_t)h_ovf_g * sizeof(int)));
-                            std::vector<int> rg; rg.reserve(h_ovf_g);
-                            int *d_ovf_flop2 = decltype(d_ovf_flop2)(dev_alloc((size_t)h_ovf * sizeof(int)));
-                            gather_flop_kernel<<<(h_ovf + 255) / 256, 256>>>(d_ovf_rows, h_ovf, d_flop, d_ovf_flop2, A_cols);
-                            std::vector<int> hf2(h_ovf), hr2(h_ovf);
-                            CHECK_CUDA(cudaMemcpy(hf2.data(), d_ovf_flop2, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
-                            CHECK_CUDA(cudaMemcpy(hr2.data(), d_ovf_rows, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
-                            dev_free(d_ovf_flop2);
-                            for (int t = 0; t < h_ovf; t++) if (2LL * hf2[t] > HASH_CAP) rg.push_back(hr2[t]);
-                            CHECK_CUDA(cudaMemcpy(d_rows_g, rg.data(), (size_t)h_ovf_g * sizeof(int), cudaMemcpyHostToDevice));
+                            // 直接复用分流补集 rows_g(与 h_ovf_g 严格同源);旧实现二次 gather 后按
+                            // "2×flop>HASH_CAP" 重筛,漏掉 flop<2^10 的非车行(含异源标记)→ h_ovf_g
+                            // > rg.size() → 拷未初始化尾段 = 垃圾行号 → retry_prep 越界读写(study/17 雷,
+                            // memcheck 实锤:pre2 138 溢出行 47 车 + 91 非车,rg<91 → 双卡各楔死一次)
+                            CHECK_CUDA(cudaMemcpy(d_rows_g, rows_g.data(), (size_t)h_ovf_g * sizeof(int), cudaMemcpyHostToDevice));
                             rht_g = decltype(rht_g)(dev_alloc((size_t)h_ovf_g * sizeof(long long)));
                             rtab_g = decltype(rtab_g)(dev_alloc((size_t)(h_ovf_g + 1) * sizeof(long long)));
                             retry_prep_kernel<<<(h_ovf_g + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
@@ -4386,7 +4397,50 @@ static void hash_product(
             });
         }
     };  // D5H:count/legacy 的 ovf 都在 scan 前覆盖(retry 产精确 row_nnz;MODE=2 跳过 ovf 行)
+    // TMPSCAN=<row>:相位时间线仪器(study/18 残余雷:tmp_val 何时出现 key 格式脏比特)
+    static int g_tmpscan = -1;
+    if (g_tmpscan < 0) { const char *e = getenv("TMPSCAN"); g_tmpscan = (e && *e) ? atoi(e) : -1; }
+    auto tmpscan = [&](const char *phase) {
+        if (g_tmpscan < 0 || !d_tmp_val) return;
+        int r = g_tmpscan;
+        long long bo[2]; int er;
+        CHECK_CUDA(cudaMemcpy(bo, d_off + r, 2 * sizeof(long long), cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(&er, d_est + r, sizeof(int), cudaMemcpyDeviceToHost));
+        int n = (int)std::min<long long>(bo[1] - bo[0], 4096);
+        if (n <= 0) return;
+        static double *h_sv = nullptr;
+        if (!h_sv) h_sv = (double*)malloc(4096 * sizeof(double));
+        CHECK_CUDA(cudaMemcpy(h_sv, d_tmp_val + bo[0], (size_t)n * sizeof(double), cudaMemcpyDeviceToHost));
+        for (int t = 0; t < n; t++) {
+            double v = h_sv[t];
+            if (v != 0.0 && fabs(v) < 1e-290) {   // denormal/整型比特
+                unsigned long long bits; memcpy(&bits, &v, 8);
+                int hi = (int)(bits >> 32), lo = (int)(bits & 0xffffffffu);
+                dbg("[TMPSCAN] %s: slot[%d]=%.6e bits=0x%016llx(row=%d est=%d base=%lld) → (hi=%d lo=%d)\n",
+                    phase, t, v, bits, r, er, bo[0], hi, lo);
+                // 邻域 5 槽的 key+val 对照 + 嫌疑行(hi)的 base/est
+                if (hi >= 0 && hi < A_rows && hi != r) {
+                    long long hb[2]; int he;
+                    CHECK_CUDA(cudaMemcpy(hb, d_off + hi, 2 * sizeof(long long), cudaMemcpyDeviceToHost));
+                    CHECK_CUDA(cudaMemcpy(&he, d_est + hi, sizeof(int), cudaMemcpyDeviceToHost));
+                    dbg("[TMPSCAN]    嫌疑行 %d: base=%lld est=%d(本行 base=%lld → 距离 %lld)\n",
+                        hi, hb[0], he, bo[0], bo[0] - hb[0]);
+                }
+                static unsigned long long *h_sk = nullptr;
+                if (!h_sk) h_sk = (unsigned long long*)malloc(4096 * sizeof(unsigned long long));
+                int t0 = t > 2 ? t - 2 : 0;
+                CHECK_CUDA(cudaMemcpy(h_sk, d_tmp_key + bo[0] + t0, 5 * sizeof(unsigned long long), cudaMemcpyDeviceToHost));
+                CHECK_CUDA(cudaMemcpy(h_sv + 2048, d_tmp_val + bo[0] + t0, 5 * sizeof(double), cudaMemcpyDeviceToHost));
+                for (int u = 0; u < 5; u++)
+                    dbg("[TMPSCAN]    slot[%d]: key=0x%016llx val=%.6g\n", t0+u, h_sk[u], h_sv[2048+u]);
+                return;
+            }
+        }
+        dbg("[TMPSCAN] %s: clean(row=%d est=%d)\n", phase, r, er);
+    };
+    tmpscan("pre-retry");
     run_retry();
+    tmpscan("post-retry");
 
     CHECK_CUDA(cudaMemcpy(&overflow, d_overflow, sizeof(int), cudaMemcpyDeviceToHost));
     if (!g_d5h_on && overflow) {
@@ -4492,6 +4546,27 @@ static void hash_product(
         d_val_ip = (double*)(cb + C_rp_al + C_ci_al);
     }
     d_val = d_val_ip;
+    // TMPSCAN 扩展:输出区(dC_val@dC_rp)扫描 —— compact 前后各一次(study/18:tmp 全净,垃圾在输出区)
+    auto outscan = [&](const char *phase) {
+        if (g_tmpscan < 0 || !d_val) return;
+        int r = g_tmpscan;
+        int dst; CHECK_CUDA(cudaMemcpy(&dst, dC_rp + r, sizeof(int), cudaMemcpyDeviceToHost));
+        int n; CHECK_CUDA(cudaMemcpy(&n, d_row_nnz + r, sizeof(int), cudaMemcpyDeviceToHost));
+        if (n <= 0 || n > 4096) return;
+        static double *h_ov = nullptr;
+        if (!h_ov) h_ov = (double*)malloc(4096 * sizeof(double));
+        CHECK_CUDA(cudaMemcpy(h_ov, d_val + dst, (size_t)n * sizeof(double), cudaMemcpyDeviceToHost));
+        int bad = -1;
+        for (int t = 0; t < n; t++) {
+            double v = h_ov[t];
+            if (v != 0.0 && fabs(v) < 1e-290) { bad = t; break; }
+        }
+        if (bad >= 0) {
+            unsigned long long bits; memcpy(&bits, &h_ov[bad], 8);
+            dbg("[TMPSCAN] %s: OUT dst=%d n=%d 垃圾槽=%d bits=0x%016llx\n", phase, dst, n, bad, bits);
+        } else dbg("[TMPSCAN] %s: OUT clean(dst=%d n=%d)\n", phase, dst, n);
+    };
+    outscan("pre-compact");
     // 方案5 数值 pass(Phase B v2 游标版):dense 行数据驱动窗口直写终态
     int *d_smap = nullptr, *d_smap_off = nullptr;
     if (dense_nr > 0) {
@@ -4782,6 +4857,8 @@ static void hash_product(
         }
         CHECK_CUDA(cudaGetLastError());
     });
+    tmpscan("post-compact");
+    outscan("post-compact");
     // docs/21 Fix0:重试中间缓冲(compact 消费完)立即释放 —— 此前从不释放,高 flop 阵每调用
     // 泄漏 r_slots×32B + rt_total×12B,warmup 多轮累加直接 OOM(rajat 类 DNF 帮凶)
     dev_free(rtc); dev_free(rtv); dev_free(rk); dev_free(rv); dev_free(rk2); dev_free(rv2); dev_free(rct);
