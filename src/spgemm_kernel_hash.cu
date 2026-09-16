@@ -1033,6 +1033,7 @@ __global__ void scatter_alen_kernel(const int *rows, int nr, const int *alen, in
 // val8+flag1+pref4+cursor4 → 12900 列 ≈ 219KB)。
 #define PB2_W PB2_W_STRUCT  // 半SM预算÷21B/列(结构推导)
 #define SMAP_SMEM_MAX SMAP_SMEM_MAX_STRUCT  // 与 PB2_W 同源
+__device__ int g_dflag_probe_row = -1;   // DFLAG_PROBE 探针行(diter 雷判别;host 经 cudaMemcpyToSymbol 装入)
 __global__ void hash_dense_direct_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
@@ -1186,6 +1187,10 @@ __global__ void hash_dense_direct_kernel(
             if (my_next < n) atomicMin(&s_next_lo, my_next);
         }
         __syncthreads();
+        if (tid == 0 && i == g_dflag_probe_row) {   // 探针v4:stage3 入口全窗 flag 计数(判"晚写" vs "prefix 读零")
+            int fl3 = 0; for (int j = 0; j < w; j++) fl3 += dflag[j];
+            printf("[D3IN ] row%d win[%d,%d) 全窗flags=%d/%d\n", i, win_lo, win_lo + w, fl3, w);
+        }
         if (PB2_STAGE >= 3) {
             // docs/46 全 warp 并行前缀(原 warp0 串行 169 elem/lane → 每 warp 只 w/nw 个)
             int nwarp = blockDim.x >> 5;
@@ -1205,7 +1210,9 @@ __global__ void hash_dense_direct_kernel(
             if (tid == 0) { int acc = 0; for (int x = 0; x < nwarp; x++) { int t = wsum46[x]; wsum46[x] = acc; acc += t; } }
             __syncthreads();
             int woff46 = wsum46[warp];
-            for (int j = t0; j < t1; j++) dpref[j] += woff46;
+            for (int j = t0; j < t1; j++) dpref[j] += woff46 + (excl - run);   // ⚠ 第三遍(warp 内低 lane 偏移)
+                // 首版只加 woff46(warp 间):warp 内各 lane 前缀互相重叠 → rank 撞车 → diter 全量值雷
+                // (msc 3261 垃圾行/420 flag 挤 214 槽,study/18;search 路 1119-1130 同款有此遍 = 对照)
         }
         __syncthreads();
         if (PB2_STAGE >= 4) {
@@ -1218,6 +1225,13 @@ __global__ void hash_dense_direct_kernel(
                 }
             }
             out += dpref[w - 1] + dflag[w - 1];
+        }
+        if (tid == 0 && i == g_dflag_probe_row) {   // DFLAG_PROBE 探针(diter 雷判别:逐窗 flag 数与 prefix 尾)
+            int fl = 0; for (int j = 0; j < w; j++) fl += dflag[j];
+            printf("[DFLAG] row%d win[%d,%d) flags=%d pref_end=%d dpref[0..15]=",
+                   i, win_lo, win_lo + w, fl, dpref[w-1] + dflag[w-1]);
+            for (int j = 0; j < 16 && j < w; j++) printf("%d ", dpref[j]);
+            printf("\n");
         }
         int next = s_next_lo;
         __syncthreads();
@@ -3427,9 +3441,8 @@ static void hash_product(
         if (g_tgt_alpha < 0) { const char *e = getenv("HASH_TGT_ALPHA"); g_tgt_alpha = (e && *e) ? atoi(e) : (g_est_cont ? 150 : 200); }
         CHECK_CUDA(cudaMemset(d_cnt, 0, N_BINS * sizeof(int)));   // 先清零(fused kernel 内 atomicAdd 累加)
         static int g_diter = -1;   // dense-iter 重行阈值(DITER_MIN_FLOP,默认 4096;0=关)
-        if (g_diter < 0) { const char *e = getenv("DITER_MIN_FLOP"); g_diter = (e && *e) ? atoi(e) : 0; }   // 2026-09-17 默认关:diter 数值相 rank 塌缩竞态未根因(msc 3261 垃圾行,study/18 DDUMP 探针:
-                                                                                                                                 // out==cap 但尾槽全 0 + 轮间不确定);修复后 DITER_MIN_FLOP=2048 复归。正确性优先铁律。
-                                                                                                                                 // 旧默认 DITER_FLOP_TIER=2048(v33d 档内)
+        if (g_diter < 0) { const char *e = getenv("DITER_MIN_FLOP"); g_diter = (e && *e) ? atoi(e) : DITER_FLOP_TIER; }   // v33d 默认 2048 复归:数值相 docs/46 前缀第三遍缺失已修(study/18:
+                                                                                                                                 // woff46 漏 warp 内偏移 → rank 撞车 → msc 3261 垃圾行;修复后 diter 开 17 位 PASS)
         static int g_dim2 = -1;
         if (g_dim2 < 0) { const char *e = getenv("DIM2"); g_dim2 = (e && *e) ? atoi(e) : 0; }   // docs/61:双维路由基建(默认关 —— c-big straggler 实测挂 v4 span 门 19491/19578,路由无解需窗口内核经济学升级)
         static int g_dtier_cmp = -1;   // §22b Ocean 双维档位比较(默认关;电池 in-2004 95.3% 通过率校准)
@@ -4670,6 +4683,7 @@ static void hash_product(
             if (old_nr > 0) {
                 size_t wsm = ((size_t)PB2_W * 9 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
                            + 2 * (size_t)SMAP_SMEM_MAX * sizeof(int);
+                if (const char *dp2 = getenv("DFLAG_PROBE")) { int pr = atoi(dp2); cudaMemcpyToSymbol(g_dflag_probe_row, &pr, sizeof(int)); }
                 hash_dense_direct_kernel<<<old_nr, MAX_BLOCK_THREADS, wsm>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, A_cols,
                     dC_rp, dC_ci, d_val, d_row_nnz, old_rows, old_rows ? d_span_lo : nullptr,
