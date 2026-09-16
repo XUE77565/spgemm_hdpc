@@ -1620,7 +1620,9 @@ __global__ void hash_spa_kernel(
     int uo_extract = 0,                     // HASH_UO_XTRACT=1(口径对齐仪器):MODE=0 强制无序 extract,
                                             // 对齐 ocean ROWCYCLES 口径(彼方排序在计时窗外)。输出将无序,
                                             // 仅用于逐行对拍计时,勿入电池/默认。
-    const uint4 *B16 = nullptr)             // HASH_BI=1(④ 交织 B):16B 单股流;null = 走双数组(默认)
+    const uint4 *B16 = nullptr,             // HASH_BI(④ 交织 B):16B 单股流;null = 走双数组
+    int warp_merge = 0)                     // HASH_WM(⑤ 合并 atomicAdd):同 warp 同列 lane match 认亲→
+                                            // Σv 归约→leader 单探测+单原子。0=关(实验中)
 {
     int idx = blockIdx.x;
     if (idx >= n_in_bucket) return;
@@ -1663,6 +1665,24 @@ __global__ void hash_spa_kernel(
             } else { j = B_col_idx[q]; bv = B_val[q]; }
             if (upper_tri && j < i) continue;                // ATT 上三角过滤(j≥i)
             double v = (MODE == 1) ? 0.0 : a_ik * bv;        // count-only 免乘免值写(docs/31)
+            if (warp_merge) {   // ⑤ 合并 atomicAdd:同 warp 同列(G 分组下 = 不同 k 的并发同列)match→Σv→leader 单发
+                unsigned am = __activemask();
+                unsigned mm = __match_any_sync(am, j);
+                int lane5 = threadIdx.x & 31;
+                int leader = __ffs(mm) - 1;
+                int r  = __popc(mm & ((1u << lane5) - 1));    // 组内序号
+                int gs = __popc(mm);
+                double sv = v;                                 // 组内 rank butterfly(任意 lane 集合;
+                #pragma unroll                                 // redux 无浮点,shfl 树是正解;__fns 单指令选配对)
+                for (int off = 1; off < 32; off <<= 1) {
+                    int pr = r ^ off;
+                    int pl = (pr < gs) ? (int)__fns((int)mm, -1, pr + 1) : lane5;
+                    double pv = __shfl_sync(am, sv, pl);
+                    if (pr < gs) sv += pv;
+                }
+                if (lane5 != leader) continue;                 // 非 leader:本乘积已并入 leader
+                v = sv;
+            }
             unsigned slot = ((unsigned)(j * 2654435761u)) & mask;   // Knuth 乘法散列(自有常数,全值域)
             int probes = 0;
             while (true) {
@@ -4258,18 +4278,20 @@ static void hash_product(
                     // read-first 探测已并入 hash_spa_kernel 本体(PROBE_RF 模板参;逃生门 HASH_PROBE_RF=0)
                     static int g_uo_x = -1;   // HASH_UO_XTRACT=1(口径对齐仪器):MODE=0 无序 extract,对齐彼 ROWCYCLES 口径
                     if (g_uo_x < 0) { const char *e = getenv("HASH_UO_XTRACT"); g_uo_x = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                    static int g_wm = -1;     // HASH_WM(⑤):warp 同列聚合累加(实验,默认关)
+                    if (g_wm < 0) { const char *e = getenv("HASH_WM"); g_wm = (e && *e && atoi(e) > 0) ? 1 : 0; }
                     if (probe_rf_on())
                         hash_spa_kernel<0,1><<<n, hblk, smem_flat, cur_s>>>(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm);
                     else
                         hash_spa_kernel<0,0><<<n, hblk, smem_flat, cur_s>>>(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm);
                     CHECK_CUDA(cudaGetLastError());   // 发射即时检查(>48KB 表 opt-in 类问题即抓)
                 }
             }
