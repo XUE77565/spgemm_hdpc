@@ -159,3 +159,9 @@ hash kernel 机理创新期结束,剩余空间在**kernel 与系统接缝处**(�
 - **差距源定位:crankseg 2.15×=路由**(彼留重行于 hash 60K行/3.5G乘积,我送慢 dense/cursor = 停靠的 occgate coeff10 刀 crankseg −10% 正是此解!);**F2 1.28=管线**(全行 hash 双方,差距在 MinHash 两链 ~4.5ms/45% + compact+sort 税 vs 彼 HLL 管线)
 - 逐行 clock64 与系统吞吐背离 = 占用对消恒等式再现(彼慢行高并发=快wall);两口径答不同问题,论文各占一节
 - ②③阶段战场全部量化:extract融合+估计器提速(F2/c-64 线)/occgate+重行回流 hash(crankseg 线)
+
+## F2 相位构成修正(09-18 凌晨,推翻自己 8d39bf5 的错误归因)
+- **修正**:8d39bf5 称"F2 差距=MinHash 两链 4.5ms/45%"系张冠李戴(那是 in-2004 的 mh_merge 3.3ms)
+- **F2 真实相位(lean 版单发净窗)**:accumulate 6.23ms(63%)/compact+sort 2.46ms(**25%!**)/retry 0.48(0 溢出行仍付 0.475=机器固定成本,待查)/估计器全链仅 0.50(5%)
+- **extract/排序融合刀目标升级**:全管线账 = kernel 内 count-sort 税 + 2.46ms 相位;F2 的 2.18ms 差距 ≈ sort 管线超额 → 此刀即 F2 系统差的主体解
+- 方向重估:(a)全行无序 extract + 全局 u64 基数排序(~1.2ms@2TB/s 级,与现 2.46 比有肉)(b)大行 csort 提速(c)compact 相位 memcpy 化;需逐一画像再选
