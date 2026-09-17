@@ -1653,6 +1653,62 @@ __global__ void hash_spa_kernel(
     int G = 1 << logG;
     int num_groups = blockDim.x / G;
     int my_group = tid / G, my_id = tid % G;
+    if (warp_merge == 2) {
+        // ⑤ v3 WPM 窗口化乘积合并(inno/80 终局形态):按乘积序号切 32/窗,一 lane 一乘积。
+        // uniformity 平凡(每 lane 恒有槽);同 j 乘积(块结构下 k 相邻→乘积序相邻)落同窗 →
+        // match 归约 → 热 j 原子 26→1-3 次 = 时间串行窗口化消灭;B 读 = 每 k 段内连续。
+        int lane5 = tid & 31, nw3 = blockDim.x >> 5, warp3 = tid >> 5;
+        int total = row_flop ? row_flop[i] : 0;
+        int nwin = (total + 31) >> 5;
+        for (int wi = warp3; wi < nwin; wi += nw3) {          // warp 领窗(窗数 warp 级均匀)
+            int need = wi * 32 + lane5;                        // 本 lane 的乘积序号
+            int k = rs, q = B_row_ptr[k];
+            bool act = (need < total);
+            if (act)
+                while (need > 0) {                             // 乘积序号 → (k,q) 走位(B_rp L1 缓存)
+                    int len = B_row_ptr[k + 1] - q;
+                    if (need < len) { q += need; need = 0; }
+                    else { need -= len; k++; q = B_row_ptr[k]; }
+                }
+            int j = -1; double v = 0.0;
+            if (act) {
+                double a = A_val[k];
+                if (B16) { uint4 e = B16[q]; j = (int)e.x; v = a * __hiloint2double(e.w, e.z); }
+                else { j = B_col_idx[q]; v = a * B_val[q]; }
+                if (MODE == 1) v = 0.0;
+                if (upper_tri && j < i) j = -1;
+            }
+            unsigned mm = __match_any_sync(0xffffffffu, j);
+            int gs = __popc(mm);
+            int gs_eff = (act && j >= 0) ? gs : 0;
+            int gnm = (int)__reduce_max_sync(0xffffffffu, (unsigned)gs_eff);
+            double sv = 0.0;
+            unsigned m2 = mm;                                   // v2.2 已证:__ffs 逐位 gather(__fns 有语义雷)
+            for (int bi = 0; bi < gnm; bi++) {
+                int bl = m2 ? ( __ffs(m2) - 1) : lane5;
+                double pv = __shfl_sync(0xffffffffu, v, bl);
+                if (m2) { sv += pv; m2 &= m2 - 1; }
+            }
+            if (act && j >= 0 && lane5 == __ffs(mm) - 1) {      // leader:单探测+单原子
+                unsigned slot = ((unsigned)(j * 2654435761u)) & mask;
+                int probes = 0;
+                while (true) {
+                    int entry = sh_col[slot];
+                    if (entry == j) { if (MODE != 1) atomicAdd(&sh_val[slot], sv); break; }
+                    if (entry == -1) {
+                        int prev = atomicCAS(&sh_col[slot], -1, j);
+                        if (prev == -1 || prev == j) { if (MODE != 1) atomicAdd(&sh_val[slot], sv); break; }
+                    }
+                    slot = (slot + 1) & mask;
+                    if (++probes >= ht_size) {
+                        atomicExch(overflow_flag, 1);
+                        if (!atomicExch(&row_ovf[i], 1)) { int pr2 = atomicAdd(ovf_cnt, 1); ovf_rows[pr2] = i; }
+                        break;
+                    }
+                }
+            }
+        }
+    } else
     if (warp_merge) {
         // ⑤ v2(inno/80):双层 uniform 谓词化 + full-mask match 聚合 —— 同 warp 不同 k 的并发同列乘积
         // rank-butterfly 归约,leader 单探测+单原子(dup 高时原子/探测双坍缩)。
