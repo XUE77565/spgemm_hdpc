@@ -2537,7 +2537,10 @@ __global__ void compute_bucket_kernel(
     int tgt_alpha_pct = 200,  // 表配 α(study/10 勘误刀):target=α%×est(档内);旧 2×∧est 高估
     double tbl_glo = 0.0, double tbl_ghi = 0.0,   // 行级表配(解耦版 HASH_REXP=2):0=关;
     int tbl_elo = 0, int tbl_ehi = 0,             // 默认锚 glo=1.8(=eref 恒等)/ghi=1.4/elo=ehi=4096
-    double tbl_eref = 1.8)                        // eref = 实际 est_expand(E = e/eref)
+    double tbl_eref = 1.8,                        // eref = 实际 est_expand(E = e/eref)
+    int occ_coeff = OCC_GATE_COEFF)               // OCCGATE 系数(默认 10,2026-09-17 电池定谳 16→10;env OCCGATE_COEFF —— REXP
+                                                  // 轮盘教训:crankseg −8.5 实为本门 est×16<span 边界
+                                                  // 迁移,直接调门替代 est 侧信道;变小=更多重行留 hash)
                           //   1.63× → 表≈真需求 3.3× vs Ocean 1.75×;env HASH_TGT_ALPHA(200=legacy)
                           //   档内行(span≤最大档)要求 dense 档 ≤ hash 档(窗口 vs 表,同一 SMEM
                           //   预算梯);大 span 行走老窗口内核,比较不适用。in-2004 校准通过率 95.3%
@@ -2673,7 +2676,7 @@ __global__ void compute_bucket_kernel(
                                                           // 驱逐回 hash → +95% 回归(老内核本就是它们的赢家)
                (long long)span_factor * flop[i] >= (long long)span_len[i])
               || (dim2 && flop[i] >= EST_DENSE_MIN && e <= HASH_CAP))
-             && (!occgate || (long long)SPANF_COEFF * e >= (long long)sl0)  // OCCGATE:est×16 ≥ span(同 spanf 门系数)
+             && (!occgate || (long long)occ_coeff * e >= (long long)sl0)  // OCCGATE:est×coeff ≥ span(默认 16=同 spanf 门系数;OCCGATE_COEFF 可调)
              && tier_cmp_ok
              && ladder_dense_ok) bid = BIN_DITER;
     else if (e > HASH_CAP) bid = BIN_HEAVY;          // heavy:全局表(2026-08-25,不再回退 merge)
@@ -3673,8 +3676,10 @@ static void hash_product(
         if (const char *e = getenv("HASH_REXP_HI"))  tbl_ghi_bk = atof(e);
         if (const char *e = getenv("HASH_REXP_ELO")) tbl_elo_bk = atoi(e);
         if (const char *e = getenv("HASH_REXP_EHI")) tbl_ehi_bk = atoi(e);
+        static int g_occ_coeff = -1;   // OCCGATE 系数(env OCCGATE_COEFF;REXP 轮盘教训的直接调门版)
+        if (g_occ_coeff < 0) { const char *e = getenv("OCCGATE_COEFF"); g_occ_coeff = (e && *e) ? atoi(e) : OCC_GATE_COEFF; }
         compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
-            g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final);
+            g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff);
         if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),

@@ -207,6 +207,12 @@ constexpr int COLLAPSE_DIRECT_BYTES_PER_EST = 32; // 免坍缩直写:tmp_key 8 +
 
 // ── hybrid/retry/compact 门控层 ────────────────────────────────────────────
 constexpr int DUP_HYBRID_THR   = 5;     // dup > 5:L2 原子 12B/往返 < SMEM 同址争用 → 全局值池赢
+constexpr int OCC_GATE_COEFF = 10;      // occgate 系数(est×coeff ≥ span 才许 dense;SPANF_COEFF 旧值 16)。
+                                        // 2026-09-17 ×5×10 电池+净窗×7 定谳 16→10:crankseg −10.0/nd24k −24.7/
+                                        // in-2004 +0.3/c-43 −6.5(@12) vs 代价 c-64 +2.9/msc +1.8;geomean −3~4%。
+                                        // 出处 = REXP 轮盘解剖(commit 17db685):est×16<span 边界行在 hash 本是赢家,
+                                        // dense 的 O(span) 窗税在 span/est>~10 时压过表成本 → 收紧边界。
+                                        // 同族标定法 = docs/67 成本律(少量标定 + 出处),非手拍。
 constexpr int HYB_MIN_ROWS     = 50000; // 小阵不开:全局池分配 + L2 冷延退 > 收益
 constexpr long long HYB_VAL_POOL_MAX = 8LL << 30;   // 8GB = 80GB DRAM 的 1/10(鲸鱼阵防护)
 constexpr long long HEAVY_ARENA_MAX  = 24LL << 30;  // 24GB:表 12B/槽 × 3 份(表+tmp+输出)的 DRAM 预算
