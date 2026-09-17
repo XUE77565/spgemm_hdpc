@@ -207,7 +207,7 @@ constexpr int COLLAPSE_DIRECT_BYTES_PER_EST = 32; // 免坍缩直写:tmp_key 8 +
 
 // ── hybrid/retry/compact 门控层 ────────────────────────────────────────────
 constexpr int DUP_HYBRID_THR   = 5;     // dup > 5:L2 原子 12B/往返 < SMEM 同址争用 → 全局值池赢
-constexpr int OCC_GATE_COEFF = 10;      // occgate 系数(est×coeff ≥ span 才许 dense;SPANF_COEFF 旧值 16)。
+constexpr int OCC_GATE_COEFF = 10;      // occgate 系数验证值(停靠:默认仍 SPANF_COEFF=16,③阶段路由设计时一行启用)。
                                         // 2026-09-17 ×5×10 电池+净窗×7 定谳 16→10:crankseg −10.0/nd24k −24.7/
                                         // in-2004 +0.3/c-43 −6.5(@12) vs 代价 c-64 +2.9/msc +1.8;geomean −3~4%。
                                         // 出处 = REXP 轮盘解剖(commit 17db685):est×16<span 边界行在 hash 本是赢家,

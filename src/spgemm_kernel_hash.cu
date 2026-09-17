@@ -2538,7 +2538,7 @@ __global__ void compute_bucket_kernel(
     double tbl_glo = 0.0, double tbl_ghi = 0.0,   // 行级表配(解耦版 HASH_REXP=2):0=关;
     int tbl_elo = 0, int tbl_ehi = 0,             // 默认锚 glo=1.8(=eref 恒等)/ghi=1.4/elo=ehi=4096
     double tbl_eref = 1.8,                        // eref = 实际 est_expand(E = e/eref)
-    int occ_coeff = OCC_GATE_COEFF)               // OCCGATE 系数(默认 10,2026-09-17 电池定谳 16→10;env OCCGATE_COEFF —— REXP
+    int occ_coeff = SPANF_COEFF)                  // OCCGATE 系数(默认 16;OCC_GATE_COEFF=10 已验证但停靠③阶段启用;env OCCGATE_COEFF —— REXP
                                                   // 轮盘教训:crankseg −8.5 实为本门 est×16<span 边界
                                                   // 迁移,直接调门替代 est 侧信道;变小=更多重行留 hash)
                           //   1.63× → 表≈真需求 3.3× vs Ocean 1.75×;env HASH_TGT_ALPHA(200=legacy)
@@ -3677,7 +3677,7 @@ static void hash_product(
         if (const char *e = getenv("HASH_REXP_ELO")) tbl_elo_bk = atoi(e);
         if (const char *e = getenv("HASH_REXP_EHI")) tbl_ehi_bk = atoi(e);
         static int g_occ_coeff = -1;   // OCCGATE 系数(env OCCGATE_COEFF;REXP 轮盘教训的直接调门版)
-        if (g_occ_coeff < 0) { const char *e = getenv("OCCGATE_COEFF"); g_occ_coeff = (e && *e) ? atoi(e) : OCC_GATE_COEFF; }
+        if (g_occ_coeff < 0) { const char *e = getenv("OCCGATE_COEFF"); g_occ_coeff = (e && *e) ? atoi(e) : SPANF_COEFF; }   // 停靠:OCC_GATE_COEFF=10 待③阶段翻默认
         compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
             g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff);
         if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
