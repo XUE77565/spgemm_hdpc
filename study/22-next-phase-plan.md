@@ -21,20 +21,29 @@
                          评估 Robin Hood/双选择探测作压缩解锁器(治高 LF 方差)
 ```
 
-## 执行队列(严格顺序)
+## 执行队列(09-17 下午修订:第一刀证伪,行级 expand 升位)
 
-1. **收 sweep2 尾**:读 /tmp/sweep2_result.txt + /tmp/ab2_HASH_TGT_ALPHA_110.log + /tmp/ab2_HASH_EXPAND_1.3_HASH_TGT_ALPHA_120.log
+0. **〔已判死〕旧第一刀"争用常数修正→重行流 dense"——行分布重放证伪**(commit 见 git log)
+   - 重放三阵 hash 行(/tmp/rt_cur_*.txt,按默认门参数离线过 v4 判定):
+     crankseg 51,312 hash 行 = occgate 挡 69%(est×16<span,行 span 中位 **58K** 近全宽)+
+     超档 est 地板挡 30%(span>14543 ∧ est 1024-2047)+ **dup 门只挡 576 行(1.1%)**;
+     c-64 7,214 hash 行 = 地板挡 96%(dup 中位 1.3,争用无关);F2 dup_mid 18% 行 span 70K,dense 裸账 570KB≫hash 73KB,挡对了
+   - "dense 86KB<hash 98KB"裸账是**种群混用**:10620 是 dense 行的 span,hash 行 span 中位 58K → 实账 471KB≫98KB,字节模型自己也说留 hash
+   - occgate 默认开 = 当年 17 阵电池 crankseg **−16%** 的实测来源;超档地板 = v28-v32 验证域。两门皆实证,**重行→dense 早已是现状**(crankseg 中位行 est1701/flop46719 本就过 dup_ok 第二支 flopq≥16K∧dup<64)
+   - 残值:12B 常数在 SROUTE=4(默认 0,死路);四代 merge 物理结论(RED 本廉)不变,但它**不翻译成路由改动**
+1. **收 sweep2 尾**:读 /tmp/ab2_HASH_TGT_ALPHA_110.log + /tmp/ab2_HASH_EXPAND_1.3_HASH_TGT_ALPHA_120.log(α110 约 16:00/组合约 17:30 落)
    (前两档已判:1.4 = nd24k−15.4/Zd−13.6/Ga3−9.4/crankseg−5.3/in-2004−4.8 赢,c-43+42.4/F2+17.2 输,geomean+1.6% 不翻默认;1.2 悬崖死)
-   α110/组合档补完后定行级函数形态
-2. **第一刀:争用常数修正**(12B→0-2B,#define 一处)
-   守门:值级 17 位(msc/crankseg/c-64/in-2004,DITER 默认开)+ 有序 + ×5 电池 10 阵
-   预期:crankseg 型重行流向 dense,1.355 的差距整段消失
-3. **第二刀:行级 expand**(形态按 sweep2 尾数定;est≥4096→1.4 / ≤256→1.8 / 平滑插值,LLB 式先例)
-   同守门;Robin Hood 评估(若 LF 0.55+ 方差爆,上 Robin Hood 再压更深)
-4. **第三刀:c-64 中带签名瘦身**(B16/WM/uo 参数收进模板或拆变体;中带 1.775→目标<1.2)
-5. extract/排序融合(kernel 内 O(count²)→下游 radix;窗内排序税 5.9% 实测;口径 B 仪器在)
-6. 补测:ocean occupancy 同口径(归因 L1 44% 的真伪)/ c-64 25.7 vs 18.4 残差(SMEM 5HT 嫌疑)
-7. 全部落定后:系统级 vs ocean 重刷(docs/76 地图,全正确代码首次)+ 论文叙事整理
+   有效表倍数换算:expand×α/100,默认 1.8×1.5=2.7×;1.4 档=2.1×;α110=1.98×;组合=1.56×
+2. **新第一刀:行级 expand**(原第二刀升位;三分法可执行余部 = "hash 分级表配")
+   - 植入点:估计器 kernel 的 est_expand 标量(spgemm_kernel_hash.cu:3428/3452 调用,est 逐行相乘处)→ 改 est 的函数
+   - 形态(等 sweep2 尾定系数):重 est 行→~1.4,轻 est 行→1.8(=2.1×/2.7× 有效),log 线性平滑;
+     叙事 = σ=1.04/√m_eff(轻行触及寄存器少→误差大→余量大;重行 σ 收敛→敢压)
+   - 守门:值级 17 位(msc/crankseg/c-64/in-2004)+ 有序 + ×5 电池 10 阵 + **retry/ovf 行数对比**(压重行表的代价先看溢出)
+   - Robin Hood 评估(若 LF 0.55+ 方差爆,上 Robin Hood 再压更深)
+3. **c-64 中带签名瘦身**(B16/WM/uo 参数收进模板或拆变体;中带 1.775→目标<1.2)
+4. extract/排序融合(kernel 内 O(count²)→下游 radix;窗内排序税 5.9% 实测;口径 B 仪器在)
+5. 补测:ocean occupancy 同口径(归因 L1 44% 的真伪)/ c-64 25.7 vs 18.4 残差(SMEM 5HT 嫌疑)
+6. 全部落定后:系统级 vs ocean 重刷(docs/76 地图,全正确代码首次)+ 论文叙事整理
 
 ## 对拍基建(复用)
 
@@ -60,7 +69,7 @@ db21731 ④交织B入默认 / ff91e45+35ef7ba+c3aecd3 ⑤四代+判词 / ded46de
 ### 待收割(还有肉的,按性价比)
 1. **Robin Hood / 双选择散列 = 压缩解锁器**(最有趣的):治高 LF 链长方差 → 敢把 LF 推 0.55-0.6 → 行级压表空间翻倍;ocean 没有;与②行级 expand 天生一对
 2. **行级置信度余量模型**(σ=1.04/√k):sketch 状态定每行 expand——"estimation continuity → per-row confidence → adaptive margin" 叙事干净,估计器信息二次利用
-3. **争用常数修正 + 三分法路由**:被实测证伪的 12B/乘积罚金 → dense 人口自动扩张;模型修正类
+3. ~~争用常数修正 + 三分法路由~~ **已证伪(09-17 重放)**:dup 门只挡 crankseg 1.1% 行,残余 hash 行是 span 58K 宽行(dense 付 5 倍);重行→dense 已是现状。物理结论(RED 本廉)保留为 merge negative result 的一部分,不再当路由杠杆
 4. **extract/排序融合**:kernel 内 O(count²) → 下游 radix,窗内排序税 5.9% 实测
 
 ### 关闭线(测过,勿重开)
