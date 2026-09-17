@@ -113,3 +113,13 @@ hash kernel 机理创新期结束,剩余空间在**kernel 与系统接缝处**(�
 - **LLB 重开案判负(×5 净基线)**:crankseg +0.4/F2 +2.4/c-64 +1.9 → 动态 G 不是 crankseg 答案(当年 Ge99 判关 + 今日对比阵重测双重洗清;ocean 优势别处)
 - **读 ocean 代码两收获**(AccumulatorHash.cuh):①localLoadBalance 逐行动态 G(我们 LLB 已移植已测=中性)②溢出=飞行中切全局表+合并零重扫(Retry 2.0 同构,他们已实现;人口少不解释 1.355)
 - **crankseg 1.355 存活嫌疑仅剩三**:口径C 块宽混杂/ncu B拓扑停顿/两遍制(symbolic+numeric) vs 单遍制深层结构差
+
+## ①阶段 ncu 停顿归因判决(09-17 深夜三批,crankseg 1.355 破案级)
+- **方法**:我方 hash_spa 与 ocean hashNumeric 同指标 ncu 对照(crankseg;METHOD=adaptive;净卡)
+- **B 拓扑嫌疑洗清**:每行 B 扇区几乎同(ocean 37.1K vs 我 38.4K);long_scoreboard 16-20% 两边相当
+- **块宽混杂实锤现形**:crankseg 主力行群 ocean 给 1024 线程(素数表 5449 挂高档)vs 我方 512(bin7);按线程预算恒等式 wall 对消,非胜负手
+- **真凶候选:每乘积指令数 我≈5.2 vs 彼≈4.1(+27%)**——指令=总功,不随占用对消,与 1.355 量级吻合
+  - 嫌疑指令:①B16 解包(uint4+__hiloint2double;crankseg B16off 快 8% 早已对上!)②upper_tri 运行时分支(可模板化)③read-first 双查路径
+  - ocean 副产物:SMEM 停顿 36%(LF 0.57 素数表链长)仍赢 → 停顿不是胜负手,总功才是;素数梯 673/1327/2719/5449 = 无空档表长(我方 pow2 梯 512↔1024 空档早有记录)
+- **F2 侧判决**:barrier 停顿 21-28%(count-sort 排序税停顿化现身)vs crankseg 10% → 刀②(extract 两级排序)靶心已可视化
+- **下一刀(新头号):内循环指令瘦身**——目标 5.2→4.5 inst/product 以下;A/B 仪:ncu smsp__inst_executed.sum/product;变体:B16 off/on × upper_tri 模板化 × 探测路径精简
