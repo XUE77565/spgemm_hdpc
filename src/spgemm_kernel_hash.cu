@@ -1633,8 +1633,10 @@ __global__ void hash_spa_kernel(
     const uint4 *B16 = nullptr,             // HASH_BI(④ 交织 B):16B 单股流;null = 走双数组
     int warp_merge = 0,                     // HASH_WM(⑤ 合并 atomicAdd):同 warp 同列 lane match 认亲→
                                             // Σv 归约→leader 单探测+单原子。0=关(实验中)
-    unsigned *probe_hist = nullptr)         // HASH_PROBE_HIST(①阶段链画像):探测环每退出一次计数
+    unsigned *probe_hist = nullptr,         // HASH_PROBE_HIST(①阶段链画像):探测环每退出一次计数
                                             // min(probes,32) 桶;null=生产零开销。probes=额外步数(0=首发命中)
+    int rt_pre_extract = 0)                 // HASH_RT_NOEXTRACT=1:行计时截在探测循环尾(不含 extract),
+                                            // 对齐 ocean ROWCYCLES 窗(用户钦定口径 A+ 修正)
 {
     int idx = blockIdx.x;
     if (idx >= n_in_bucket) return;
@@ -1779,46 +1781,56 @@ __global__ void hash_spa_kernel(
                 }
             }
         }
-    } else
-    for (int p = rs + my_group; p < re; p += num_groups) {   // 并行 k(stride num_groups)
-        int k = A_col_idx[p];
-        double a_ik = A_val[p];
-        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];        // B 的行 k(AA=A;ATT=Aᵀ)
-        for (int q = ks + my_id; q < ke; q += G) {           // 组内 G 线程并行 j
-            int j; double bv;
-            if (B16) {                                        // ④ 交织 B:一次 128b 携带 col+val
-                uint4 e = B16[q];
-                j = (int)e.x; bv = __hiloint2double(e.w, e.z);
-            } else { j = B_col_idx[q]; bv = B_val[q]; }
-            if (upper_tri && j < i) continue;                // ATT 上三角过滤(j≥i)
-            double v = (MODE == 1) ? 0.0 : a_ik * bv;        // count-only 免乘免值写(docs/31)
-            unsigned slot = ((unsigned)(j * 2654435761u)) & mask;   // Knuth 乘法散列(自有常数,全值域)
-            int probes = 0;
-            while (true) {
-                if (PROBE_RF) {
-                    // read-first:命中走普通读,零原子;空槽才 CAS 占位(机理引 nsparse/spECK 先例)
-                    int entry = sh_col[slot];
-                    if (entry == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; }
-                    if (entry == -1) {
-                        int prev = atomicCAS(&sh_col[slot], -1, j);
-                        if (prev == -1 || prev == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; }
-                    }
-                } else {
-                    // CAS-first(逃生门 PROBE_RF=0):每探测皆原子,study/15 前的原始形态
-                    int old = atomicCAS(&sh_col[slot], -1, j);
-                    if (old == -1 || old == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; }
-                }
-                slot = (slot + 1) & mask;                            // 线性探测(mask wrap,pow2 表)
-                if (++probes >= ht_size) {                          // 溢出 → 记录行交重试
-                    atomicExch(overflow_flag, 1);
-                    if (!atomicExch(&row_ovf[i], 1)) { int p = atomicAdd(ovf_cnt, 1); ovf_rows[p] = i; }
-                    break;
-                }
-            }
-            if (probe_hist) atomicAdd(&probe_hist[probes < 32 ? probes : 32], 1);   // 链画像(每乘积一次;命中+插入同计)
-        }
+    } else {
+    // ①阶段指令瘦身刀(09-18):UPTRI/B16 从逐乘积运行时分支提为模板参,4 路派生在循环外分发
+    // (出处:ncu 人口公平对照 crankseg 我 3.66 vs 彼 2.54 inst/product,+44%;逐乘积分支 =
+    // 每乘积 2-4 槽纯税。编译期消分支后 B16off/upper_tri=0 路径零分支。)
+    #define HASH_INNER_LOOP(UPTRI_, B16ON_)                                                    \
+    for (int p = rs + my_group; p < re; p += num_groups) {   /* 并行 k(stride num_groups) */   \
+        int k = A_col_idx[p];                                                                 \
+        double a_ik = A_val[p];                                                               \
+        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];        /* B 的行 k(AA=A;ATT=Aᵀ) */      \
+        for (int q = ks + my_id; q < ke; q += G) {           /* 组内 G 线程并行 j */           \
+            int j; double bv;                                                                 \
+            if (B16ON_) { /* ④ 交织 B:一次 128b 携带 col+val */                               \
+                uint4 e = B16[q];                                                             \
+                j = (int)e.x; bv = __hiloint2double(e.w, e.z);                                \
+            } else { j = B_col_idx[q]; bv = B_val[q]; }                                       \
+            if (UPTRI_ && j < i) continue;                  /* ATT 上三角过滤(j≥i) */          \
+            double v = (MODE == 1) ? 0.0 : a_ik * bv;        /* count-only 免乘免值写 */       \
+            unsigned slot = ((unsigned)(j * 2654435761u)) & mask;   /* Knuth 乘法散列 */       \
+            int probes = 0;                                                                   \
+            while (true) {                                                                    \
+                if (PROBE_RF) {                                                               \
+                    int entry = sh_col[slot];                                                 \
+                    if (entry == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; }    \
+                    if (entry == -1) {                                                        \
+                        int prev = atomicCAS(&sh_col[slot], -1, j);                           \
+                        if (prev == -1 || prev == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; } \
+                    }                                                                         \
+                } else {                                                                      \
+                    int old = atomicCAS(&sh_col[slot], -1, j);                                \
+                    if (old == -1 || old == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; } \
+                }                                                                             \
+                slot = (slot + 1) & mask;                                                     \
+                if (++probes >= ht_size) {                                                    \
+                    atomicExch(overflow_flag, 1);                                             \
+                    if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; } \
+                    break;                                                                    \
+                }                                                                             \
+            }                                                                                 \
+            if (probe_hist) atomicAdd(&probe_hist[probes < 32 ? probes : 32], 1);             \
+        }                                                                                     \
+    }
+    if (upper_tri) { if (B16) { HASH_INNER_LOOP(1, 1) } else { HASH_INNER_LOOP(1, 0) } }
+    else           { if (B16) { HASH_INNER_LOOP(0, 1) } else { HASH_INNER_LOOP(0, 0) } }
+    #undef HASH_INNER_LOOP
     }
     __syncthreads();
+    // HASH_RT_NOEXTRACT(口径 A+ 窗对齐,用户钦定 09-18):行计时在【探测循环完成处】截断,不含 extract/输出搬运
+    // ——对齐 ocean ROWCYCLES 窗(彼方 numeric kernel 不含 epilogue 提取)。此前逐行对拍我方窗多付 extract
+    // (crankseg 行约 5-15% 行时间),1.355 含此不对称成分;此仪器一开即剔除。
+    if (rt_pre_extract && rowtime && tid == 0) { rowtime[i] = clock64() - rt0; }
     if (MODE == 1) {   // count-only:occupancy 即精确 distinct;溢出行已在上面标记(row_nnz 留给 retry)
         int cnt = 0;
         for (int s = tid; s < ht_size; s += blockDim.x) cnt += (sh_col[s] != -1);
@@ -1902,7 +1914,7 @@ __global__ void hash_spa_kernel(
             row_nnz[i] = (cnt <= cap) ? cnt : (int)cap;
         }
     }
-    if (rowtime && tid == 0) rowtime[i] = clock64() - rt0;   // 大/小行公共尾(extract 完成)
+    if (rowtime && tid == 0 && !rt_pre_extract) rowtime[i] = clock64() - rt0;   // 大/小行公共尾(extract 完成;NOEXTRACT 模式已在循环尾写过)
 }
 
 // hash_spa_hkv_kernel:Hybrid Value 全 bin 版(docs/24 §4.1,治大表行低占用):
@@ -4458,6 +4470,8 @@ static void hash_product(
                     // read-first 探测已并入 hash_spa_kernel 本体(PROBE_RF 模板参;逃生门 HASH_PROBE_RF=0)
                     static int g_uo_x = -1;   // HASH_UO_XTRACT=1(口径对齐仪器):MODE=0 无序 extract,对齐彼 ROWCYCLES 口径
                     if (g_uo_x < 0) { const char *e = getenv("HASH_UO_XTRACT"); g_uo_x = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                    static int g_rt_nox = -1;   // HASH_RT_NOEXTRACT=1(口径A+):行计时不含 extract,对齐 ocean ROWCYCLES 窗
+                    if (g_rt_nox < 0) { const char *e = getenv("HASH_RT_NOEXTRACT"); g_rt_nox = (e && *e && atoi(e) > 0) ? 1 : 0; }
                     static int g_wm = -1;     // HASH_WM(⑤):warp 同列聚合累加(实验,默认关)
                     if (g_wm < 0) { const char *e = getenv("HASH_WM"); g_wm = (e && *e && atoi(e) > 0) ? 1 : 0; }
                     if (probe_rf_on())
@@ -4465,13 +4479,13 @@ static void hash_product(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist, g_rt_nox);
                     else
                         hash_spa_kernel<0,0><<<n, hblk, smem_flat, cur_s>>>(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist, g_rt_nox);
                     CHECK_CUDA(cudaGetLastError());   // 发射即时检查(>48KB 表 opt-in 类问题即抓)
                 }
             }
