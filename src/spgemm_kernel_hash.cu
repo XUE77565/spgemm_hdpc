@@ -1631,8 +1631,10 @@ __global__ void hash_spa_kernel(
                                             // 对齐 ocean ROWCYCLES 口径(彼方排序在计时窗外)。输出将无序,
                                             // 仅用于逐行对拍计时,勿入电池/默认。
     const uint4 *B16 = nullptr,             // HASH_BI(④ 交织 B):16B 单股流;null = 走双数组
-    int warp_merge = 0)                     // HASH_WM(⑤ 合并 atomicAdd):同 warp 同列 lane match 认亲→
+    int warp_merge = 0,                     // HASH_WM(⑤ 合并 atomicAdd):同 warp 同列 lane match 认亲→
                                             // Σv 归约→leader 单探测+单原子。0=关(实验中)
+    unsigned *probe_hist = nullptr)         // HASH_PROBE_HIST(①阶段链画像):探测环每退出一次计数
+                                            // min(probes,32) 桶;null=生产零开销。probes=额外步数(0=首发命中)
 {
     int idx = blockIdx.x;
     if (idx >= n_in_bucket) return;
@@ -1813,6 +1815,7 @@ __global__ void hash_spa_kernel(
                     break;
                 }
             }
+            if (probe_hist) atomicAdd(&probe_hist[probes < 32 ? probes : 32], 1);   // 链画像(每乘积一次;命中+插入同计)
         }
     }
     __syncthreads();
@@ -3585,6 +3588,12 @@ static void hash_product(
         hrt_f = fopen(hrt_path, "w");
         if (hrt_f) { d_rt = decltype(d_rt)(dev_alloc(A_rows * sizeof(unsigned long long))); CHECK_CUDA(cudaMemset(d_rt, 0, (size_t)A_rows * sizeof(unsigned long long))); }
     }
+    // HASH_PROBE_HIST=path(①阶段链画像):hash_spa 默认路径每乘积的额外探测步数直方图(33 桶,32=溢出/封顶)
+    unsigned *d_phist = nullptr; FILE *ph_f = nullptr; const char *ph_path = getenv("HASH_PROBE_HIST");
+    if (ph_path && *ph_path) {
+        ph_f = fopen(ph_path, "w");
+        if (ph_f) { d_phist = decltype(d_phist)(dev_alloc(33 * sizeof(unsigned))); CHECK_CUDA(cudaMemset(d_phist, 0, 33 * sizeof(unsigned))); }
+    }
     int *d_est_save = nullptr;   // est 快照(dense 置零前;rowtime 分析用;0 = 该路径未走 bucketing)
     if (d_rt) { d_est_save = decltype(d_est_save)(dev_alloc(A_rows * sizeof(int))); CHECK_CUDA(cudaMemset(d_est_save, 0, (size_t)A_rows * sizeof(int))); }
     // DD_ROWTIME=path:dense_direct 逐行周期+路径模式(docs/66 §8 cursor/search 判据采数)
@@ -4456,13 +4465,13 @@ static void hash_product(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist);
                     else
                         hash_spa_kernel<0,0><<<n, hblk, smem_flat, cur_s>>>(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist);
                     CHECK_CUDA(cudaGetLastError());   // 发射即时检查(>48KB 表 opt-in 类问题即抓)
                 }
             }
@@ -4470,6 +4479,17 @@ static void hash_product(
         if (use_ms)
             for (int i = 0; i < g_nstream; i++) CHECK_CUDA(cudaStreamSynchronize(bin_s[i]));
         CHECK_CUDA(cudaMemcpy(&overflow, d_overflow, sizeof(int), cudaMemcpyDeviceToHost));   // D2H 纳入
+        if (ph_f) {   // 链画像 dump(accumulate 后全流已同步):桶=额外探测步数,32=溢出/封顶
+            unsigned h33[33];
+            CHECK_CUDA(cudaMemcpy(h33, d_phist, 33 * sizeof(unsigned), cudaMemcpyDeviceToHost));
+            unsigned long long tot = 0, wt = 0;
+            for (int b = 0; b <= 32; b++) tot += h33[b];
+            for (int b = 0; b <= 32; b++) wt += (unsigned long long)h33[b] * b;
+            for (int b = 0; b <= 32; b++) fprintf(ph_f, "%d %u\n", b, h33[b]);
+            fprintf(ph_f, "TOTAL %llu  AVGPROBE %.4f\n", tot, tot ? (double)wt / tot : 0.0);
+            fclose(ph_f); ph_f = nullptr;
+            dbg("[%s] probe_hist → %s (tot=%llu avg=%.3f)\n", tag, ph_path, tot, tot ? (double)wt / tot : 0.0);
+        }
     });
 
     // ---- 行级重试(2026-08-26,Ocean out_overflow_row_ids 同款):欠估行(estimate<distinct)用

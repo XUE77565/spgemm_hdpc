@@ -24,8 +24,15 @@
 ## 执行队列(09-17 夜 用户钦定三阶段路线:纯 kernel → 新 kernel 覆盖 → 路由设计)
 
 **① 纯 kernel 优化(dense/hash/cursor 各自内部做硬,不碰路由)**
-- hash 首刀 = **破占用对消:同表长下缩短链**——三层口径已定谳(逐行延迟:大表 −12~25% 单调;wall:×1.22 反 +1~5%、×1.67 +6~18%,占用对消完全;压表方向同样对消+链爆风险;默认 2.7×/1.8× = wall 最优,双向验证)。候选:Robin Hood/双选择(破局者定位)/散列混合变体/extract 融合(排序税 5.9%)
-- dense/cursor:窗税 30μs/窗(ladder 常数)的 clear+prefix 优化;档位梯内核签名瘦身
+
+- **第 0 刀画像已判(09-17 深夜,链假说证伪+真凶定位)**:
+  - 链直方图仪器入库(HASH_PROBE_HIST,33 桶):默认表配 **avg probe/product 仅 0.07-0.15**(F2 0.116/crankseg 0.134/web-G 0.151/c-43 0.096/msc 0.072;91.5% 首发命中)——**链不是默认配下的延迟主项**,Robin Hood 优先级大降
+  - ×1.22 表每行快 12-25% 的真凶 = **块梯耦合**:HASH_BLK_LADDER 表档硬绑块宽(bin3:64…bin8:1024)= 每行 warp 数 G,表跳档 = 行内并行度平方级变化;"占用对消"本质 = **行内并行 vs 行间并行的交换**
+  - 块梯 wall 扫描:全256 crankseg +26.7/web-G +9.7 但 c-43 −8.8;L2(3-4:256) F2 −6.3/msc −10.4/crankseg −2.1 但 web-G +22;L3(仅 bin8 512) msc −13.4/F2 −4.5/crankseg −1.3
+  - bin×flop 画像定根源:web-G = 91.6 万微行海(bin0-4,flop q50 1-266,要小块);F2 = 胖行(bin4-8,flop 2K-25K,要大块)→ **块宽最优由 flop 决定,表档只是相关非因果**
+  - occgate12 值级 4/4 全绿收官(c-64 = 已知 artifact;停靠刀验证完整)
+- **下一刀:flop 感知块梯**——block = f(行 flop)(每线程乘积数目标 + 矩阵级占用信号),与表档解耦;kernel 内部发射配置,非路由。配套 ncu 停顿归因(short/long scoreboard)定每乘积成本构成
+- dense/cursor:窗税 30μs/窗 clear+prefix 优化;exact-fit 窗/跳空窗(聚簇对齐);档位梯签名瘦身
 - 实验口径纪律:**固定行种群 + kernel 内 clock64(HASH_ROWTIME/DD_ROWTIME)单变量**;wall 只作终验
 **② 新 kernel 设计(覆盖无主行型)**:c-64 中带(span 50K/est 1-2K,1.775 输家群)/in-2004 超档轻行(est<2048∧span>14543 被地板挡)
 **③ 路由设计**:军火库齐后;occgate 刀已停靠不翻默认(发现全入档,OCCGATE_COEFF env 留;coeff10 数字:crankseg −10 净窗/nd24k −24.7/c-64 +2.9)
