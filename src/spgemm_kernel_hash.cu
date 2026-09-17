@@ -330,7 +330,10 @@ __global__ void mh_merge_kernel(
     int mh_k = MH_M,                    // MH_K(docs/57 续):merge 只读每行 sketch 前 mh_k 个 partition
                                         // —— DVFS toll ∝ 冷数据量,128→32 = 散射读 512→128B/行(÷4);
                                         // 构造侧仍写满 128;估计器 m 同步缩(CV 9%→18%,须 A/B retry)
-    const int *avg_gate = nullptr)      // PIPEFUSE:门命中 → est=flop 直填(与 memcpy 路径逐位同值)
+    const int *avg_gate = nullptr,      // PIPEFUSE:门命中 → est=flop 直填(与 memcpy 路径逐位同值)
+    double rexp_lo = 0.0, double rexp_hi = 0.0,   // 行级 expand(study/22 新第一刀):expand=f(E) 而非全阵标量。
+    int rexp_elo = 0, int rexp_ehi = 0)           // σ=1.04/√m_eff——轻行 sketch 误差大保余量,重行 σ 收敛敢压;
+                                                  // E≤elo→lo / E≥ehi→hi / 中间 log 线性。ehi=0 = 关(legacy 标量)
 {
     if (avg_gate && *avg_gate == 1) {          // device 门(PIPEFUSE):block 一致早退
         if ((sample_stride <= 1 || (int)blockIdx.x * sample_stride < A_rows) && threadIdx.x == 0) {
@@ -407,7 +410,14 @@ __global__ void mh_merge_kernel(
             // 首版修正漏了因子 m(低 EST 128 倍,exdata_1 est 254k vs C 11.3M)——都已修(2026-08-26)。
             E = (double)mh_k * mh_k * 0x100000000LL / sum_min * k_scale;
         }
-        int temp = (int)(E * expand);
+        double ex = expand;
+        if (rexp_ehi > 0) {   // 行级 expand:两锚点 log 线性插值(sweep2 梯度实证:重行 1.4× 赢/轻行 1.8× 保命)
+            double t = (E <= (double)rexp_elo) ? 0.0
+                     : (E >= (double)rexp_ehi) ? 1.0
+                     : (log(E) - log((double)rexp_elo)) / (log((double)rexp_ehi) - log((double)rexp_elo));
+            ex = rexp_lo + (rexp_hi - rexp_lo) * t;
+        }
+        int temp = (int)(E * ex);
         if (temp < 1) temp = 1;
         int est;
         if (temp <= EST_ULTRA_THR || est_cont) {                          // ultra / EST_CONT:连续 temp(study/12:
@@ -3409,6 +3419,21 @@ static void hash_product(
         if (g_est_cont && !getenv("HASH_EXPAND") && !getenv("EST_CONT")) est_expand = 1.8;   // study/13:连续 est 余量由 expand 扛(Ocean HLL 同位 1.5-2.0;F2 ovf 1319→0)
         if (const char *e = getenv("HASH_EXPAND")) est_expand = atof(e);
         if (oc_on && !getenv("HASH_EXPAND")) est_expand = 1.0;   // OCEAN_C:原始估计,采样后统一缩放
+        // 行级 expand(study/22 新第一刀,09-17):expand=f(est) 替代全阵标量。sweep2 梯度实证:
+        // 有效 2.1×(expand 1.4)重表阵赢 nd24k−15.4/crankseg−5.3,轻表阵输 c-43+42/F2+17(溢出 681 行);
+        // 默认 2.7× 轻行 0 溢出。→ 轻 est 行保 1.8,重 est 行压 1.4,log 线性过渡。
+        // 锚点系数 = sweep2 尾档(α110/组合)定;OCEAN_C(原始估计后置缩放)/小阵(EST_EXPAND_SMALL 域)不参与。
+        static int g_rexp = -1;
+        if (g_rexp < 0) { const char *e = getenv("HASH_REXP"); g_rexp = (e && *e) ? atoi(e) : 0; }
+        double rexp_lo = 1.8, rexp_hi = 1.4; int rexp_elo = 256, rexp_ehi = 4096;
+        if (g_rexp) {
+            if (const char *e = getenv("HASH_REXP_LO"))  rexp_lo  = atof(e);
+            if (const char *e = getenv("HASH_REXP_HI"))  rexp_hi  = atof(e);
+            if (const char *e = getenv("HASH_REXP_ELO")) rexp_elo = atoi(e);
+            if (const char *e = getenv("HASH_REXP_EHI")) rexp_ehi = atoi(e);
+            if (oc_on || A_nnz < STREAMLINE_NNZ_STRUCT) { g_rexp = 0; }   // 两条路径各有自己的余量经济学
+            else dbg("[%s] row-expand: lo=%.2f@est≤%d hi=%.2f@est≥%d(log 插值)\n", tag, rexp_lo, rexp_elo, rexp_hi, rexp_ehi);
+        }
         dbg("[%s] est_expand=%.2f(total_flop=%lld)\n", tag, est_expand, total_flop);
         // MHSAMP(docs/57,Ocean Ana2 3% 采样同哲学):dense_win 候选先 stride 采样 merge → 投影
         // Σest 过 DENSE_MIN_FRAC 门 → 判定 dense-注定:全量 merge 免,d_est=min(flop,n)
@@ -3425,7 +3450,8 @@ static void hash_product(
             prof("mh_merge", [&]{   // 采样 pass(紧凑 grid = S 块;计入 mh_merge 相位)
                 CHECK_CUDA(cudaMemset(d_est, 0, (size_t)A_rows * sizeof(int)));
                 mh_merge_kernel<<<S, p2_block, smem_p2>>>(
-                    dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, g_est_cont, d_est, samp_stride, mh_k);
+                    dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, g_est_cont, d_est, samp_stride, mh_k,
+                    nullptr, g_rexp ? rexp_lo : 0.0, g_rexp ? rexp_hi : 0.0, g_rexp ? rexp_elo : 0, g_rexp ? rexp_ehi : 0);
                 CHECK_CUDA(cudaGetLastError());
             });
             long long s_sum = thrust::reduce(
@@ -3450,7 +3476,8 @@ static void hash_product(
             prof("mh_merge", [&]{
                 mh_merge_kernel<<<A_rows, p2_block, smem_p2>>>(
                     dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, g_est_cont, d_est, 0, mh_k,
-                    pfuse ? d_avg_gate : nullptr);
+                    pfuse ? d_avg_gate : nullptr,
+                    g_rexp ? rexp_lo : 0.0, g_rexp ? rexp_hi : 0.0, g_rexp ? rexp_elo : 0, g_rexp ? rexp_ehi : 0);
                 CHECK_CUDA(cudaGetLastError());
             });
         }
