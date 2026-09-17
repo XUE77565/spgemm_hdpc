@@ -160,6 +160,32 @@ hash kernel 机理创新期结束,剩余空间在**kernel 与系统接缝处**(�
 - 逐行 clock64 与系统吞吐背离 = 占用对消恒等式再现(彼慢行高并发=快wall);两口径答不同问题,论文各占一节
 - ②③阶段战场全部量化:extract融合+估计器提速(F2/c-64 线)/occgate+重行回流 hash(crankseg 线)
 
+## ①阶段 ②号刀落地:count-sort 两级化(09-18 凌晨,spec 81 实施记录全录)
+- **代码入默认路径旁路(HASH_EXTRACT=2,默认 0)**:hash_spa_kernel 两位点 O(d²) rank → O(d+1024) 两级计数排序
+  (min/max→自适应 SH→直方图→排他前缀→桶分组重排→桶内 O(b²) 直写);门槛 ht∈[512,1024]
+- **守门全绿**:MODE=0 值级 4/4 + 有序 4/4 SORTED-OK;MODE=2(D5H=1 F2 hash_direct 执行实证)双绿;
+  c-64 only_test=20,504 与既往 artifact 逐数一致(豁免)
+- **守门拦截两雷**(方法论活例):①SMEM hist 偏移 2×ht 落进 sh_val 区→illegal access(int* 基址下
+  double 区=2 int 槽/元素,指针算术逐字节核算)②跨步所有权前缀→有序违规 85,963(块级前缀和 ownership
+  必须与段基址公式顺序假设一致;值级多重集对仅序错=有序守门存在的意义)
+- **大阵 WM 守门姿势**:METHOD=hash 单方法门控(T1 cuSPARSE 大阵 insufficient resources 已知限)+
+  比对 self_product_hash.mtx 非 T1 的 self_product.mtx
+- A 级口径 B 电池(F2/msc/c-64/crankseg ×5):净窗守卫挂 /tmp/ab_c2_wall.sh 等卡 1 共租撤离
+- **下一步**:电池绿→翻默认;counting-vs-radix 交叉(②'刀)待净窗
+
+## dense 诊断线开线(09-18,用户钦定"是,但先进诊断门")
+- **背景**:kernel 本体三阵全胜是【hash 行】的口径;c-64 1.21× 系统差未拆解,且 ocean 在 c-big 类
+  捕 7.7% 行进 dense(我们 0.03%)——**dense 行上双方 dense 谁优从未测过 = 口径 C 盲区**
+- **纯测量三件套(不动刀不碰路由,①阶段纪律内)**:
+  1. c-64 1.21× 相位解剖:kernel 分布(dense/direct/cursor/hash 各相位 ms)+ 行群映射
+  2. dense 行群口径 C 对拍:DD_ROWTIME(仪器在库)vs ocean denseNumericIter 同行群逐行比
+  3. crankseg 不走此门(重行是 hash 形态,ocean 用 hash 服务它们 = 证明;occgate ③才是解)
+- **判决分支**:缺口在 dense 行 → dense 优化正式开线(刀向数据定);在 hash 中带无主行 → ②阶段
+  新 kernel(很可能 dense 家族形态:位图分页混合);都不在 → 回 extract/管线
+- 我们 dense 家族现状:v1 累积器/sspan2 四子桶/window/bcnt+direct(方案5 直写已落地)——形态不弱,
+  缺的是质量判决,判决前不盲动刀(三次翻案教训)
+- **与 ①队列并行不冲突**:count-sort 两级化打 F2(25% sort 管线),dense 诊断打 c-64,双线不同阵
+
 ## F2 相位构成修正(09-18 凌晨,推翻自己 8d39bf5 的错误归因)
 - **修正**:8d39bf5 称"F2 差距=MinHash 两链 4.5ms/45%"系张冠李戴(那是 in-2004 的 mh_merge 3.3ms)
 - **F2 真实相位(lean 版单发净窗)**:accumulate 6.23ms(63%)/compact+sort 2.46ms(**25%!**)/retry 0.48(0 溢出行仍付 0.475=机器固定成本,待查)/估计器全链仅 0.50(5%)

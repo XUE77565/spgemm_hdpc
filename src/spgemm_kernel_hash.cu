@@ -246,6 +246,11 @@ __global__ void row_span_only_kernel(
 #define GLOBAL_HT_MAX_SLOTS GLOBAL_HT_MAX_STRUCT  // 内存预算÷12B/槽
 #define AVG_FLOP_THR AVG_FLOP_THR_STRUCT  // warp_size×2(结构推导)
 #define CSORT_HT CSORT_HT_STRUCT  // 算法渐近交叉(count-sort vs 比较排序)
+// spec 81 两级计数排序(HASH_EXTRACT=2):小行 extract 的 O(d²) rank → O(d + 1024)。
+// 门槛 ht≥512:d≤256 档 O(d²) 税轻(≤65K op),且小 bin 表仅 3-6KB,加 12KB hist 会压 occupancy。
+// 寄存器 staging 上限 4 槽/线程(count ≤ 4×blockDim;块梯窄配/异常布局自动回退 legacy,零风险)。
+#define CS2_MIN_HT 512
+#define CS2_STAGE 4
 
 // MinHash 概率基数估计:替 flop_ub 定 tmp buffer + hash 表大小
 #define MH_M MH_M_STRUCT  // SMEM÷4B(HLL 寄存器)
@@ -1635,8 +1640,10 @@ __global__ void hash_spa_kernel(
                                             // Σv 归约→leader 单探测+单原子。0=关(实验中)
     unsigned *probe_hist = nullptr,         // HASH_PROBE_HIST(①阶段链画像):探测环每退出一次计数
                                             // min(probes,32) 桶;null=生产零开销。probes=额外步数(0=首发命中)
-    int rt_pre_extract = 0)                 // HASH_RT_NOEXTRACT=1:行计时截在探测循环尾(不含 extract),
+    int rt_pre_extract = 0,                 // HASH_RT_NOEXTRACT=1:行计时截在探测循环尾(不含 extract),
                                             // 对齐 ocean ROWCYCLES 窗(用户钦定口径 A+ 修正)
+    int extract2 = 0)                       // HASH_EXTRACT=2(spec 81):ht≥512 小行 extract 的 O(d²) count-sort
+                                            // → 两级计数排序 O(d+1024);0 = legacy(默认)
 {
     int idx = blockIdx.x;
     if (idx >= n_in_bucket) return;
@@ -1845,6 +1852,7 @@ __global__ void hash_spa_kernel(
 
     // extract 去重项 → tmp:小行(ht≤CSORT_HT)SMEM 内 compact+count-sort 写有序,大行无序写(交 compact_sort)
     __shared__ int cnt;
+    __shared__ int cs2_seg[64];   // spec 81 两级排序 scratch(64 = 32 warp × min/max 对;Pass2 段基址复用前 32)
     if (tid == 0) cnt = 0;
     __syncthreads();
     long long base = row_off[i];
@@ -1859,13 +1867,109 @@ __global__ void hash_spa_kernel(
             __syncthreads();
         }
         int count = cnt;
+        // ── spec 81 两级计数排序(HASH_EXTRACT=2):O(d²) rank → O(d + 1024) ──
+        // Pass0 行 min/max → 逐行自适应 SH(桶数 ≤1024,聚簇行不退化);Pass1 直方图;Pass2 warp 段扫
+        // 排他前缀;Pass3 桶分组重排(寄存器 staging,读全后再写);Pass4(下方写出循环)桶内 O(b²)
+        // 精确位次(b 实测 ≤2-4,退化上界 = legacy d²)。门槛 ht≥512;count>4×blockDim 回退 legacy。
+        int *cs2_cnt = nullptr, *cs2_start = nullptr;
+        int cs2_lo = 0, cs2_SH = 0;
+        if (extract2 && ht_size >= CS2_MIN_HT && count > 0
+            && count <= CS2_STAGE * (int)blockDim.x) {
+            int *h_cnt2  = smem + 3 * ht_size;               // [1024] 桶计数(sh_col ht×4B + sh_val
+                                                            // ht×8B = 12×ht B 之后;2×ht 会砸 sh_val!)
+            int *h_start = h_cnt2 + 1024;                    // [1024] 排他桶起点
+            int *h_fill  = h_start + 1024;                   // [1024] 落位游标
+            // Pass0:行 min/max(warp 归约 + cs2_seg 跨 warp 收集)
+            int lo_l = 0x7fffffff, hi_l = -1;
+            for (int k = tid; k < count; k += blockDim.x) {
+                int c = sh_col[k];
+                lo_l = min(lo_l, c); hi_l = max(hi_l, c);
+            }
+            for (int off = 16; off; off >>= 1) {
+                lo_l = min(lo_l, __shfl_down_sync(0xffffffff, lo_l, off));
+                hi_l = max(hi_l, __shfl_down_sync(0xffffffff, hi_l, off));
+            }
+            if ((tid & 31) == 0) { cs2_seg[(tid >> 5) << 1] = lo_l; cs2_seg[((tid >> 5) << 1) | 1] = hi_l; }
+            __syncthreads();
+            if (tid == 0) {
+                int L = 0x7fffffff, H = -1;
+                for (int w = 0; w < (int)(blockDim.x >> 5); w++) {
+                    L = min(L, cs2_seg[w << 1]); H = max(H, cs2_seg[(w << 1) | 1]);
+                }
+                cs2_seg[0] = L; cs2_seg[1] = H;
+            }
+            __syncthreads();
+            int lo = cs2_seg[0], hi = cs2_seg[1];
+            // Pass1:直方图 + 游标清零(cs2_seg 下次写已在两重 sync 后,无竞态)
+            unsigned span = (unsigned)(hi - lo + 1);
+            int sbits = 32 - __clz(span - 1);                 // ceil_log2(span);span=1 → 0(__clz(0)=32)
+            int SH = sbits > 10 ? sbits - 10 : 0;             // 桶数压到 ≤1024
+            int nbins = (int)((span - 1) >> SH) + 1;
+            for (int b = tid; b < nbins; b += blockDim.x) { h_cnt2[b] = 0; h_fill[b] = 0; }
+            __syncthreads();
+            for (int k = tid; k < count; k += blockDim.x)
+                atomicAdd(&h_cnt2[(sh_col[k] - lo) >> SH], 1);
+            __syncthreads();
+            // Pass2:排他前缀(连续所有权:线程 t 持 [t·ib,(t+1)·ib);本地扫 → warp shfl 段扫 → 段基址串行)
+            // ⚠ 必须连续持有:段基址公式假设"前面线程的全部 bin 排在我的之前",跨步持有时序不成立
+            //   (首版跨步 → F2 85,963 有序违规,有序守门拦截)
+            int ib = (nbins + (int)blockDim.x - 1) / (int)blockDim.x;
+            int b_lo = tid * ib, b_hi = min(b_lo + ib, nbins);
+            int run = 0;
+            for (int b = b_lo; b < b_hi; b++) { run += h_cnt2[b]; h_start[b] = run; }
+            int tot_t = run, exc_w = run;
+            for (int off = 16; off; off >>= 1) {
+                int y = __shfl_up_sync(0xffffffff, exc_w, off);
+                if ((tid & 31) >= off) exc_w += y;
+            }
+            if ((tid & 31) == 31) cs2_seg[tid >> 5] = exc_w;   // warp 段和
+            __syncthreads();
+            if (tid == 0) {
+                int r = 0;
+                for (int w = 0; w < (int)(blockDim.x >> 5); w++) { int t = cs2_seg[w]; cs2_seg[w] = r; r += t; }
+            }
+            __syncthreads();
+            int wb = cs2_seg[tid >> 5];
+            for (int b = b_lo; b < b_hi; b++)
+                h_start[b] += wb + exc_w - tot_t - h_cnt2[b];  // 本地 inclusive → 全局排他
+            __syncthreads();
+            // Pass3:桶分组重排(寄存器 staging;全部读定后再写,免读-写竞态)
+            int rc[CS2_STAGE]; double rv[CS2_STAGE];
+            #pragma unroll
+            for (int r = 0; r < CS2_STAGE; r++) {
+                int k = tid + r * (int)blockDim.x;
+                if (k < count) { rc[r] = sh_col[k]; rv[r] = sh_val[k]; }
+            }
+            __syncthreads();
+            #pragma unroll
+            for (int r = 0; r < CS2_STAGE; r++) {
+                int k = tid + r * (int)blockDim.x;
+                if (k < count) {
+                    int b = (rc[r] - lo) >> SH;
+                    int pos = h_start[b] + atomicAdd(&h_fill[b], 1);
+                    sh_col[pos] = rc[r]; sh_val[pos] = rv[r];
+                }
+            }
+            __syncthreads();
+            cs2_cnt = h_cnt2; cs2_start = h_start; cs2_lo = lo; cs2_SH = SH;
+        }
         if (MODE == 2) {   // 精确偏移直写(有序,免 compact;count pass 已保证无溢出)
             int base2 = exact_rp[i];
-            for (int k = tid; k < count; k += blockDim.x) {
-                int c = sh_col[k]; double v = sh_val[k]; int rank = 0;
-                for (int j = 0; j < count; j++) if (sh_col[j] < c) rank++;
-                dC_ci[base2 + rank] = c;
-                dC_val[base2 + rank] = v;
+            if (cs2_cnt) {   // Pass4:桶分组已就绪,桶内 O(b²) 定位直写
+                for (int k = tid; k < count; k += blockDim.x) {
+                    int c = sh_col[k]; int b = (c - cs2_lo) >> cs2_SH; int s = cs2_start[b];
+                    int wr = 0;
+                    for (int q = s, e = s + cs2_cnt[b]; q < e; q++) wr += (sh_col[q] < c);
+                    dC_ci[base2 + s + wr] = c;
+                    dC_val[base2 + s + wr] = sh_val[k];
+                }
+            } else {
+                for (int k = tid; k < count; k += blockDim.x) {
+                    int c = sh_col[k]; double v = sh_val[k]; int rank = 0;
+                    for (int j = 0; j < count; j++) if (sh_col[j] < c) rank++;
+                    dC_ci[base2 + rank] = c;
+                    dC_val[base2 + rank] = v;
+                }
             }
             __syncthreads();
             if (rowtime && tid == 0) rowtime[i] = clock64() - rt0;
@@ -1873,12 +1977,24 @@ __global__ void hash_spa_kernel(
         }
         // SAFETY:行槽位 cap = est(= row_off 差);欠估行(distinct>est)越界写会砸下一行 → 守卫+overflow
         long long cap = row_off[i + 1] - row_off[i];
-        for (int k = tid; k < count; k += blockDim.x) {      // count-sort:数 < 自己的 → rank → 落有序位
-            int c = sh_col[k]; double v = sh_val[k]; int rank = 0;
-            for (int j = 0; j < count; j++) if (sh_col[j] < c) rank++;
-            if (rank >= cap) { atomicExch(overflow_flag, 1); continue; }
-            tmp_key[base + rank] = ((unsigned long long)i << 32) | (unsigned int)c;
-            tmp_val[base + rank] = v;
+        if (cs2_cnt) {   // Pass4:桶内 O(b²) 位次 + tmp 直写(rank 与 legacy 同集:排序后前 cap 个最小键)
+            for (int k = tid; k < count; k += blockDim.x) {
+                int c = sh_col[k]; int b = (c - cs2_lo) >> cs2_SH; int s = cs2_start[b];
+                int wr = 0;
+                for (int q = s, e = s + cs2_cnt[b]; q < e; q++) wr += (sh_col[q] < c);
+                int rank = s + wr;
+                if (rank >= cap) { atomicExch(overflow_flag, 1); continue; }
+                tmp_key[base + rank] = ((unsigned long long)i << 32) | (unsigned int)c;
+                tmp_val[base + rank] = sh_val[k];
+            }
+        } else {
+            for (int k = tid; k < count; k += blockDim.x) {      // count-sort:数 < 自己的 → rank → 落有序位
+                int c = sh_col[k]; double v = sh_val[k]; int rank = 0;
+                for (int j = 0; j < count; j++) if (sh_col[j] < c) rank++;
+                if (rank >= cap) { atomicExch(overflow_flag, 1); continue; }
+                tmp_key[base + rank] = ((unsigned long long)i << 32) | (unsigned int)c;
+                tmp_val[base + rank] = v;
+            }
         }
         __syncthreads();
         if (tid == 0) {
@@ -4424,6 +4540,12 @@ static void hash_product(
             } else {
                 int ht = WARP_SIZE << bi;
                 size_t smem_flat = (size_t)ht * (sizeof(int) + sizeof(double));
+                // spec 81 两级排序 hist 预算:3×1024×4B=12KB(仅 512≤ht≤1024 档——kernel 侧分支同界;
+                // bin5 表 12KB+12KB=24KB,256 线程 8 块 ×24KB=192KB < 228KB 不压 occupancy。
+                // ⚠ ht>CSORT_HT 档绝不能加:bin9 表 196KB+12KB=208KB > opt-in(HASH_CAP×12)→ 发射失败)
+                static int g_extract2 = -1;   // HASH_EXTRACT=2:两级计数排序,默认 0=legacy
+                if (g_extract2 < 0) { const char *e = getenv("HASH_EXTRACT"); g_extract2 = (e && atoi(e) == 2) ? 1 : 0; }
+                if (g_extract2 && ht >= CS2_MIN_HT && ht <= CSORT_HT) smem_flat += 3 * 1024 * sizeof(int);
                 size_t smem_priv = (size_t)PRIV_W * ht * (sizeof(int) + sizeof(double));
                 if (d_gv && ht >= TABLE_DOUBLING_THR) {
                     // Hybrid Value 大表 bin:keys SMEM(4B/槽)+ values 全局 L2 原子(docs/24)
@@ -4479,13 +4601,13 @@ static void hash_product(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist, g_rt_nox);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist, g_rt_nox, g_extract2);
                     else
                         hash_spa_kernel<0,0><<<n, hblk, smem_flat, cur_s>>>(
                             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                             rows_ptr, n, ht, d_off,
                             d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist, g_rt_nox);
+                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist, g_rt_nox, g_extract2);
                     CHECK_CUDA(cudaGetLastError());   // 发射即时检查(>48KB 表 opt-in 类问题即抓)
                 }
             }
@@ -4987,6 +5109,9 @@ static void hash_product(
                 int *rows_ptr = d_sort + h_off[bi];
                 int ht = WARP_SIZE << bi;
                 size_t smem_flat = (size_t)ht * (sizeof(int) + sizeof(double));
+                static int g_ex2_d5h = -1;   // HASH_EXTRACT=2(spec 81,与 MODE=0 位点同 env;作用域独立解析)
+                if (g_ex2_d5h < 0) { const char *e = getenv("HASH_EXTRACT"); g_ex2_d5h = (e && atoi(e) == 2) ? 1 : 0; }
+                if (g_ex2_d5h && ht >= CS2_MIN_HT && ht <= CSORT_HT) smem_flat += 3 * 1024 * sizeof(int);
                 {
                     static bool done2 = false;
                     if (!done2) {
@@ -5000,13 +5125,15 @@ static void hash_product(
                         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                         rows_ptr, n, ht, d_off,
                         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                        d_flop, d_maxbl, 0, dC_rp, dC_ci, d_val, d_rt);
+                        d_flop, d_maxbl, 0, dC_rp, dC_ci, d_val, d_rt,
+                        nullptr, nullptr, 0, 0, nullptr, 0, nullptr, 0, g_ex2_d5h);
                 else
                     hash_spa_kernel<2,0><<<n, HASH_BLOCK, smem_flat>>>(
                         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                         rows_ptr, n, ht, d_off,
                         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                        d_flop, d_maxbl, 0, dC_rp, dC_ci, d_val, d_rt);
+                        d_flop, d_maxbl, 0, dC_rp, dC_ci, d_val, d_rt,
+                        nullptr, nullptr, 0, 0, nullptr, 0, nullptr, 0, g_ex2_d5h);
                 CHECK_CUDA(cudaGetLastError());
             }
         });

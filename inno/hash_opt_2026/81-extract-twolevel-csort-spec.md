@@ -46,3 +46,21 @@ extract 的 count-sort 是唯一挂账的算法级浪费:排序税 5.9%(口径 B
 - F2 的 2.46ms 载体:主力 bin6(47.9K 行 d~1000-2000)的 per-row radix + bin4/5 的 in-kernel count-sort + 拷贝
 - 修订方向(按性价比):①小行 count-sort 两级化(本规格主体,O(d²)→O(d+1024),bin4/5 载体)②d≤2048 时 counting(直方图+落位,2 pass)vs radix(4 pass)的交叉点实测——counting 有 2× 潜力但 cub 已高度调优,须实测③SEGRTS 通道(bin8/9)重估④拷贝段 warp-batched 已有(Fix#11)
 - 判据口径 B 含排序;F2 目标 2.46→<1.5ms
+
+## 实施记录(09-18 凌晨,已编码已守门)
+
+### 代码位图
+- `hash_spa_kernel` 两个 count-sort 位点全替换:MODE=2 直写(原 1864)/MODE=0 tmp(原 1876);位图 = Pass0 min/max(SMEM+warp 归约)→ 逐行自适应 SH(桶≤1024)→ Pass1 直方图 → Pass2 排他前缀(连续所有权)→ Pass3 桶分组重排(寄存器 staging 4 槽/线程)→ Pass4 桶内 O(b²) 位次直写
+- 门槛:ht∈[512,1024] 启用(bin4/5);ht<512 税轻不动,ht>CSORT_HT 走原大行路径零改动
+- SMEM:hist 三数组(h_cnt2/h_start/h_fill 各 1024 int)=12KB,host 侧 `ht∈[512,1024]` 才追加;bin5 表 12+12=24KB×8 块=192KB<228KB 不压 occupancy
+- env HASH_EXTRACT=2 开,默认 0;二进制 spgemm_c2(WM 版)
+
+### 守门结果(全绿)
+- MODE=0 位点:值级 4/4(F2/msc/crankseg PASS @1e-9;c-64 only_test=20,504 与既往 artifact 逐数一致豁免)+ **有序 4/4 SORTED-OK**(本刀命门)
+- MODE=2 位点(D5H=1,F2 hash_direct 6.5ms 相位执行实证):值级 PASS + SORTED-OK
+- A 级口径 B 电池(×5):净窗守卫挂 /tmp/ab_c2_wall.sh(卡 1 共租 69GB 等待中)
+
+### 尸检两雷(守门体系各抓获一次,方法论活例)
+1. **SMEM 指针偏移**:hist 起点写成 `smem + 2*ht_size`(落进 sh_val 区!表布局=ht×4B+ht×8B=12×ht B,hist 应在 `smem + 3*ht_size`)→ 值区被直方图清零覆写+计数变野值 → F2 illegal access。教训:**SMEM 指针算术逐字节核算每个区段,int* 基址下 double 区占 2 int 槽/元素**
+2. **跨步所有权前缀**:Pass2 用线程跨步持桶(b 归线程 b%B)+段基址公式——公式假设"前线程全部桶在我之前",跨步时序不成立 → F2 85,963 有序违规/msc 15,111(值级反而 PASS:多重集对、仅序错)。修复=连续所有权([t·ib,(t+1)·ib)。教训:**块级前缀和的 ownership 布局必须与段基址公式的顺序假设一致**
+3. 顺带:大阵 WM 守门必须 `METHOD=hash` 单方法门控(T1 cuSPARSE 大阵 insufficient resources 是已知限,truth17 大阵本就是 scipy 生成);比对目标 = self_product_adaptive/hash.mtx 而非 self_product.mtx(T1)
