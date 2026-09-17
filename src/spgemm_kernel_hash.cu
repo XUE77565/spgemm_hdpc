@@ -1653,6 +1653,65 @@ __global__ void hash_spa_kernel(
     int G = 1 << logG;
     int num_groups = blockDim.x / G;
     int my_group = tid / G, my_id = tid % G;
+    if (warp_merge) {
+        // ⑤ v2(inno/80):双层 uniform 谓词化 + full-mask match 聚合 —— 同 warp 不同 k 的并发同列乘积
+        // rank-butterfly 归约,leader 单探测+单原子(dup 高时原子/探测双坍缩)。
+        // v1 死因 = activemask 碎片化;此版全程 0xffffffff,无同步边界漂移。
+        int lane5 = tid & 31;
+        int my_k_n = 0;
+        for (int p0 = rs + my_group; p0 < re; p0 += num_groups) my_k_n++;
+        int ksteps = __reduce_max_sync(0xffffffffu, (unsigned)my_k_n);
+        for (int ki = 0; ki < ksteps; ki++) {
+            int p = rs + my_group + ki * num_groups;
+            bool kact = (p < re);
+            int k = kact ? A_col_idx[p] : 0;
+            double a = kact ? A_val[p] : 0.0;
+            int q0 = 0, qe = 0;
+            if (kact) { q0 = B_row_ptr[k] + my_id; qe = B_row_ptr[k + 1]; }
+            int myn = (kact && qe > q0) ? (qe - q0 + G - 1) / G : 0;
+            int jsteps = __reduce_max_sync(0xffffffffu, (unsigned)myn);
+            for (int qi = 0; qi < jsteps; qi++) {
+                int q = q0 + qi * G;
+                bool act = kact && q < qe;
+                int j = -1; double v = 0.0;
+                if (act) {
+                    if (B16) { uint4 e = B16[q]; j = (int)e.x; v = a * __hiloint2double(e.w, e.z); }
+                    else { j = B_col_idx[q]; v = a * B_val[q]; }
+                    if (MODE == 1) v = 0.0;
+                    if (upper_tri && j < i) j = -1;   // 过滤项入无效群(群和废弃,不发射)
+                }
+                unsigned mm = __match_any_sync(0xffffffffu, j);
+                int gs = __popc(mm);
+                int gs_eff = (act && j >= 0) ? gs : 0;                          // -1 哨兵群不计(否则其巨尺寸
+                int gnm = (int)__reduce_max_sync(0xffffffffu, (unsigned)gs_eff);   // 抬高全 warp 空转上界,v2.3)
+                double sv = 0.0;
+                unsigned m2 = mm;                                               // __ffs 逐位版(弃 __fns,消语义风险;
+                for (int bi = 0; bi < gnm; bi++) {                              // shfl 恒无条件 = mask 恒全)
+                    int bl = m2 ? ( __ffs(m2) - 1) : lane5;
+                    double pv = __shfl_sync(0xffffffffu, v, bl);
+                    if (m2) { sv += pv; m2 &= m2 - 1; }
+                }
+                if (act && j >= 0 && lane5 == __ffs(mm) - 1) {   // leader:单探测+单原子
+                    unsigned slot = ((unsigned)(j * 2654435761u)) & mask;
+                    int probes = 0;
+                    while (true) {
+                        int entry = sh_col[slot];
+                        if (entry == j) { if (MODE != 1) atomicAdd(&sh_val[slot], sv); break; }
+                        if (entry == -1) {
+                            int prev = atomicCAS(&sh_col[slot], -1, j);
+                            if (prev == -1 || prev == j) { if (MODE != 1) atomicAdd(&sh_val[slot], sv); break; }
+                        }
+                        slot = (slot + 1) & mask;
+                        if (++probes >= ht_size) {
+                            atomicExch(overflow_flag, 1);
+                            if (!atomicExch(&row_ovf[i], 1)) { int pr2 = atomicAdd(ovf_cnt, 1); ovf_rows[pr2] = i; }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    } else
     for (int p = rs + my_group; p < re; p += num_groups) {   // 并行 k(stride num_groups)
         int k = A_col_idx[p];
         double a_ik = A_val[p];
@@ -1665,24 +1724,6 @@ __global__ void hash_spa_kernel(
             } else { j = B_col_idx[q]; bv = B_val[q]; }
             if (upper_tri && j < i) continue;                // ATT 上三角过滤(j≥i)
             double v = (MODE == 1) ? 0.0 : a_ik * bv;        // count-only 免乘免值写(docs/31)
-            if (warp_merge) {   // ⑤ 合并 atomicAdd:同 warp 同列(G 分组下 = 不同 k 的并发同列)match→Σv→leader 单发
-                unsigned am = __activemask();
-                unsigned mm = __match_any_sync(am, j);
-                int lane5 = threadIdx.x & 31;
-                int leader = __ffs(mm) - 1;
-                int r  = __popc(mm & ((1u << lane5) - 1));    // 组内序号
-                int gs = __popc(mm);
-                double sv = v;                                 // 组内 rank butterfly(任意 lane 集合;
-                #pragma unroll                                 // redux 无浮点,shfl 树是正解;__fns 单指令选配对)
-                for (int off = 1; off < 32; off <<= 1) {
-                    int pr = r ^ off;
-                    int pl = (pr < gs) ? (int)__fns((int)mm, -1, pr + 1) : lane5;
-                    double pv = __shfl_sync(am, sv, pl);
-                    if (pr < gs) sv += pv;
-                }
-                if (lane5 != leader) continue;                 // 非 leader:本乘积已并入 leader
-                v = sv;
-            }
             unsigned slot = ((unsigned)(j * 2654435761u)) & mask;   // Knuth 乘法散列(自有常数,全值域)
             int probes = 0;
             while (true) {
