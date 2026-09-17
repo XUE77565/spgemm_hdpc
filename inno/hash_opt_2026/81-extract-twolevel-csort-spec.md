@@ -40,3 +40,9 @@ extract 的 count-sort 是唯一挂账的算法级浪费:排序税 5.9%(口径 B
 1. kernel 内新路径(仅 CSORT_HT 分支内改,大行路径零改动)
 2. 口径 B 电池(F2/msc/c-64 轻带)×5 净窗;排序税 5.9% → 目标 <2%
 3. 值级+有序守门;绿 → 入默认,口径 A/B 双测刷新对拍基线
+
+## 深夜解剖补充(09-18,compact+sort 2.46ms 内部地图)
+- 结构:小行(≤CSORT_HT)kernel 内 count-sort O(d²) + 纯拷贝;bin6/7(ht 2048-4096)= csort_fused/csort = **per-row cub BlockRadixSort(32 位 4 pass,已高度优化非裸比较排序)**;bin8/9 = SEGRTS(cub 分段基数,默认关)
+- F2 的 2.46ms 载体:主力 bin6(47.9K 行 d~1000-2000)的 per-row radix + bin4/5 的 in-kernel count-sort + 拷贝
+- 修订方向(按性价比):①小行 count-sort 两级化(本规格主体,O(d²)→O(d+1024),bin4/5 载体)②d≤2048 时 counting(直方图+落位,2 pass)vs radix(4 pass)的交叉点实测——counting 有 2× 潜力但 cub 已高度调优,须实测③SEGRTS 通道(bin8/9)重估④拷贝段 warp-batched 已有(Fix#11)
+- 判据口径 B 含排序;F2 目标 2.46→<1.5ms
