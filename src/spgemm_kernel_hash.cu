@@ -2494,6 +2494,24 @@ __global__ void hash_compact_sort_kernel(
     }
 }
 
+// 行级表配(解耦版,study/22 新第一刀 v2):路由吃的 est 不动(expand 1.8 照旧),
+// 只有【表长目标】按 sketch E=e/eref 做行级折减 → 免 est-喂-多门的耦合轮盘
+// (REXP=1 耦合版教训:crankseg −8.5 实为 occgate 门槛迁移,in-2004 +58.7 实为
+//  direct 写入人口翻倍 —— 都是路由副作用,不是压表红利;解耦版量纯压表收益)。
+// E≤elo → g=glo(默认=eref,恒等不碰);E≥ehi → g=ghi;中间 log 插值。
+SP_HD int tbl_target_rexp(int e, int alpha_pct, double glo, double ghi,
+                          int elo, int ehi, double eref) {
+    int target = (e <= TABLE_DOUBLING_THR) ? (int)((long long)e * alpha_pct / 100) : e;
+    if (ehi <= 0 || e <= 0) return target;
+    double E = (double)e / eref;
+    double t = (E <= (double)elo) ? 0.0
+             : (E >= (double)ehi) ? 1.0
+             : (log(E) - log((double)elo)) / (log((double)ehi) - log((double)elo));
+    double g = glo + (ghi - glo) * t;
+    double nt = (double)target * g / eref;
+    return nt < 1.0 ? 1 : (int)nt;
+}
+
 // GPU 端分桶(无 host 往返):每行算 bucket_id 并直方图计数(融合省 1 launch)
 __global__ void compute_bucket_kernel(
     const int *est, const int *A_row_ptr, int A_rows, int ultra_thr,
@@ -2516,7 +2534,10 @@ __global__ void compute_bucket_kernel(
     int dim2_on = 0,     // DIM2 独立门(n_cols 传参只为 largest 的 span 护栏;误点亮 dim2 曾把
                           // bcsstk30 642 行送 BIN_DITER → +24.8%,2026-09-03 惊吓扫实证)
     int dtier_cmp = 0,   // §22b Ocean 双维档位比较(DTIER_CMP=1 且 DSTRUCT_WIN=-1 时生效):
-    int tgt_alpha_pct = 200)  // 表配 α(study/10 勘误刀):target=α%×est(档内);旧 2×∧est 高估
+    int tgt_alpha_pct = 200,  // 表配 α(study/10 勘误刀):target=α%×est(档内);旧 2×∧est 高估
+    double tbl_glo = 0.0, double tbl_ghi = 0.0,   // 行级表配(解耦版 HASH_REXP=2):0=关;
+    int tbl_elo = 0, int tbl_ehi = 0,             // 默认锚 glo=1.8(=eref 恒等)/ghi=1.4/elo=ehi=4096
+    double tbl_eref = 1.8)                        // eref = 实际 est_expand(E = e/eref)
                           //   1.63× → 表≈真需求 3.3× vs Ocean 1.75×;env HASH_TGT_ALPHA(200=legacy)
                           //   档内行(span≤最大档)要求 dense 档 ≤ hash 档(窗口 vs 表,同一 SMEM
                           //   预算梯);大 span 行走老窗口内核,比较不适用。in-2004 校准通过率 95.3%
@@ -2533,7 +2554,7 @@ __global__ void compute_bucket_kernel(
     // flop/dup 门继续受保护。DNF 防复发:dbg 打印路由量级 + cnnz 对 scipy。
     int hash_bin = 0, ht = WARP_SIZE;                       // 最小表 = 1 warp 槽(hash_slots_pow2 同下限)
     {
-        int target = (e <= TABLE_DOUBLING_THR) ? (int)((long long)e * tgt_alpha_pct / 100) : e;  // α=0.5 松弛(仅默认档内)
+        int target = tbl_target_rexp(e, tgt_alpha_pct, tbl_glo, tbl_ghi, tbl_elo, tbl_ehi, tbl_eref);
         while (ht < target && ht < HASH_CAP) { ht <<= 1; hash_bin++; }
     }
     // dense 六档 = Ocean DENSE_NUMERIC_BIN_SIZES[128KB] 公式移植:占用梯{32,16,8,4,2}÷128K
@@ -2611,7 +2632,7 @@ __global__ void compute_bucket_kernel(
         // 窗数按真实窗宽 PB2_W 取整(5399/5400 时代与 PB2_W=5500 不一致,2026-09-03 单源化)
         int W = (int)(((long long)sl0 + PB2_W - 1) / PB2_W);
         long long td = TD_WIN_NS * W + TD_FLOP_CENTI * fl64 / 100;
-        int tgt = (e <= TABLE_DOUBLING_THR) ? (int)((long long)e * tgt_alpha_pct / 100) : e;
+        int tgt = tbl_target_rexp(e, tgt_alpha_pct, tbl_glo, tbl_ghi, tbl_elo, tbl_ehi, tbl_eref);
         int ht_l = WARP_SIZE; while (ht_l < tgt && ht_l < HASH_CAP) ht_l <<= 1;
         long long kc_n = (long long)(A_row_ptr[i + 1] - A_row_ptr[i]);
         long long th = TH_HT_CENTI * ht_l / 100 + TH_KC_NS * kc_n + TH_FLOP_CENTI * fl64 / 100 + TH_BASE_NS;
@@ -2628,7 +2649,7 @@ __global__ void compute_bucket_kernel(
     // ↑ largest/esc 已定案,后续链(小跨度/ultra/v4/heavy)不覆写;原 if(false) 占位
     // SROUTE v3(docs/72 Phase 2):结构化字节路由,替代 v4 拟合门(sroute>0 时)
     else if (sroute > 0 && diter_thr > 0 && dup_ok) {
-        int tgt_sr = (e <= TABLE_DOUBLING_THR) ? (int)((long long)e * tgt_alpha_pct / 100) : e;
+        int tgt_sr = tbl_target_rexp(e, tgt_alpha_pct, tbl_glo, tbl_ghi, tbl_elo, tbl_ehi, tbl_eref);
         int ht_row = WARP_SIZE; while (ht_row < tgt_sr && ht_row < HASH_CAP) ht_row <<= 1;
         long long hash_bytes = (long long)ht_row * HASH_BYTES_PER_SLOT_MILLI
             + (sroute >= 3 ? (long long)e * COMPACT_BYTES_PER_EST_MILLI : 0);
@@ -2659,7 +2680,7 @@ __global__ void compute_bucket_kernel(
     else {
         int bi = 0, ht = WARP_SIZE;
         // 小行表 2× 松弛(est=flop 紧界 → 满载原子争用,333SP accumulate +8ms 教训;槽位不变只放大表)
-        int target = (e <= TABLE_DOUBLING_THR) ? (int)((long long)e * tgt_alpha_pct / 100) : e;  // α=0.5 松弛(仅默认档内)
+        int target = tbl_target_rexp(e, tgt_alpha_pct, tbl_glo, tbl_ghi, tbl_elo, tbl_ehi, tbl_eref);
         while (ht < target && ht < HASH_CAP) { ht <<= 1; bi++; }
         // 批量 kernel 门(2026-08-26):est≤64 且行长≤32(k 短,warp 串行 k 才划算;
         // 3Dspectralwave2 的 est 小但 k 数百的长链行回归教训)→ bin0(BATCH_HT=128 覆盖 est≤64);
@@ -3303,6 +3324,7 @@ static void hash_product(
     static int g_ocx = -1;
     if (g_ocx < 0) { const char *e = getenv("OCEAN_C"); g_ocx = (e && *e) ? atoi(e) : 0; }
     const bool oc_on = g_ocx && !att && A_nnz >= STREAMLINE_NNZ_STRUCT && A_rows >= OC_GATE_MIN_ROWS;
+    double est_expand_final = 1.8;   // 估计器段(!pfuse 嵌套域)算出的 est_expand 透传给 binning 段(行级表配 eref)
 
     // Stage 1: row_off 由 est 的 scan 给出(64 位:ocean337 上 Σest 可超 2^31,TSOPF 教训)
     long long *d_off; d_off = decltype(d_off)(dev_alloc((A_rows + 1) * sizeof(long long)));
@@ -3426,15 +3448,25 @@ static void hash_product(
         static int g_rexp = -1;
         if (g_rexp < 0) { const char *e = getenv("HASH_REXP"); g_rexp = (e && *e) ? atoi(e) : 0; }
         double rexp_lo = 1.8, rexp_hi = 1.4; int rexp_elo = 256, rexp_ehi = 4096;
+        // 模式 2(解耦版):估计器 expand 照旧标量(est=路由输入不动),行级折减只进表长目标
+        // (compute_bucket_kernel 4 处 target 位);默认锚 = E>4096 阶跃到 1.4(E≤4096 恒等不碰)
+        double tbl_glo = est_expand, tbl_ghi = 1.4; int tbl_elo = 4096, tbl_ehi = 4096;
+        if (g_rexp == 2) {
+            if (const char *e = getenv("HASH_REXP_HI"))  tbl_ghi = atof(e);
+            if (const char *e = getenv("HASH_REXP_ELO")) tbl_elo = atoi(e);
+            if (const char *e = getenv("HASH_REXP_EHI")) tbl_ehi = atoi(e);
+        }
         if (g_rexp) {
             if (const char *e = getenv("HASH_REXP_LO"))  rexp_lo  = atof(e);
             if (const char *e = getenv("HASH_REXP_HI"))  rexp_hi  = atof(e);
             if (const char *e = getenv("HASH_REXP_ELO")) rexp_elo = atoi(e);
             if (const char *e = getenv("HASH_REXP_EHI")) rexp_ehi = atoi(e);
             if (oc_on || A_nnz < STREAMLINE_NNZ_STRUCT) { g_rexp = 0; }   // 两条路径各有自己的余量经济学
-            else dbg("[%s] row-expand: lo=%.2f@est≤%d hi=%.2f@est≥%d(log 插值)\n", tag, rexp_lo, rexp_elo, rexp_hi, rexp_ehi);
+            else if (g_rexp == 1) dbg("[%s] row-expand(耦合): lo=%.2f@est≤%d hi=%.2f@est≥%d(log 插值)\n", tag, rexp_lo, rexp_elo, rexp_hi, rexp_ehi);
+            else dbg("[%s] row-expand(解耦): E>%d → 表 g=%.2f(eref=%.2f;E≤%d 恒等)\n", tag, tbl_elo, tbl_ghi, est_expand, tbl_elo);
         }
         dbg("[%s] est_expand=%.2f(total_flop=%lld)\n", tag, est_expand, total_flop);
+        est_expand_final = est_expand;
         // MHSAMP(docs/57,Ocean Ana2 3% 采样同哲学):dense_win 候选先 stride 采样 merge → 投影
         // Σest 过 DENSE_MIN_FRAC 门 → 判定 dense-注定:全量 merge 免,d_est=min(flop,n)
         // (dense_win+DIRECT5 下 per-row est 只喂门,d_off 会随 est 置零重扫,布局零消费);
@@ -3451,7 +3483,7 @@ static void hash_product(
                 CHECK_CUDA(cudaMemset(d_est, 0, (size_t)A_rows * sizeof(int)));
                 mh_merge_kernel<<<S, p2_block, smem_p2>>>(
                     dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, g_est_cont, d_est, samp_stride, mh_k,
-                    nullptr, g_rexp ? rexp_lo : 0.0, g_rexp ? rexp_hi : 0.0, g_rexp ? rexp_elo : 0, g_rexp ? rexp_ehi : 0);
+                    nullptr, g_rexp == 1 ? rexp_lo : 0.0, g_rexp == 1 ? rexp_hi : 0.0, g_rexp == 1 ? rexp_elo : 0, g_rexp == 1 ? rexp_ehi : 0);
                 CHECK_CUDA(cudaGetLastError());
             });
             long long s_sum = thrust::reduce(
@@ -3477,7 +3509,7 @@ static void hash_product(
                 mh_merge_kernel<<<A_rows, p2_block, smem_p2>>>(
                     dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, g_est_cont, d_est, 0, mh_k,
                     pfuse ? d_avg_gate : nullptr,
-                    g_rexp ? rexp_lo : 0.0, g_rexp ? rexp_hi : 0.0, g_rexp ? rexp_elo : 0, g_rexp ? rexp_ehi : 0);
+                    g_rexp == 1 ? rexp_lo : 0.0, g_rexp == 1 ? rexp_hi : 0.0, g_rexp == 1 ? rexp_elo : 0, g_rexp == 1 ? rexp_ehi : 0);
                 CHECK_CUDA(cudaGetLastError());
             });
         }
@@ -3632,7 +3664,17 @@ static void hash_product(
         if (g_count_tiny < 0) { const char *e = getenv("COUNT_TINY"); g_count_tiny = (e && *e) ? atoi(e) : 1; }
         // SROUTE 用的 hash 表槽 = 半 SM 预算÷12B(结构推导,与 est 无关的物理上界;行内再按 est 选小表)
         const int ht_sroute = g_sroute > 0 ? hash_slots_pow2(SMEM_BUDGET_2BLK()) : 0;
-        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha);
+        // 行级表配(解耦版 HASH_REXP=2)launch 侧参数:估计器段在 !pfuse 嵌套域,此处独立解析同源 env;
+        // 豁免逻辑与估计器段一致(OCEAN_C 后置缩放/小阵 STREAMLINE 域不参与)
+        static int g_rexp_bk = -1;
+        if (g_rexp_bk < 0) { const char *e = getenv("HASH_REXP"); g_rexp_bk = (e && *e) ? atoi(e) : 0; }
+        if (oc_on || A_nnz < STREAMLINE_NNZ_STRUCT) g_rexp_bk = 0;
+        double tbl_glo_bk = est_expand_final, tbl_ghi_bk = 1.4; int tbl_elo_bk = 4096, tbl_ehi_bk = 4096;
+        if (const char *e = getenv("HASH_REXP_HI"))  tbl_ghi_bk = atof(e);
+        if (const char *e = getenv("HASH_REXP_ELO")) tbl_elo_bk = atoi(e);
+        if (const char *e = getenv("HASH_REXP_EHI")) tbl_ehi_bk = atoi(e);
+        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
+            g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final);
         if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
