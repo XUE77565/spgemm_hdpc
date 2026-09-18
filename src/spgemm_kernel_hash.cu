@@ -1619,7 +1619,10 @@ static inline bool probe_rf_on() {
 // 自有 Knuth 乘法常数 2654435761u 全值域映射 + mask 线性探测(pow2 表)。
 template<int MODE, int PROBE_RF = 1>
 
-__global__ void hash_spa_kernel(
+// __launch_bounds__(1024,2)(09-18,hash_spa 占用抬升实验):REG:40 下 1024thr 档只驻 1 块/SM(50%),
+// 512thr 档 3 块(75%,crankseg 主发射 31,770 块实测 74.7%)。压 ≤32 regs → 1024 档 2 块/512 档 4 块。
+// ⚠ 本 kernel 是三阵全胜主力,溢出风险高,须全套守门+电池;对照 = spgemm_lb2t。
+__global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,   // 内层 j 来源:AA=A,ATT=Aᵀ(CSC)
     int upper_tri,                                                      // 0=自乘;1=ATT 只算 j≥i
