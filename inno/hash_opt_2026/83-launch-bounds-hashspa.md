@@ -28,3 +28,11 @@ LADDER 验尸的"占用悬崖项"今日两次兑现——③阶段路由成本�
 
 ## 二进制
 spgemm_hb(WM)/spgemm_hbt(非WM)= 两刀全量;对照 spgemm_lb2t(仅 dense 刀)/spgemm_c2t(无刀)
+
+## 全场 REG 审计(09-18 午后,cuobjdump,>32 的非 CUB kernel)
+- csort 家族:compact_sort<256,64>=**255**/<256,16>=127/<128,16>=113;csort_fused<256,64>=229/<256,16>=80;
+  csort_inplace<256,64>=255/<512,8>=79 → 256thr 下 1-2 块/SM(12.5-25% warps)——**下一片占用雷区**
+  (crankseg compact+sort 相位载体;⚠ radix 高 REG 是算法内在,硬 launch_bounds 会灾难溢出,
+  刀法=块形/IPT 再设计或 counting 变体替换——与队列③/fork 的 CSORT_CNT 汇流)
+- 次要:sspan2<512,128>=40/t_merge_flop=40(边缘相位)
+- 已修:hash_dense_direct 50→32 ✓/hash_spa 40→32 ✓
