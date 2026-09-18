@@ -5324,8 +5324,10 @@ static void hash_product(
                 // CAP ≥ row_nnz ≤ ht 不变式保持;溢出行 row_nnz=flop 重试值可超 CAP → 只排前 CAP 项
                 // 写废,末段 retry 善后整行覆写(同旧语义,csort_fused 本就不带 skip)。
                 const bool cs_v2 = g_cs_v2;
-                static int g_cs_cnt = -1;   // CSORT_CNT=1(队列②):bin6 csort→两级计数排序,与 cub radix 交叉实测
-                if (g_cs_cnt < 0) { const char *e = getenv("CSORT_CNT"); g_cs_cnt = (e && atoi(e) > 0) ? 1 : 0; }
+                static int g_cs_cnt = -1;   // CSORT_CNT(队列②,已转正默认开):bin6 csort→两级计数排序;
+                                            // A级电池×5=F2 −9.6/msc −1.0/c-64 +2.3(噪声带)/crankseg +0.1 + 值级有序 4/4;
+                                            // =0 回 cub radix 逃生门
+                if (g_cs_cnt < 0) { const char *e = getenv("CSORT_CNT"); g_cs_cnt = (e && *e && atoi(e) == 0) ? 0 : 1; }
                 const int mx = cs_v2 ? (bi == 6 ? csort_fused_max_cols(CSORT_TPB_C, CSORT_IPT_C)
                                                 : csort_fused_max_cols(CSORT_TPB_D, CSORT_IPT_D))
                                      : csort_fused_max_cols(CSORT_TPB_A, CSORT_IPT_A);   // 融合键:pos 位 → 列位宽约束
