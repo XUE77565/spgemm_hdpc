@@ -36,3 +36,12 @@ spgemm_hb(WM)/spgemm_hbt(非WM)= 两刀全量;对照 spgemm_lb2t(仅 dense 刀)/
   刀法=块形/IPT 再设计或 counting 变体替换——与队列③/fork 的 CSORT_CNT 汇流)
 - 次要:sspan2<512,128>=40/t_merge_flop=40(边缘相位)
 - 已修:hash_dense_direct 50→32 ✓/hash_spa 40→32 ✓
+
+## 归因修正(09-18 午后,内容定谳)
+- 二进制内容核查(F2 compact+sort 相位判 CSORT 态:c2t 2.494=关/lb2t 2.490=关/hbt 1.541=开):
+  **spec83 电池(lb2t vs hbt)被 fork 的 b4be6ab(CSORT_CNT 默认开,12:31:37)污染**——hbt 构建于翻转后
+- 修正归因(扣 CSORT 的 F2 −9.6/crankseg +0.1/msc −1.0/c-64 噪声):hash_spa 刀隔离效应 ≈
+  F2 −6.7/crankseg −5.7/msc −4.0/c-64 −2.9~−5.1 —— **四阵仍全胜,刀成立,仅幅度修正**
+- spec82 电池(c2t vs lb2t)不受影响(dense 刀隔离干净 ✓)
+- 隔离复验跑中(/tmp/ab_hb2_wall.log,hbt+CSORT_CNT=0 vs lb2t);当前源码默认 = 三刀全量
+  (dense+hash_spa+CSORT),F2 累计 c2t 9.95 → hbt 8.33(−16.3%,三刀和自洽)
