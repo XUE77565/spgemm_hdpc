@@ -45,3 +45,8 @@ spgemm_hb(WM)/spgemm_hbt(非WM)= 两刀全量;对照 spgemm_lb2t(仅 dense 刀)/
 - spec82 电池(c2t vs lb2t)不受影响(dense 刀隔离干净 ✓)
 - 隔离复验跑中(/tmp/ab_hb2_wall.log,hbt+CSORT_CNT=0 vs lb2t);当前源码默认 = 三刀全量
   (dense+hash_spa+CSORT),F2 累计 c2t 9.95 → hbt 8.33(−16.3%,三刀和自洽)
+
+## 隔离复验终版(09-18 14:04,hbt+CSORT_CNT=0 vs lb2t,×5 相位和)
+- msc −1.9 / c-64 −2.2 / crankseg −5.1 / **F2 −9.4** —— 四阵全胜,刀独立成立
+- 三刀自洽验证:F2 隔离 9.24 − CSORT 0.95 ≈ 8.29 ≈ hbt(三刀)实测 8.33 ✓
+- 终版记分(源码默认三刀):c-64 20.41(0.981✅)/F2 8.33(1.088)/crankseg 51.27(1.879)
