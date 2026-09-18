@@ -15,24 +15,41 @@
 - 组:SJTU 软硬件协同设计组(mxhx7199.github.io)+ NUDT;组内前作多 ReRAM/PIM 稀疏加速(SoBS-X/ERA-BS/SME)
 - **平台 = 专用稀疏加速器(硬件 ASIC 级),不是 GPU 软件**
 
-## 2. 检索状况(09-18)
+## 2. 检索状况(09-18 傍晚更新:全文已到手)
 
-- IEEE Xplore 反爬空返回(3 次);ResearchGate 条目 411277002 → 403;作者 publications 页
-  Paper 链接为占位符 `#`(尚未挂 PDF);无 arXiv 预印本
-- 摘要经 **Semantic Scholar API(DOI 查询)** 获取(概述级转述)
-- **全文未拿到**。重试路径:校园网 IEEE / 作者页日后挂 PDF / RG 直链
-  (拿到后补:层级具体层数/检测特征集/切换开销数字)
+- 上午:IEEE 反爬/RG 403/作者页占位,只有 Semantic Scholar API 摘要
+- **用户提供全文 PDF**(仓库根目录 `Harmonia_*.pdf`,不入库——IEEE 版权 Restrictions apply)
+- 下文 §3 为全文版机理,§6 为全文后再判决
 
-## 3. 机理(摘要级)
+## 3. 机理(全文版,09-18 傍晚补全)
 
-1. **动机**:不规则稀疏模式使常规平台低效 → 硬件加速器;**现有加速器依赖固定 dataflow
-   (inner-product / outer-product / row-based),各只适合特定 sparsity pattern**——
-   模式一变效率崩
-2. **层级调度三件套**:
-   - **轻量离线模型** → 初始 tiling 策略 + dataflow 映射
-   - **运行时检测 active sparsity pattern** → 动态选最优 dataflow 模式
-   - 硬件快重配置 + 负载均衡
-3. 数字:1.75× 性能 / 2.47× 能效 vs SOTA 加速器;运行时稀疏漂移下吞吐稳健
+**三层层级调度框架**(Fig.4):
+
+1. **静态解析层(离线)**:只用粗粒度描述符(矩阵形状/全局密度/数据类型)+ 硬件参数
+   (PE 阵列/SRAM 容量),以**最大化操作强度 OI = Ops/Bytes_loaded** 为目标,在 SRAM
+   可行性约束(期望足迹 ≤ β·S_SRAM,β=0.8 安全系数)下枚举候选 tile 形状选最优
+   → 产出基线 tile 形状 (T_M,T_K,T_N)/遍历序/SRAM 三分 partition。期望 nnz 用独立性近似。
+2. **动态画像层(块驻 SRAM 后,每块一次)**:tile 元数据给精确 nnz → ρ_tile;对驻留侧 A
+   轻采样 → 行级方差/nnz 聚类/PE 行负载不均衡。微调规则:低密度**扩** tile(提复用)/
+   高密度**缩**(防 psum 溢出)/聚类**对齐** tile 边界。dataflow 选择:
+   InP=中度稀疏+行均匀 / Row=行方差大或聚类 / OutP=A 均匀+B 低密度
+3. **动态调优层(硬件衬底内,终层)**:反馈计数器(SRAM 压力/psum 溢出标志/MRN 合并深度
+   与停顿/PE stall 周期)→ 异常检测 → 纠正动作(**切 dataflow**;**微重分 tile** 缩/放)。
+   **成本门:Gain > α·Cost**(Cost = 重配置+流水线冲刷+缓冲复位,实测 20-50 周期);
+   **滞回防振荡**:异常计数须连续 T=2-4 周期超阈才触发;**最坏情况有界**:切换失败
+   回退静态基线,罚金恰为一次重配置延迟(50 周期)
+
+**三条 Insight(动机实验支撑)**:①层间耦合——tile 形状/占用会**反转** dataflow 排名,
+不能分层独立优化;②静态解析模型在 tile 级稀疏变异下预测误差 **3.1-3.7×**(Vesper 类),
+必须动态反馈;③硬件灵活性(Trapezoid 类)需要系统级调度层才能兑现 → "逻辑异构"
+
+**硬件**:Trapezoid 式 PE 行(DN+MRN)上仅加 SW-HW 调度接口(反馈计数器 <0.5% 阵列面积/
+重配置引擎/tiling 控制器),**数据通路零改动**;三 dataflow(InP 脉动流 B/Row 选择性路由 B/
+OutP rank-1 广播)全靠 DN/MRN/缓冲重编程实现。
+
+**评估**:周期级模拟器(Trapezoid 32 行架构),基线 = **同一架构上**的 Vesper/Misam-like/
+HYTE-like 调度器 + 静态最优 oracle;1.75× 性能/2.47× 能效;工作负载 = SuiteSparse SpMSpM +
+剪枝 DNN(LLaMA/ResNet/VGG/OPT)。**无 GPU 对比——纯加速器对加速器(模拟)**
 
 ## 4. 前作链(铁律:先查公开前作)
 
@@ -62,14 +79,33 @@
 **合规性**:纯硬件论文,无代码/形态可 copy——天然"只吸收机理";无形态入默认,
 不触发转正+守门流程
 
-## 6. 行动项
+## 6. 机理映射到我方栈(全文后再判决)
 
-1. ✅ 本 survey 入档(即本文件)
-2. 论文 related work dispatcher 段:Harmonia(ISCA'26)+ Flexagon(ASPLOS'23)入表
-3. ③阶段 occgate/LADDER 成本模型:分层调度思想记入候选
-4. 全文到手后补机理细节(层级数/检测特征/切换开销)
+| Harmonia 层 | 我方对应物 | 可吸收机理(不 copy 形态) |
+|---|---|---|
+| 静态解析层(OI 最大化+β 可行性约束) | est/分箱(DITER_EST/PB2_W,现为启发式) | **OI=Ops/Byte 作窗口/桶尺寸的原则性目标函数**;β 安全系数思路同我 retry 余量 |
+| 动态画像层(行方差/聚类/不均衡采样) | rowmode(avgB 单特征→cursor/dense) | **行方差/聚类特征进 mode 选择**(现在只有均值一个特征) |
+| 动态调优层(反馈+成本门+滞回+最坏有界) | retry(表满重试)= 其粗糙版;occgate(③阶段) | **Gain>α·Cost 成本门 + 滞回 + 失败回退静态基线** = retry 刀与 occgate 的鲁棒设计模板(与鲁棒架构铁律兼容:有出处的模型,非补丁门) |
+| 层间耦合分析(Insight 1) | DISPATCH_MODEL 联合训练 | 佐证"分箱×mode×kernel 不能各旋钮独立调" |
+| 静态误差 3.1-3.7×(Insight 2) | est vs 实测偏差 | 佐证 retry 纠偏机制存在的必要性 |
 
-## 7. 信息源
+**查重警示(C 线)**:**Misam(决策树从矩阵统计选 dataflow)是 DISPATCH_MODEL 最近前作,
+论文必引**;定位链:Flexagon(离线选模板)→Trapezoid(结构可重构缺系统调度)→
+Harmonia(ISCA'26,层级调度补系统层)= 硬件侧;我方 = GPU 软件侧同构(分箱↔tile、
+kernel 家族↔dataflow、retry/occgate↔动态调优),互补不撞车。
+
+**定谳(全文后)**:模拟器评估 + 加速器对加速器、无 GPU 实现——**无形态可 copy 最终确认**,
+全部吸收走机理;Harmonia 的"评估在同架构上只换调度器"的对照方法论值得我们对照实验借鉴。
+
+## 7. 行动项(全文后更新)
+
+1. ✅ 全文已读,机理/映射入档(本文件 §3/§6)
+2. 论文 related work dispatcher 段四件套:Harmonia(ISCA'26)+ Flexagon(ASPLOS'23)+
+   Trapezoid(HPCA'24?待核)+ **Misam(决策树选 dataflow,DISPATCH_MODEL 最近前作)**
+3. retry 刀/occgate 设计采用 **Gain>α·Cost + 滞回 + 最坏有界回退** 模板
+4. OI 目标函数列为 est/窗口尺寸候选机理(不动现刀;转正需归因对齐+守门)
+
+## 8. 信息源
 
 - Semantic Scholar Graph API `paper/DOI:10.1109/ISCA66397.2026.00151`(标题/作者/摘要)
 - mxhx7199.github.io 与 /publications/(作者列表、PDF 占位、组内发表清单)
