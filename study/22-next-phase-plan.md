@@ -177,8 +177,24 @@ hash kernel 机理创新期结束,剩余空间在**kernel 与系统接缝处**(�
   - 机理判读:①in-kernel O(d²) 税比 spec 81 估的小(真大头=下游 compact 的 bin6/7 per-row radix,
     F2 2.46ms 相位不受本刀影响)②刀的固定开销(~10 syncs + O(2048) 清零/直方图/前缀 + 寄存器 staging)
     在实际 bin4/5 行群上超过节省 = 指令经济性定律自证 ③门槛在 ht_size(表)而非 d(实际),小 d 行白付固定费
-  - **归因中**:HASH_ROWTIME on/off 逐行差分(c-64,与解剖跑合并)→ 回退集中小 d 行则 d 门槛(count≥192)候选;全面回退则停靠 negative result
-- **下一步**:归因判决;counting-vs-radix(队列③,bin6 = 2.46ms 真载体)为 successor——同 fixed-overhead 经济学,须先过归因教训
+  - **归因判决(09-18 上午,rt 7 列格式注意:cycles 在 $NF 不在 $2)**:被门到的行(est≥256,73 行)实赢
+  **−2~−3%**;小行 +4% 嫌寄存器压力税但单跑噪声 ±25% 不可分;**c-64 extract2 种群绝对量 ~9μs = 不值钱**;
+  电池 msc/c-64 ±2% 疑 TOTAL−h2d−d2h 口径的 host 间隙噪声(手动相位和对照 on 反而略快)→ 口径教训:
+  **TOTAL−h2d−d2h 含相位间 host 间隙,共租在场上噪声地板抬升;相位和才是干净口径**
+- **判决:extract2 停靠**(默认 off 零伤害;代码正确性已闭环保留;唯一真赢面 F2 −1.2%,后续可选
+  d 门槛(count≥192)+ 相位和口径 F2 ×5 复测再定;优先级让位 dense 线)
+
+## c-64 相位解剖判决(09-18 上午,dense 诊断线第一件套,历史性)
+- **c-64 不是 hash 阵,是 cursor 阵**:19,444 diter 行(38%)中 **19,347(99.5%)走 cursor 模式**
+  (真 dense 累积器仅 97 行);胖行群 mean est≈13.8K/实际输出 mean≈7.7K nnz,Σnnz=149.5M(**96.4% 输出**)
+- **相位图(off,带内 25.4-25.9)**:dense_count 3.0 + **dense_direct 18.5** = 21.5/25.5 = **84%**;
+  hash accumulate 仅 **0.75ms**;retry 0.3/compact+sort 0.8/估计器链 2.0
+- **c-64 1.21× 差距主体 = dense_direct 18.5ms(cursor 载体)**;路由哲学差异:我方 hash 仅 7,214 行
+  vs ocean 36,290 行(彼把宽行大量留 hash;我送 cursor)→ 差距分解 = ①同行群载体质量(cursor vs
+  彼 dense/hash)②边界差异(~29K 行的 carrier 选择)
+- **②阶段靶心正式定位**:这 19.3K 胖行(span~50K/输出~7.7K)= 早就挂账的"c-64 中带无主行型";
+  下一步 = ncu 指令经济性对拍(hash_dense_direct_kernel cursor 路径 vs ocean denseNumericIter,
+  B级可跑)→ 载体质量判决 → 刀向(②新 kernel 或 cursor 内部优化,均①阶段纪律内)
 
 ## dense 诊断线锚点数据(09-18 上午,离线分析)
 - **ocean c-64 非 hash 行群 ≈ 14,745 行(28.9%)**:rc_oc_c-64.txt 仅 36,290/51,035 行有 cycles,
