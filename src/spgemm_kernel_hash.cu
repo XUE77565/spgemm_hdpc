@@ -1049,7 +1049,11 @@ __global__ void scatter_alen_kernel(const int *rows, int nr, const int *alen, in
 #define PB2_W PB2_W_STRUCT  // 半SM预算÷21B/列(结构推导)
 #define SMAP_SMEM_MAX SMAP_SMEM_MAX_STRUCT  // 与 PB2_W 同源
 __device__ int g_dflag_probe_row = -1;   // DFLAG_PROBE 探针行(diter 雷判别;host 经 cudaMemcpyToSymbol 装入)
-__global__ void hash_dense_direct_kernel(
+// __launch_bounds__(1024,2)(09-18,c-64 占用悬崖刀):cuobjdump 实测本 kernel REG:50 → 1024thr 下
+// 65536/(1024×50)=1 块/SM = 50% warps(ncu 实测 49.97);ocean denseNumericIter REG:32 → 2 块 = 99.67%。
+// c-64 头对头:我指令 4.01G(瘦 14%)仍慢 31% = 纯占用差。强制 2 块/SM → 编译器压 ≤32 regs
+// (溢出换 2× 占用的交易,电池裁决)。
+__global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri, int A_rows, int n,
@@ -3230,6 +3234,126 @@ static void launch_csort_fused(int n, const int *rows_ptr, const long long *d_of
     CHECK_CUDA(cudaGetLastError());
 }
 
+// ── 队列②(counting-vs-radix 交叉实测):bin6 csort 两级计数排序变体,CSORT_CNT=1 启用(默认关)──
+// 靶:F2 compact+sort 2.48ms 主载体 = bin6 47.9K 行 per-row cub radix(3-4 pass 扫 col 位)→
+// counting 1 pass + 直方图 + 桶内 O(b²)。算法 = spec 81 extract2 守门验证同款(含两条尸检修正:
+// SMEM 区段字节核算 / 前缀连续所有权)。SMEM = sc 8K + sv 16K + hist 12K = 36KB(<48K 免 opt-in)。
+// I/O 契约同 csort_fused:溢出行只排前 CAP 写废(retry 善后覆写);键 distinct(hash 去重后)→ rank 唯一。
+// 差异:无需 valid_bits/A_cols 约束(无融合键位打包)。
+#define CSC_TPB 256
+#define CSC_CAP 2048
+template<int TPB, int CAP>
+__global__ void csort_counting_kernel(
+    const int *rows, const long long *d_off, const int *d_row_nnz, const int *dC_rp,
+    const unsigned long long *tmp_key, const double *tmp_val,
+    int *dC_ci, double *dC_val)
+{
+    constexpr int STG = CAP / TPB;         // 寄存器 staging 槽/线程(m ≤ CAP = STG×TPB 恒覆盖)
+    int r = rows[blockIdx.x];
+    long long s = d_off[r];
+    int n_el = d_row_nnz[r];
+    int out = dC_rp[r];
+    if (n_el == 0) return;
+    int m = min(n_el, CAP);
+    int tid = threadIdx.x;
+    extern __shared__ __align__(8) int ccsm[];
+    int *sc = ccsm;                        // [CAP] 列键
+    double *sv = (double*)(ccsm + CAP);    // [CAP] 值(CAP 偶 → 8B 对齐;占 2×CAP int 槽)
+    int *h_cnt2  = ccsm + 3 * CAP;         // [1024] 桶计数(⚠ 3×CAP = sc+sv 字节界,2×CAP 会砸 sv)
+    int *h_start = h_cnt2 + 1024;          // [1024] 排他桶起点
+    int *h_fill  = h_start + 1024;         // [1024] 落位游标
+    __shared__ int csc_seg[64];            // min/max 对 + 段扫 scratch(≤32 warp)
+    for (int k = tid; k < m; k += TPB) {
+        sc[k] = (int)(tmp_key[s + k] & 0xffffffffu);
+        sv[k] = tmp_val[s + k];
+    }
+    __syncthreads();
+    // Pass0:行 min/max(warp 归约 + 跨 warp 收集)
+    int lo_l = 0x7fffffff, hi_l = -1;
+    for (int k = tid; k < m; k += TPB) { lo_l = min(lo_l, sc[k]); hi_l = max(hi_l, sc[k]); }
+    for (int off = 16; off; off >>= 1) {
+        lo_l = min(lo_l, __shfl_down_sync(0xffffffff, lo_l, off));
+        hi_l = max(hi_l, __shfl_down_sync(0xffffffff, hi_l, off));
+    }
+    if ((tid & 31) == 0) { csc_seg[(tid >> 5) << 1] = lo_l; csc_seg[((tid >> 5) << 1) | 1] = hi_l; }
+    __syncthreads();
+    if (tid == 0) {
+        int L = 0x7fffffff, H = -1;
+        for (int w = 0; w < (int)(blockDim.x >> 5); w++) {
+            L = min(L, csc_seg[w << 1]); H = max(H, csc_seg[(w << 1) | 1]);
+        }
+        csc_seg[0] = L; csc_seg[1] = H;
+    }
+    __syncthreads();
+    int lo = csc_seg[0], hi = csc_seg[1];
+    // Pass1:直方图(桶 (c-lo)>>SH,SH 逐行自适应 → 桶数 ≤1024;聚簇行不退化)
+    unsigned span = (unsigned)(hi - lo + 1);
+    int sbits = 32 - __clz(span - 1);      // ceil_log2(span);span=1 → 0(__clz(0)=32)
+    int SH = sbits > 10 ? sbits - 10 : 0;
+    int nbins = (int)((span - 1) >> SH) + 1;
+    for (int b = tid; b < nbins; b += TPB) { h_cnt2[b] = 0; h_fill[b] = 0; }
+    __syncthreads();
+    for (int k = tid; k < m; k += TPB) atomicAdd(&h_cnt2[(sc[k] - lo) >> SH], 1);
+    __syncthreads();
+    // Pass2:排他前缀(连续所有权!跨步持有配段基址公式不成立——spec81 尸检第二雷)
+    int ib = (nbins + TPB - 1) / TPB;
+    int b_lo = tid * ib, b_hi = min(b_lo + ib, nbins);
+    int run = 0;
+    for (int b = b_lo; b < b_hi; b++) { run += h_cnt2[b]; h_start[b] = run; }
+    int tot_t = run, exc_w = run;
+    for (int off = 16; off; off >>= 1) {
+        int y = __shfl_up_sync(0xffffffff, exc_w, off);
+        if ((tid & 31) >= off) exc_w += y;
+    }
+    if ((tid & 31) == 31) csc_seg[tid >> 5] = exc_w;   // warp 段和
+    __syncthreads();
+    if (tid == 0) {
+        int r2 = 0;
+        for (int w = 0; w < (int)(blockDim.x >> 5); w++) { int t = csc_seg[w]; csc_seg[w] = r2; r2 += t; }
+    }
+    __syncthreads();
+    int wb = csc_seg[tid >> 5];
+    for (int b = b_lo; b < b_hi; b++) h_start[b] += wb + exc_w - tot_t - h_cnt2[b];
+    __syncthreads();
+    // Pass3:桶分组重排(sc+sv 寄存器 staging;全部读定后再写,免读-写竞态)
+    int rc[STG]; double rv[STG];
+    #pragma unroll
+    for (int i2 = 0; i2 < STG; i2++) {
+        int k = tid + i2 * TPB;
+        if (k < m) { rc[i2] = sc[k]; rv[i2] = sv[k]; }
+    }
+    __syncthreads();
+    #pragma unroll
+    for (int i2 = 0; i2 < STG; i2++) {
+        int k = tid + i2 * TPB;
+        if (k < m) {
+            int b = (rc[i2] - lo) >> SH;
+            int pos = h_start[b] + atomicAdd(&h_fill[b], 1);
+            sc[pos] = rc[i2]; sv[pos] = rv[i2];
+        }
+    }
+    __syncthreads();
+    // Pass4:桶内 O(b²) 位次 + 直写 CSR(同 csort_fused 输出契约)
+    for (int k = tid; k < m; k += TPB) {
+        int c = sc[k]; int b = (c - lo) >> SH; int s0 = h_start[b];
+        int wr = 0;
+        for (int q = s0, e = s0 + h_cnt2[b]; q < e; q++) wr += (sc[q] < c);
+        dC_ci[out + s0 + wr] = c;
+        dC_val[out + s0 + wr] = sv[k];
+    }
+}
+template<int TPB, int CAP>
+static void launch_csort_counting(int n, const int *rows_ptr, const long long *d_off, const int *d_row_nnz,
+                                  const int *dC_rp, const unsigned long long *k, const double *v,
+                                  int *dC_ci, double *dC_val) {
+    size_t smem = (size_t)CAP * (sizeof(int) + sizeof(double)) + 3 * 1024 * sizeof(int);
+    if (smem > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM)
+        CHECK_CUDA(cudaFuncSetAttribute((const void*)csort_counting_kernel<TPB, CAP>,
+                                        cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
+    csort_counting_kernel<TPB, CAP><<<n, TPB, smem>>>(rows_ptr, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);
+    CHECK_CUDA(cudaGetLastError());
+}
+
 // v31-①'(docs/76 §10 靶纸,SEGRTS=1):bin≥7 大行 csort O(n²/block) 排序税换 cub 分段基数排序。
 //   pre2 实证:bin6/7 380K 行(1-4K distinct)csort = 26.2ms(57% 时长)vs Ocean epilogue.sort 2.5ms。
 __global__ void bin_gather_kernel(
@@ -5200,10 +5324,15 @@ static void hash_product(
                 // CAP ≥ row_nnz ≤ ht 不变式保持;溢出行 row_nnz=flop 重试值可超 CAP → 只排前 CAP 项
                 // 写废,末段 retry 善后整行覆写(同旧语义,csort_fused 本就不带 skip)。
                 const bool cs_v2 = g_cs_v2;
+                static int g_cs_cnt = -1;   // CSORT_CNT=1(队列②):bin6 csort→两级计数排序,与 cub radix 交叉实测
+                if (g_cs_cnt < 0) { const char *e = getenv("CSORT_CNT"); g_cs_cnt = (e && atoi(e) > 0) ? 1 : 0; }
                 const int mx = cs_v2 ? (bi == 6 ? csort_fused_max_cols(CSORT_TPB_C, CSORT_IPT_C)
                                                 : csort_fused_max_cols(CSORT_TPB_D, CSORT_IPT_D))
                                      : csort_fused_max_cols(CSORT_TPB_A, CSORT_IPT_A);   // 融合键:pos 位 → 列位宽约束
-                if (A_cols < mx && !getenv("NOCSF")) {
+                if (g_cs_cnt && bi == 6) {
+                    // counting 变体无融合键位约束,免 valid_bits/A_cols 门
+                    launch_csort_counting<CSC_TPB, CSC_CAP>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
+                } else if (A_cols < mx && !getenv("NOCSF")) {
                     if (cs_v2 && bi == 6)  launch_csort_fused<CSORT_TPB_C, CSORT_IPT_C>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
                     else if (cs_v2)        launch_csort_fused<CSORT_TPB_D, CSORT_IPT_D>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
                     else                   launch_csort_fused<CSORT_TPB_A, CSORT_IPT_A>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
