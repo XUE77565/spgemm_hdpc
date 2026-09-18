@@ -42,3 +42,13 @@ spgemm_lb2(WM)/spgemm_lb2t(非WM) vs spgemm_c2/c2t(off 对)
 - ocean c-64 新跑:20.8042ms(10 轮均,compute;D2H 1499ms 灾难再现 vs 我方 ~80ms)
 - **c-64 终局记分:20.377 vs 20.804 = 0.979,系统级首胜(双边新数据,margin 2.1%)**
 - 今日弧线:1.212 →(占用解剖+一行 launch_bounds)→ 0.979
+
+## mode 分层账(09-18 午后,用户纪律问询触发:cursor/dense 独立记账)
+- **cursor 与 dense 不是两个独立 kernel**:同为 hash_dense_direct_kernel 的按行模式(rowmode=
+  avgB≥阈值→cursor 合并;否则 dense 位图),共享窗口 SMEM 布局(val8+flag1+pref4+cursor4/列)
+- 分层差分(dd 文件 3 列:行 cycles mode,$2=cycles——又一个口径陷阱):
+  cursor 19,347 行 +47.8%/dense 97 行 +45.9% 逐行 cyc —— **同幅变慢 = 纯溢出税,与模式无关**
+- **赢面结构 = 占用恒等式活教材**:2× 占用 ÷ 1.47 溢出 = 1.34× 净吞吐;
+  dense_direct 18.5→13.8ms 实测(18.5×1.47/2=13.6 ✓)物理全闭环
+- **下一块肉(独立刀,cursor/dense 内部)**:去溢出——手工减活状态拿"自然 2 块"
+  (重算代持有/冷值下沉 SMEM/拆窗循环),目标 dense_direct ~9-10ms → c-64 ~16.4 = 0.79
