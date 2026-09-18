@@ -5337,6 +5337,10 @@ static void hash_product(
                 if (g_cs_cnt && bi == 6) {
                     // counting 变体无融合键位约束,免 valid_bits/A_cols 门
                     launch_csort_counting<CSC_TPB, CSC_CAP>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
+                } else if (g_cs_cnt && bi == 7) {
+                    // spec84:bin7 扩展——radix <512,8> REG:79 = 1 块/SM(25% warps) vs counting 3 块(75%),
+                    // 占用+指令双优;SMEM 60KB(helper 条件 opt-in);crankseg bin7 人口主判
+                    launch_csort_counting<512, 4096>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
                 } else if (A_cols < mx && !getenv("NOCSF")) {
                     if (cs_v2 && bi == 6)  launch_csort_fused<CSORT_TPB_C, CSORT_IPT_C>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
                     else if (cs_v2)        launch_csort_fused<CSORT_TPB_D, CSORT_IPT_D>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
