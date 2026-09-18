@@ -41,7 +41,46 @@ extract 的 count-sort 是唯一挂账的算法级浪费:排序税 5.9%(口径 B
 2. 口径 B 电池(F2/msc/c-64 轻带)×5 净窗;排序税 5.9% → 目标 <2%
 3. 值级+有序守门;绿 → 入默认,口径 A/B 双测刷新对拍基线
 
-## 深夜解剖补充(09-18,compact+sort 2.46ms 内部地图)
+## 实施落地与守门记录(09-18 凌晨)
+
+### 代码位点
+- `hash_spa_kernel` 两个 O(d²) rank 位点全替换(MODE=0 tmp 路径 + MODE=2 D5H 直写路径;MODE=2 以
+  `nullptr..0,0,nullptr,0,nullptr,0,g_ex2_d5h` 全参显式传到第 34 参)
+- 门槛:kernel 侧 `extract2 ∧ ht≥512 ∧ 0<count≤4×blockDim`;host 侧 smem 仅在 **512≤ht≤1024** 档 +12KB
+  (3×1024×4B;bin5 表 12+12=24KB×8 块=192KB<228KB 不压 occupancy)
+- 寄存器 staging CS2_STAGE=4(#pragma unroll 保寄存器驻留);cs2_seg[64] 静态 SMEM(≤32 warp 的 min/max 对)
+- hash_spa_batched(BATCH_HT 128/64/512)三档未动——独立小行路径,税轻(≤512²/128=2K op/线程),后续实测再议
+
+### 三雷尸检(守门体系全数拦截,零逃逸)
+1. **SMEM 指针偏移砸值区**:首版 `h_cnt2 = smem + 2*ht_size` 落在 sh_val 内部(表布局 = ht×4B col +
+   ht×8B val = **12×ht 字节**,hist 起点须 `smem + 3*ht_size`)→ 直方图清零覆写值区 + 计数变野值 →
+   F2 illegal access 抓获。**红线:SMEM 指针算术必须逐区段按字节核算,int* 基址下 double 区占 2 槽**
+2. **跨步所有权前缀错误**:Pass2 首版线程跨步持 bin(b 归线程 b%B),但"本地前缀+warp 段基址"公式假设
+   前线程的全部 bin 排我之前——跨步时序不成立 → 桶起点错乱 → **F2 85,963 / msc 15,111 有序违规**,
+   有序守门(命门)拦截;值级反而 PASS(列集合恰好对、仅序错)——**有序扫描不可由值级替代的活例**。
+   修复 = 连续所有权(线程 t 持 [t·ib,(t+1)·ib))
+3. **host smem 门槛漏上界**:首版 `ht≥512` 给所有大 bin 加 12KB → bin9(表 196KB+12=208KB)>opt-in
+   (HASH_CAP×12=196KB)→ crankseg/c-64 发射失败。修复 = `ht≤CSORT_HT` 才加
+
+### 环境教训(非本刀 bug)
+- **大阵守门必须 `METHOD=hash`**:不带 METHOD 门控时 T1 in-binary cuSPARSE 在 crankseg/c-64 直接
+  `insufficient resources` 退出(truth17 大阵本就是 scipy 生成的,此为已知限制,与设备序无关——PCI_BUS_ID
+  序复验同样失败)
+- c-64 值级 FAIL 形状与既往 artifact **逐数一致**(only_test=20,504 / common=truth 全量 / 值误差 2e-16)→ 豁免绿
+
+### 守门记分(全部 C 级,METHOD=hash,卡 0)
+| 阵 | 值级 | 有序 |
+|---|---|---|
+| F2 | PASS(1e-9) | SORTED-OK |
+| msc10848 | PASS | SORTED-OK |
+| crankseg_2 | PASS | SORTED-OK |
+| c-64 | FAIL=artifact 形状一致(豁免) | SORTED-OK |
+| F2+D5H=1(MODE=2 位点) | PASS | SORTED-OK |
+
+### 待办
+- A级口径 B 电池(F2/msc/c-64/crankseg ×5 交替):净窗守卫挂 /tmp/ab_c2_wall.sh(卡 1 共租 69GB 中,
+  两卡 <2GB 持续 3 分钟自动开跑);判据 = 排序税 5.9% → <2%(口径 B)
+- 绿后入默认(env 保留逃生门)
 - 结构:小行(≤CSORT_HT)kernel 内 count-sort O(d²) + 纯拷贝;bin6/7(ht 2048-4096)= csort_fused/csort = **per-row cub BlockRadixSort(32 位 4 pass,已高度优化非裸比较排序)**;bin8/9 = SEGRTS(cub 分段基数,默认关)
 - F2 的 2.46ms 载体:主力 bin6(47.9K 行 d~1000-2000)的 per-row radix + bin4/5 的 in-kernel count-sort + 拷贝
 - 修订方向(按性价比):①小行 count-sort 两级化(本规格主体,O(d²)→O(d+1024),bin4/5 载体)②d≤2048 时 counting(直方图+落位,2 pass)vs radix(4 pass)的交叉点实测——counting 有 2× 潜力但 cub 已高度调优,须实测③SEGRTS 通道(bin8/9)重估④拷贝段 warp-batched 已有(Fix#11)

@@ -171,7 +171,37 @@ hash kernel 机理创新期结束,剩余空间在**kernel 与系统接缝处**(�
 - **大阵 WM 守门姿势**:METHOD=hash 单方法门控(T1 cuSPARSE 大阵 insufficient resources 已知限)+
   比对 self_product_hash.mtx 非 T1 的 self_product.mtx
 - A 级口径 B 电池(F2/msc/c-64/crankseg ×5):净窗守卫挂 /tmp/ab_c2_wall.sh 等卡 1 共租撤离
-- **下一步**:电池绿→翻默认;counting-vs-radix 交叉(②'刀)待净窗
+- **电池判决(09-18 上午,GPU0 净窗+TOTAL−h2d−d2h 口径,off 全带内)**:
+  F2 10.053→9.936(**−1.2%**)/msc 3.496→3.552(**+1.6%**)/c-64 25.568→26.012(**+1.7%**)/
+  crankseg 60.051→59.797(**−0.4%**)——**2 赢 2 输,赢在不经此路径的胖行阵,输在真正的中行载体阵 → 判失败,不翻默认(默认 off 零伤害)**
+  - 机理判读:①in-kernel O(d²) 税比 spec 81 估的小(真大头=下游 compact 的 bin6/7 per-row radix,
+    F2 2.46ms 相位不受本刀影响)②刀的固定开销(~10 syncs + O(2048) 清零/直方图/前缀 + 寄存器 staging)
+    在实际 bin4/5 行群上超过节省 = 指令经济性定律自证 ③门槛在 ht_size(表)而非 d(实际),小 d 行白付固定费
+  - **归因中**:HASH_ROWTIME on/off 逐行差分(c-64,与解剖跑合并)→ 回退集中小 d 行则 d 门槛(count≥192)候选;全面回退则停靠 negative result
+- **下一步**:归因判决;counting-vs-radix(队列③,bin6 = 2.46ms 真载体)为 successor——同 fixed-overhead 经济学,须先过归因教训
+
+## dense 诊断线锚点数据(09-18 上午,离线分析)
+- **ocean c-64 非 hash 行群 ≈ 14,745 行(28.9%)**:rc_oc_c-64.txt 仅 36,290/51,035 行有 cycles,
+  缺失 723 个散落小块(1-18 行/块,贯穿全阵)——ROWCYCLES 只从 AccumulatorHash 发射(源码证实),
+  缺失行 = ocean 走 dense/ultra/特殊路径的行群。**若其中 dense 占比高,则 c-64 1.21× 的主体
+  可能正是"28.9% 行的 carrier 之争"**(我方对应行群落谁家 = 解剖判决)
+- ocean hash 行画像:mean 20,466 cycles/max 320K;62% 行在 8-16K cycles 段(2^13:22,484 行)
+- 待电池后解剖:我方 c-64 相位图(DD_ROWTIME+HASH_ROWTIME+prof)→ 行群→kernel 映射
+  → 与 ocean 缺失行群对齐 → 口径 C 逐行对拍
+
+## ①阶段 count-sort 两级化判决(09-18,spec 81 实施收官)
+- **正确性全绿**:值级 4/4(c-64 artifact 形状逐数一致豁免:only_test=20,504/值差 2e-16)+ 有序 4/4
+  SORTED-OK + D5H=1 MODE=2 位点双绿;三雷全被守门拦(SMEM 偏移砸 sh_val→illegal access/跨步所有权
+  前缀→有序违规 85,963/漏 ht 上界→bin9 超opt-in)
+- **A级电池(×5 交替,GPU0 净窗,off 全落带)**:F2 −1.2/msc +1.6/c-64 +1.7/crankseg −0.4 →
+  **wall 中性偏负,停靠默认关(env HASH_EXTRACT=2 留)**
+- **物理课**:in-kernel count-sort(ht≤1024,bin4/5)不是 F2 compact+sort 2.46ms 的主载体——主载体
+  = bin6(47.9K 行,d 1000-2000)下游 csort per-row radix + 拷贝(spec 81 深夜解剖已示)。
+  算法对(O(d²)→O(d+1024))但人口小;且小 d 行付 1024 桶清零反而亏(msc/c-64 +1.6/1.7 的形状)
+- **队列②升为主攻**:counting-vs-radix 交叉实测(bin6 d≤2048,counting 2× 潜力须实测)
+- **尸检新红线**:①大阵守门必须 METHOD=hash(in-binary cuSPARSE 大阵 insufficient resources 中途退,
+  truth17 大阵本是 scipy 生成的)②SMEM 指针算术逐区段按字节核算(int* 基址下 double 区占 2 槽)③
+  跨步所有权不能配"本地前缀+段基址"公式(须连续所有权)④值级 PASS 不代表序对——有序扫描不可替代
 
 ## dense 诊断线开线(09-18,用户钦定"是,但先进诊断门")
 - **背景**:kernel 本体三阵全胜是【hash 行】的口径;c-64 1.21× 系统差未拆解,且 ocean 在 c-big 类
