@@ -21,4 +21,12 @@
 - 电池=A 级净窗 ×5(c-64 全相位和主判)
 
 ## 状态
-- 09-21 15:5x 单发#20 立项(画像+读码定谳);主刀实施下一轮
+- 09-21 15:5x 单发#20 立项(画像+读码定谳)
+- 09-21 16:1x 单发#21 **首轮实施失败已回滚**(git checkout,spec86 完好):病灶=**静态
+  `__shared__ int scur[1024]`(4KB 无条件)挤爆 count 内核发射**——csm 动态窗已近满,静态加 4KB
+  超限,连默认路径(COUNT_CURSOR=0)都崩(静默死在 warmup);教训:**count 内核 SMEM 无余量,
+  游标区必须走 csmem 动态扩段或全局 smap arena(direct 同款),不能静态 __shared__**
+- 实施修正版(下轮):scur 放 csmem 尾部对齐扩段(发射 csm 加 4×nch_max 字节)或借 direct 的
+  全局 d_smap arena(count 先跑可与 direct 分段共享);判据不变,烟流程不变
+
+## 状态(旧)
