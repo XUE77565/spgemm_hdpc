@@ -145,6 +145,18 @@
 - ncu 停顿表采集法入档:--metrics 显式列 smsp__average_warps_issue_stalled_<reason>_per_issue_active.ratio
   (--set detailed 的 WarpState 段在此版本不打印)
 
+### §2.3 决赛台首烟(09-21 13:2x,单发#15):模式杠杆定谳+人口墙发现
+
+- **模式杠杆修正**:PB2_AVGB 无效(模式判据=编译期 AVG_FLOP_THR=warp×2);真开关=**PB2_CURSOR
+  0=强制 search(全体 dense 化)/2=恒 cursor**(源码注释"实验用"现成);c-64 三发模式计数验证语义来源
+- **人口墙(重要发现)**:pre2(659,033 行)在 **DITER_EST_MIN=0+DITER_MIN_FLOP=0+SPANF=100000
+  三 env 全开下仍 diter bin=0**——中行族被更深的结构性门(非 env 暴露层)拦死,我方路由当前
+  **不允许**中行族进 dense/cursor 载体(与 study/22 "c-64 中带无主行型"同族);两强制模式相位和
+  31.05ms 全同(0 diter 行,模式开关空转)✓ 自洽
+- **结论:决赛台缺人口杠杆**——需 **FORCE_DITER_ALL 强制刀**(binning 终判处 env 覆盖,行进
+  diter 合法只是不经济——正是决赛要测的经济学);pre2 强制后人口=65 万行,对拍可行
+- ocean 侧 workflow 开关首烟未跑(轮预算);下轮=强制刀实施+决赛台重试
+
 ## 状态
 
 - 09-21 09:41 单发#11:§2.1 人口普查入档(四定谳;cursor 单一形态确立)
