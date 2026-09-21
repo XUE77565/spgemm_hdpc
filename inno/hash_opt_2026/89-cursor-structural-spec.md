@@ -38,3 +38,6 @@
   精确偏移(exact_rp)预配;est×1.8 本就超配 → 改 est-gapped 缓冲+compact 挤压(hash 侧同款
   既有形态),count 相位整个消失;欠配行走 retry(既有);预期 c-64 −2.6ms/全阵 −13%→~0.87
 - #3(stage-4 拆核)同样面临 SMEM/global 往返税,停靠
+
+- 09-22 07:0x #4' 值级门:**cf0(CNT_FUSE=0)↔cf1(=1) PASS(1e-9)=刀值中立逐位**;truth17 FAIL=c-64
+  既有 artifact(豁免口径,cf0 同 FAIL 非本刀引入);剩=有序+memcheck+净窗×3 双阵+20 阵快屏(07:39 轮)
