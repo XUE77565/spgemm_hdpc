@@ -157,6 +157,21 @@
   diter 合法只是不经济——正是决赛要测的经济学);pre2 强制后人口=65 万行,对拍可行
 - ocean 侧 workflow 开关首烟未跑(轮预算);下轮=强制刀实施+决赛台重试
 
+### §2.3b 人口墙破+决赛首战果(09-21 14:2x,单发#16)
+
+- **门考古破案**:v4 分支准入要 `diter_thr>0`——DITER_MIN_FLOP=0 是拆门不是开门;正确强制栈=
+  **DITER_MIN_FLOP=1 DITER_EST_MIN=1 SPANF=100000 OCCGATE_COEFF=1000000 LADDER=0**
+  (超档行 est/flop 地板是结构化 EST_DENSE_MIN/2 非 env 层,但 SPANF/OCCGATE 松开即可过)
+- **pre2 强制人口=418,695 行(63.5%)进 diter**;默认路由 31ms → 强制全 cursor 399ms(count 83+direct 316)
+  = 强制经济学代价 ~13×(这正是决赛要测的量)
+- **决赛首战果(同人口 418K 行,单发 B 级)**:
+  | 模式 | dense_count | dense_direct | 判 |
+  |---|---|---|---|
+  | **cursor(PB2_CURSOR 默认)** | 83.2 | **316.2** | ✅ |
+  | **search(PB2_CURSOR=0)** | 84.9 | **960.6** | **cursor 同人口完胜 3.04×** |
+- **书签机制价值首次受控定量化**:316 vs 960——换窗重搜 vs 续扫的全部差价;论文 C2 的实证弹药
+- ocean 侧漏 convert(csr 不存在静默无输出),config 已还原;下轮补转换+三方对表
+
 ## 状态
 
 - 09-21 09:41 单发#11:§2.1 人口普查入档(四定谳;cursor 单一形态确立)
