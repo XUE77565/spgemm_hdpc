@@ -2850,6 +2850,7 @@ __global__ void compute_bucket_kernel(
     int largest_on = 0,   // docs/74:Ocean-D straggler 行位图窗(0=关)
     int esc_on = 0,       // docs/76 v31-④:零表 counting-sort 短行(flop≤ESC_FLOP_MAX;0=关)
     int diter_est_min = EST_DENSE_MIN / 2,  // docs/76 §16:diter est 下限(默认半默认档;Ocean dense 分流)
+    int force_est_min = 0,   // 决赛 v2 真强制:est≥此值的行终判 BIN_DITER(覆盖全部门;0=关)
     int dstruct_win = 0,  // §21:span ≤ 此窗才进 diter;-1 = §22 档位梯(span ≤ DENSE_TIER_SPAN_MAX);
                           //      0 = 不限(旧行为);>0 = 手调单窗(实验兼容)
     int dim2_on = 0,     // DIM2 独立门(n_cols 传参只为 largest 的 span 护栏;误点亮 dim2 曾把
@@ -3022,6 +3023,7 @@ __global__ void compute_bucket_kernel(
         }
     }
     bucket_id[i] = bid;
+    if (force_est_min > 0 && est[i] >= force_est_min) bid = BIN_DITER;   // 真强制(决赛 v2):终判处覆盖一切门与 BATCH/HEAVY 拦截层
     // warp 聚合:同 warp 内同 bin 的行由 leader 一次 atomicAdd(3.7M 行×12 计数器争用 → 333SP 2.9ms 教训)
     unsigned mask = __activemask();
     unsigned peers = __match_any_sync(mask, (unsigned)bid);
@@ -4134,8 +4136,10 @@ static void hash_product(
         if (const char *e = getenv("HASH_REXP_EHI")) tbl_ehi_bk = atoi(e);
         static int g_occ_coeff = -1;   // OCCGATE 系数(env OCCGATE_COEFF;REXP 轮盘教训的直接调门版)
         if (g_occ_coeff < 0) { const char *e = getenv("OCCGATE_COEFF"); g_occ_coeff = (e && *e) ? atoi(e) : SPANF_COEFF; }   // 停靠:OCC_GATE_COEFF=10 待③阶段翻默认
+                static int g_fdest = -1;   // 决赛 v2 真强制:FORCE_DITER_EST=8 类(env;0=关)
+                if (g_fdest < 0) { const char *e = getenv("FORCE_DITER_EST"); g_fdest = (e && *e) ? atoi(e) : 0; }
         compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
-            g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff);
+            g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff, g_fdest);
         if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
