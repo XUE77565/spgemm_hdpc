@@ -98,6 +98,32 @@
   ——非灭绝项,但 DSTRUCT 争用教训(c-64 +36%)在宽行(span 50K=1.6K 位图字)上机理存疑,③重审
 - 溢出税复查(件 4)未做(轮预算),下轮与 ncu 画像并
 
+## §2.2 刀后 ncu 画像第一读数+决赛设计(09-21 11:4x,单发#13,B 级)
+
+### ncu 刀后状态(c-64,r2t,--set basic,launch#10;对照 spec82 刀前)
+
+| 指标 | 刀前(spec82,09-18) | **刀后(09-21)** | ocean denseNumericIter(旧,09-14 彼未变仍有效) |
+|---|---|---|---|
+| warps 驻留 | 49.97% | **99.65%** ✅ 占用刀效果 ncu 级确认仍持有 | 99.67% |
+| Compute(SM) 吞吐 | — | 49.52% | (待查旧档对表) |
+| Duration(ncu 膨胀) | 26.9ms | 21.18ms | 20.6ms |
+
+- **判读:占用已平(99.65 vs 99.67),内核不再是占用瓶颈——剩余差距在指令/延迟侧**
+  (Compute 仅 49.5% = 约一半 SM 周期空闲,停顿分解下轮补:ncu section 名版本坑,--set basic 可靠)
+- ⚠ ncu 滤镜坑入档:`-k 'regex:hash_dense_direct'` 报"no kernels profiled"但
+  `regex:hash_dense_(count|direct)_kernel` 命中——正则写法敏感,用全名枚举式
+
+### 决赛 B 台设计(强制对拍,三杠杆已侦察齐)
+
+| 杠杆 | env | 现状 |
+|---|---|---|
+| 模式门(cursor↔dense/search) | **PB2_AVGB**(运行时 avgB 阈,传入 kernel;默认 0=docs/66 门) | 强制全 cursor=调低;全 dense=调高;方向待实证 |
+| diter 人口门 | **DITER_EST_MIN**(默认 1024)+**DITER_MIN_FLOP**(默认 2048) | 调 0=全员 diter |
+| ocean 侧 | bench.json workflow/dense bin 可钉性 | **待查(下轮 desk)**;钉不了则用其自然 dense 阵提指标 |
+
+- 对拍阵:pre2 型(中行族,全 dense 化可行)+c-64 型(宽行,彼痛点)各一;判分=同人口逐行
+  (DD_ROWTIME)或相位级,同窗配对
+
 ## 状态
 
 - 09-21 09:41 单发#11:§2.1 人口普查入档(四定谳;cursor 单一形态确立)
