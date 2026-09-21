@@ -941,14 +941,18 @@ __global__ void hash_dense_count_kernel(
     const int *bucket_rows /*nullable,同 window kernel*/,
     const int *span_lo /*nullable*/,
     const int *row_flop = nullptr, const int *row_maxbl = nullptr /*Phase B v2-lite*/,
-    int cnt_w = DENSE_CNT_W /*DCFUSE:动态窗宽 = min(DENSE_CNT_W, ceil4(n)),小阵 occupancy↑*/)
+    int cnt_w = DENSE_CNT_W /*DCFUSE:动态窗宽 = min(DENSE_CNT_W, ceil4(n)),小阵 occupancy↑*/,
+    int cnt_cursor = 0)                       // spec87:跨窗游标化(COUNT_CURSOR;0=每窗双二分旧行)
 {
     int i = bucket_rows ? bucket_rows[blockIdx.x] : blockIdx.x;
     if (i >= A_rows) return;
     int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, nw = blockDim.x >> 5;
     extern __shared__ __align__(8) unsigned char csmem[];   // [cnt_w] byte flags
     __shared__ int wcnt[32];                                 // blockDim 1024 = 32 warp
+    // spec87:游标区=csmem 动态扩段(发射侧 csm 已加 CCUR_CAP×4B;禁静态 __shared__——首轮教训)
+    int *scur = (int*)(csmem + (((cnt_w + 3) >> 2) << 2));
     int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    bool use_cur = cnt_cursor && (re - rs) <= 1024;   // 超帽(链>1024)回退双二分
     int total = 0;
     int lo0 = span_lo ? span_lo[i] : 0;
     int nw_win = (n - lo0 + cnt_w - 1) / cnt_w;
@@ -959,8 +963,15 @@ __global__ void hash_dense_count_kernel(
         __syncthreads();
         for (int p = rs + warp; p < re; p += nw) {
             int k = A_col_idx[p];
-            int ks = dev_lower_bound(B_col_idx, B_row_ptr[k], B_row_ptr[k + 1], c0);
-            int ke = dev_lower_bound(B_col_idx, ks, B_row_ptr[k + 1], c1);
+            int ks, ke;   // spec87:首窗双二分;后续窗 ks=上窗 ke 直传(免 c0 二分),ke 再 lb 一次
+            if (use_cur && wi > 0) {
+                ks = scur[p - rs];
+                if (ks < 0) continue;                       // 链耗尽哨兵
+            } else {
+                ks = dev_lower_bound(B_col_idx, B_row_ptr[k], B_row_ptr[k + 1], c0);
+            }
+            ke = dev_lower_bound(B_col_idx, ks, B_row_ptr[k + 1], c1);
+            if (use_cur) scur[p - rs] = (ke >= B_row_ptr[k + 1]) ? -1 : ke;
             for (int q = ks + lane; q < ke; q += 32) {
                 int j = B_col_idx[q] - c0;
                 if (j < 0 || j >= w) continue;
@@ -4383,6 +4394,9 @@ static void hash_product(
                     cnt_w = (int)(want < (unsigned long long)DENSE_CNT_W ? want : DENSE_CNT_W);
                     csm = (size_t)cnt_w;
                 }
+                static int g_ccur = -1;   // spec87:COUNT_CURSOR=1 门(默认关;游标区动态扩段)
+                if (g_ccur < 0) { const char *e9 = getenv("COUNT_CURSOR"); g_ccur = (e9 && *e9) ? 1 : 0; }
+                if (g_ccur) csm += 1024 * sizeof(int);
                 if (csm + SMEM_STATIC_HEADROOM > (size_t)SMEM_DEFAULT_MAX)   // 动态+静态 >48K 才 opt-in(CUDA 总量规则)
                     CHECK_CUDA(cudaFuncSetAttribute(hash_dense_count_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)csm));
                 // docs/70 位图 symbolic(BCNT=1):span 一次位图单遍,免窗免 lower_bound 重搜。
@@ -4433,7 +4447,7 @@ static void hash_product(
                         int old_nr = dense_nr - h_big_off;
                         hash_dense_count_kernel<<<old_nr, DENSE_BLK, csm>>>(
                             dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows, A_cols,
-                            d_row_nnz, d_rows_sorted + h_big_off, d_span_lo, d_flop, d_maxbl, cnt_w);
+                            d_row_nnz, d_rows_sorted + h_big_off, d_span_lo, d_flop, d_maxbl, cnt_w, g_ccur);
                         CHECK_CUDA(cudaGetLastError());
                     }
                     bcnt_launched = true;   // DSTRUCT 命中时不再走 BCNT/旧窗式
@@ -4461,7 +4475,7 @@ static void hash_product(
                 if (!bcnt_launched)
                 hash_dense_count_kernel<<<dense_nr, DENSE_BLK, csm>>>(
                     dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows, A_cols,
-                    d_row_nnz, dense_rows, dense_rows ? d_span_lo : nullptr, d_flop, d_maxbl, cnt_w);
+                    d_row_nnz, dense_rows, dense_rows ? d_span_lo : nullptr, d_flop, d_maxbl, cnt_w, g_ccur);
                 CHECK_CUDA(cudaGetLastError());
                 unsigned long long *d_sums = decltype(d_sums)(dev_alloc(2 * sizeof(long long)));
                 CHECK_CUDA(cudaMemset(d_sums, 0, 2 * sizeof(long long)));
