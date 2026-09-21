@@ -124,6 +124,27 @@
 - 对拍阵:pre2 型(中行族,全 dense 化可行)+c-64 型(宽行,彼痛点)各一;判分=同人口逐行
   (DD_ROWTIME)或相位级,同窗配对
 
+### §2.2b 停顿分解定谳+ocean 可钉性(09-21 12:4x,单发#14)
+
+**hash_dense_direct 停顿表(c-64,cycles/issue)**:
+
+| 停顿源 | direct | count | 判读 |
+|---|---|---|---|
+| **long_scoreboard** | **11.78** | 5.66 | **全局访存延迟=真瓶颈(~55% 停顿)**——B 链续扫/A 行/窗口流的全局读 |
+| short_scoreboard | 3.64 | 1.08 | SMEM 链次因(窗内探测) |
+| wait | 3.30 | 2.80 | 固定延迟依赖 |
+| not_selected | 2.05 | 2.30 | warp 充足 → **非吞吐/指令数瓶颈** |
+
+- **③刀口定性(决赛 A 的靶)**:cursor 内核 = **访存延迟瓶颈**(IPC 2.0/Issue 49.9%/占用 99.65%),
+  刀口=压 B 链全局读的延迟暴露:预取/双缓冲下一窗 B 行/更宽装载/B16 已开下的流重组;
+  次刀口=SMEM 探测链(3.64)。对表 spec82:溢出税 +32% 指令是地址重算型——那些指令喂得饱
+  (SM Busy 49.9%),墙在等数据
+- **ocean 可钉性(workflow 级 ✓,行级未验)**:analysis.json 有 use_estimation/ultrasparse/
+  **use_fat_workflow** 三开关(baseline.json 全 false 先例)——关 hash 侧工作流可逼 dense 主路;
+  bench.json 仅计时参数;行级 dense_bin 钉法未验,决赛用"自然 dense 阵+workflow 开关"组合
+- ncu 停顿表采集法入档:--metrics 显式列 smsp__average_warps_issue_stalled_<reason>_per_issue_active.ratio
+  (--set detailed 的 WarpState 段在此版本不打印)
+
 ## 状态
 
 - 09-21 09:41 单发#11:§2.1 人口普查入档(四定谳;cursor 单一形态确立)
