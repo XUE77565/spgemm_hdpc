@@ -2776,6 +2776,18 @@ __global__ void retry_fused_off_kernel(
 }
 
 // compact:每行 row_nnz 项从 tmp(row_off 起)拷到连续 CSR(C_row_ptr 起)
+__global__ void diter_gapped_copy_kernel(   // spec89-#4'-L2b⑤:CNT_FUSE 老段行 tmp→dC 挤压拷贝
+    const int *rows, int n, const long long *gap_off, const int *row_nnz,
+    const int *tmp_col, const double *tmp_val,
+    const int *C_row_ptr, int *out_col, double *out_val)
+{
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= n) return;
+    int row = rows[t];
+    long long src = gap_off[row]; int dst = C_row_ptr[row]; int k = row_nnz[row];
+    for (int j = 0; j < k; j++) { out_col[dst + j] = tmp_col[src + j]; out_val[dst + j] = tmp_val[src + j]; }
+}
+
 __global__ void hash_compact_kernel(
     int A_rows, const long long *row_off, const int *row_nnz, const int *C_row_ptr,
     const unsigned long long *tmp_key, const double *tmp_val,
@@ -4022,6 +4034,8 @@ static void hash_product(
         dev_free(d_ratio);
     }
     long long total_est = 0;
+    static int g_cnf = -1;   /* spec89-#4': CNT_FUSE=1 (function scope) */
+    if (g_cnf < 0) { const char *e6 = getenv("CNT_FUSE"); g_cnf = (e6 && *e6) ? 1 : 0; }
     prof("est_scan", [&]{
         CHECK_CUDA(cudaMemset(d_off, 0, sizeof(long long)));
         if (A_rows <= MAX_BLOCK_THREADS) {
@@ -4425,6 +4439,7 @@ static void hash_product(
                     csm = (size_t)cnt_w;
                 }
                 static int g_ccur = -1;   // spec87:COUNT_CURSOR=1 门(默认关;游标区动态扩段)
+                /* g_cnf: function scope */
                 if (g_ccur < 0) { const char *e9 = getenv("COUNT_CURSOR"); g_ccur = (e9 && *e9) ? 1 : 0; }
                 if (g_ccur) csm += 1024 * sizeof(int);
                 if (csm + SMEM_STATIC_HEADROOM > (size_t)SMEM_DEFAULT_MAX)   // 动态+静态 >48K 才 opt-in(CUDA 总量规则)
@@ -5331,6 +5346,7 @@ static void hash_product(
 
     // est underflow check: actual C_nnz > estimated total → 回退 merge3
     // 方案5:dense 行计数精确(可 > 其 est,合法),检查改 hash 侧 = C_nnz − Σnnz_dense ≤ tmp_slots
+    if (!g_cnf) {   /* CNT_FUSE: underflow check deferred to late cnnz */
     if ((dense_nr > 0 || d5h_rows > 0)
             ? ((long long)C_nnz_result - dense_nnz_sum - d5h_nnz_sum > tmp_slots)
             : ((long long)C_nnz_result > total_est)) {
@@ -5354,6 +5370,20 @@ static void hash_product(
         dev_free(d_ovf_rows); dev_free(d_ovf_cnt); dev_free(d_row_ovf);
         dev_free(d_flop);
         return;
+    }
+    }  /* end !g_cnf wrap */
+    if (g_cnf) {   /* L2b-3/4: late cnnz after direct + underflow recheck */
+        CHECK_CUDA(cudaMemset(dC_rp, 0, sizeof(int)));
+        if (A_rows <= MAX_BLOCK_THREADS) {
+            int b = 1; while (b < A_rows) b <<= 1;
+            scan_inclusive_kernel<int><<<1, b, b * sizeof(int)>>>(d_row_nnz, dC_rp + 1, A_rows);
+        } else {
+            thrust::inclusive_scan(thrust::device_ptr<int>(d_row_nnz),
+                                   thrust::device_ptr<int>(d_row_nnz + A_rows),
+                                   thrust::device_ptr<int>(dC_rp + 1));
+        }
+        CHECK_CUDA(cudaMemcpy(&C_nnz_result, dC_rp + A_rows, sizeof(int), cudaMemcpyDeviceToHost));
+        if ((long long)C_nnz_result > total_est * 2) { fprintf(stderr, "[hash] CNT_FUSE underflow: C=%d\n", C_nnz_result); }
     }
 
     // Stage 4+5+6: per-row compact+sort(BlockRadixSort)替掉 compact+全局 sort+split_key;按 bin 选 config,直写连续 dC
@@ -5529,8 +5559,7 @@ static void hash_product(
                 static int g_cpf = -1;   // spec86-B:CURSOR_PF=1 门(默认关)
                 static int g_cbat = -1;   // spec89-#1:CURSOR_BATCH=1 门(默认关)
                 if (g_cbat < 0) { const char *e5 = getenv("CURSOR_BATCH"); g_cbat = (e5 && *e5) ? 1 : 0; }
-                static int g_cnf = -1;   // spec89-#4':CNT_FUSE=1(est-gapped 免计数;L2a 布线,L2b 重排后启用)
-                if (g_cnf < 0) { const char *e6 = getenv("CNT_FUSE"); g_cnf = (e6 && *e6) ? 1 : 0; }
+                // (g_cnf 已提前解析)
                 static int *d_dtmp_col = nullptr; static double *d_dtmp_val = nullptr;
                 if (g_cnf && !d_dtmp_col && total_est > 0) {   // 惰性过量 alloc(全行 est×1.8;L3 精确化)
                     d_dtmp_col = (int*)dev_alloc((size_t)(total_est * 2) * sizeof(int));
