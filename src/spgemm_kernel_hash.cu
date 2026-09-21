@@ -4347,7 +4347,9 @@ static void hash_product(
             for (int k = 0; k < off; k++) if (h_sp[idx[k]] > 0) dens.push_back((double)h_est[idx[k]] / h_sp[idx[k]]);
             std::sort(dens.begin(), dens.end());
             double med = dens[dens.size() / 2];
-            if (med < 0.5) { h_big_off = 0; h_tier_end[0] = h_tier_end[1] = h_tier_end[2] = h_tier_end[3] = h_tier_end[4] = h_tier_end[5] = 0; }
+            static int g_ds28 = -1;   // 判决实验仪器(09-22):DS_MED_OFF=1 关 §28 矩阵级门(默认关,零生产影响)
+            if (g_ds28 < 0) { const char *e = getenv("DS_MED_OFF"); g_ds28 = (e && *e) ? 1 : 0; }
+            if (med < 0.5 && !g_ds28) { h_big_off = 0; h_tier_end[0] = h_tier_end[1] = h_tier_end[2] = h_tier_end[3] = h_tier_end[4] = h_tier_end[5] = 0; }
             dbg("[%s] §28 矩阵级判据:档内中位密度 %.2f → %s\n", tag, med, med < 0.5 ? "老内核" : "结构内核");
         }
         h_tier_hmax = 0;                       // 档内段最大 span(档内非 span 序,取段内 max)
