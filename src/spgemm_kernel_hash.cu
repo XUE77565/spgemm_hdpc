@@ -1080,7 +1080,9 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
     int avgB_thr_param = 0,                  // PB2_AVGB 复审门(docs/66 §8;0 = 默认 64)
     const uint4 *B16p = nullptr,             // spec86-A:④交织 B 单股流(col+val 一次 uint4);空走旧双流
     int pf_on = 0,                           // spec86-B:书签预取(窗尾 touch 下窗链头进 L2;CURSOR_PF)
-    int batch_on = 0)                        // spec89-#1:批量装载 2 发在飞(CURSOR_BATCH;默认关)
+    int batch_on = 0,                        // spec89-#1:批量装载 2 发在飞(CURSOR_BATCH;默认关)
+    int *tmp_col = nullptr, double *tmp_val = nullptr,   // spec89-#4'-L1:est-gapped tmp 输出对(非空=写 tmp 而非 dC 终态)
+    const long long *gap_off = nullptr)      // #4'-L1:gapped 行基址(d_off);null=旧路逐位不变
 {
     int i = bucket_rows ? bucket_rows[blockIdx.x] : blockIdx.x;
     if (i >= A_rows) return;
@@ -1100,7 +1102,7 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
     int a_len = re - rs;
     int *smap = (a_len <= SMAP_SMEM_MAX) ? smap_s : smap_g; // docs/35 §3:SMEM 消每窗 O(a_len) 全局往返
     int *smir = (smap == smap_s) ? smir_s : smir_g;
-    int base = exact_rp[i];
+    int base = tmp_col ? (int)gap_off[i] : exact_rp[i];   // #4'-L1:双形态基址(gapped 或精确)
     int cap = row_nnz[i];
     int out = 0;
     int lo0 = span_lo ? span_lo[i] : 0;
@@ -1169,8 +1171,8 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
                 if (dflag[j]) {
                     int rank = out + dpref[j];
                     if (rank >= cap) continue;
-                    dC_ci[base + rank] = c0 + j;
-                    dC_val[base + rank] = dval[j];
+                    if (tmp_col) { tmp_col[base + rank] = c0 + j; tmp_val[base + rank] = dval[j]; }
+                    else { dC_ci[base + rank] = c0 + j; dC_val[base + rank] = dval[j]; }
                 }
             }
             out += dpref[w - 1] + dflag[w - 1];
@@ -1296,8 +1298,8 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
                 if (dflag[j]) {
                     int rank = out + dpref[j];
                     if (rank >= cap) continue;
-                    dC_ci[base + rank] = win_lo + j;
-                    dC_val[base + rank] = dval[j];
+                    if (tmp_col) { tmp_col[base + rank] = win_lo + j; tmp_val[base + rank] = dval[j]; }
+                    else { dC_ci[base + rank] = win_lo + j; dC_val[base + rank] = dval[j]; }
                 }
             }
             out += dpref[w - 1] + dflag[w - 1];
