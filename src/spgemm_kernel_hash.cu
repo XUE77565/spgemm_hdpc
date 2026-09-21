@@ -1079,7 +1079,8 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
     int *rowmode = nullptr,                  // 0=search 路径 / 1=cursor 路径(同数组落盘)
     int avgB_thr_param = 0,                  // PB2_AVGB 复审门(docs/66 §8;0 = 默认 64)
     const uint4 *B16p = nullptr,             // spec86-A:④交织 B 单股流(col+val 一次 uint4);空走旧双流
-    int pf_on = 0)                           // spec86-B:书签预取(窗尾 touch 下窗链头进 L2;CURSOR_PF)
+    int pf_on = 0,                           // spec86-B:书签预取(窗尾 touch 下窗链头进 L2;CURSOR_PF)
+    int batch_on = 0)                        // spec89-#1:批量装载 2 发在飞(CURSOR_BATCH;默认关)
 {
     int i = bucket_rows ? bucket_rows[blockIdx.x] : blockIdx.x;
     if (i >= A_rows) return;
@@ -1206,6 +1207,27 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
                 int k = A_col_idx[p];
                 double a = A_val[p];
                 int b_end = B_row_ptr[k + 1];
+                if (batch_on) {
+                    // spec89-#1:批量装载(2 发在飞)——long_scoreboard 11.78 延迟瓶颈下翻倍每线程
+                    // 在飞载数(spec86-B 定谳:冷失载不可预取,唯一杠杆=并行暴露)
+                    for (int q = st + my_id; q < b_end; q += 2 * G) {
+                        int jcol, jcol2 = -1; double bv, bv2 = 0.0;
+                        if (B16p) { uint4 e = B16p[q]; jcol = (int)e.x; bv = __hiloint2double(e.w, e.z);
+                                    if (q + G < b_end) { uint4 e2 = B16p[q + G]; jcol2 = (int)e2.x; bv2 = __hiloint2double(e2.w, e2.z); } }
+                        else { jcol = B_col_idx[q]; bv = B_val[q];
+                               if (q + G < b_end) { jcol2 = B_col_idx[q + G]; bv2 = B_val[q + G]; } }
+                        int j = jcol - win_lo;
+                        if (j >= w) { atomicMin(&smap[p - rs], q); if (jcol < my_next) my_next = jcol; break; }
+                        int col = win_lo + j;
+                        if (!(upper_tri && col < i)) { atomicAdd(&dval[j], a * bv); dflag[j] = 1; }
+                        if (jcol2 >= 0) {
+                            int j2 = jcol2 - win_lo;
+                            if (j2 >= w) { atomicMin(&smap[p - rs], q + G); if (jcol2 < my_next) my_next = jcol2; break; }
+                            int col2 = win_lo + j2;
+                            if (!(upper_tri && col2 < i)) { atomicAdd(&dval[j2], a * bv2); dflag[j2] = 1; }
+                        }
+                    }
+                } else
                 for (int q = st + my_id; q < b_end; q += G) {
                     int jcol; double bv;                    // spec86-A:B16 单股流(cursor 主路径)
                     if (B16p) { uint4 e = B16p[q]; jcol = (int)e.x; bv = __hiloint2double(e.w, e.z); }
@@ -2850,7 +2872,6 @@ __global__ void compute_bucket_kernel(
     int largest_on = 0,   // docs/74:Ocean-D straggler 行位图窗(0=关)
     int esc_on = 0,       // docs/76 v31-④:零表 counting-sort 短行(flop≤ESC_FLOP_MAX;0=关)
     int diter_est_min = EST_DENSE_MIN / 2,  // docs/76 §16:diter est 下限(默认半默认档;Ocean dense 分流)
-    int force_est_min = 0,   // 决赛 v2 真强制:est≥此值的行终判 BIN_DITER(覆盖全部门;0=关)
     int dstruct_win = 0,  // §21:span ≤ 此窗才进 diter;-1 = §22 档位梯(span ≤ DENSE_TIER_SPAN_MAX);
                           //      0 = 不限(旧行为);>0 = 手调单窗(实验兼容)
     int dim2_on = 0,     // DIM2 独立门(n_cols 传参只为 largest 的 span 护栏;误点亮 dim2 曾把
@@ -2860,7 +2881,8 @@ __global__ void compute_bucket_kernel(
     double tbl_glo = 0.0, double tbl_ghi = 0.0,   // 行级表配(解耦版 HASH_REXP=2):0=关;
     int tbl_elo = 0, int tbl_ehi = 0,             // 默认锚 glo=1.8(=eref 恒等)/ghi=1.4/elo=ehi=4096
     double tbl_eref = 1.8,                        // eref = 实际 est_expand(E = e/eref)
-    int occ_coeff = SPANF_COEFF)                  // OCCGATE 系数(默认 16;OCC_GATE_COEFF=10 已验证但停靠③阶段启用;env OCCGATE_COEFF —— REXP
+    int occ_coeff = SPANF_COEFF,
+    int force_est_min = 0)   // 决赛 v2 真强制:est≥此值终判 BIN_DITER(覆盖全门;0=关)                  // OCCGATE 系数(默认 16;OCC_GATE_COEFF=10 已验证但停靠③阶段启用;env OCCGATE_COEFF —— REXP
                                                   // 轮盘教训:crankseg −8.5 实为本门 est×16<span 边界
                                                   // 迁移,直接调门替代 est 侧信道;变小=更多重行留 hash)
                           //   1.63× → 表≈真需求 3.3× vs Ocean 1.75×;env HASH_TGT_ALPHA(200=legacy)
@@ -5501,12 +5523,14 @@ static void hash_product(
                 static int g_cb16 = -1;   // spec86-A:CURSOR_B16=1 门(默认关;hash_spa 的 B16 分裂人格前科,系统电池裁决)
                 if (g_cb16 < 0) { const char *e3 = getenv("CURSOR_B16"); g_cb16 = (e3 && *e3) ? 1 : 0; }
                 static int g_cpf = -1;   // spec86-B:CURSOR_PF=1 门(默认关)
+                static int g_cbat = -1;   // spec89-#1:CURSOR_BATCH=1 门(默认关)
+                if (g_cbat < 0) { const char *e5 = getenv("CURSOR_BATCH"); g_cbat = (e5 && *e5) ? 1 : 0; }
                 if (g_cpf < 0) { const char *e4 = getenv("CURSOR_PF"); g_cpf = (e4 && *e4) ? 1 : 0; }
                 hash_dense_direct_kernel<<<old_nr, MAX_BLOCK_THREADS, wsm>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, A_cols,
                     dC_rp, dC_ci, d_val, d_row_nnz, old_rows, old_rows ? d_span_lo : nullptr,
                     d_flop, d_maxbl, d_smap, d_smap_off, sm_tot, uc, d_ddrt, d_ddmode, g_pb2avgb,
-                    (g_cb16 && dB16) ? dB16 : nullptr, g_cpf);
+                    (g_cb16 && dB16) ? dB16 : nullptr, g_cpf, g_cbat);
                 CHECK_CUDA(cudaGetLastError());
             }
             if (d_rows_sorted) dev_free(d_rows_sorted);
