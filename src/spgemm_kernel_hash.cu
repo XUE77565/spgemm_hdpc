@@ -1067,8 +1067,8 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
     unsigned long long *rowtime = nullptr,   // DD_ROWTIME:逐行执行周期(docs/66 采数)
     int *rowmode = nullptr,                  // 0=search 路径 / 1=cursor 路径(同数组落盘)
     int avgB_thr_param = 0,                  // PB2_AVGB 复审门(docs/66 §8;0 = 默认 64)
-    const uint4 *B16p = nullptr)             // spec86-A:④交织 B 单股流(col+val 一次 uint4);
-                                             // 空走旧双流;仅 col+val 双流读点获益(col-only 点不划算)
+    const uint4 *B16p = nullptr,             // spec86-A:④交织 B 单股流(col+val 一次 uint4);空走旧双流
+    int pf_on = 0)                           // spec86-B:书签预取(窗尾 touch 下窗链头进 L2;CURSOR_PF)
 {
     int i = bucket_rows ? bucket_rows[blockIdx.x] : blockIdx.x;
     if (i >= A_rows) return;
@@ -1171,6 +1171,7 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
         return;
     }
     int win_lo = lo0;
+    __shared__ int s_pf_sink;                // spec86-B:预取防 DCE 汇(只写不读)
     while (win_lo < n) {
         int w = min(PB2_W, n - win_lo);
         for (int j = tid; j < w; j += blockDim.x) { dval[j] = 0.0; dflag[j] = 0; }
@@ -1213,6 +1214,22 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
             if (my_next < n) atomicMin(&s_next_lo, my_next);
         }
         __syncthreads();
+        // spec86-B:书签预取(最简形)——窗尾 smap 已是下窗各链起点;此处 touch 进 L2,
+        // 后续 prefix/extract 段计算掩盖装载延迟(col+val;B16 在则一发 uint4)
+        if (pf_on) {
+            unsigned pf_acc = 0;
+            for (int p = rs + tid; p < re; p += blockDim.x) {
+                int s2 = smap[p - rs];
+                if (s2 != 0x7fffffff) {
+                    int k2 = A_col_idx[p];
+                    if (s2 < B_row_ptr[k2 + 1]) {
+                        if (B16p) { uint4 e = B16p[s2]; pf_acc += (unsigned)e.x + (unsigned)e.z; }
+                        else pf_acc += (unsigned)B_col_idx[s2] + (unsigned)__double2hiint(B_val[s2]);
+                    }
+                }
+            }
+            s_pf_sink += (int)pf_acc;
+        }
         if (tid == 0 && i == g_dflag_probe_row) {   // 探针v4:stage3 入口全窗 flag 计数(判"晚写" vs "prefix 读零")
             int fl3 = 0; for (int j = 0; j < w; j++) fl3 += dflag[j];
             printf("[D3IN ] row%d win[%d,%d) 全窗flags=%d/%d\n", i, win_lo, win_lo + w, fl3, w);
@@ -5465,11 +5482,13 @@ static void hash_product(
                 if (const char *dp2 = getenv("DFLAG_PROBE")) { int pr = atoi(dp2); cudaMemcpyToSymbol(g_dflag_probe_row, &pr, sizeof(int)); }
                 static int g_cb16 = -1;   // spec86-A:CURSOR_B16=1 门(默认关;hash_spa 的 B16 分裂人格前科,系统电池裁决)
                 if (g_cb16 < 0) { const char *e3 = getenv("CURSOR_B16"); g_cb16 = (e3 && *e3) ? 1 : 0; }
+                static int g_cpf = -1;   // spec86-B:CURSOR_PF=1 门(默认关)
+                if (g_cpf < 0) { const char *e4 = getenv("CURSOR_PF"); g_cpf = (e4 && *e4) ? 1 : 0; }
                 hash_dense_direct_kernel<<<old_nr, MAX_BLOCK_THREADS, wsm>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, A_cols,
                     dC_rp, dC_ci, d_val, d_row_nnz, old_rows, old_rows ? d_span_lo : nullptr,
                     d_flop, d_maxbl, d_smap, d_smap_off, sm_tot, uc, d_ddrt, d_ddmode, g_pb2avgb,
-                    (g_cb16 && dB16) ? dB16 : nullptr);
+                    (g_cb16 && dB16) ? dB16 : nullptr, g_cpf);
                 CHECK_CUDA(cudaGetLastError());
             }
             if (d_rows_sorted) dev_free(d_rows_sorted);
