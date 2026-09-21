@@ -5529,12 +5529,22 @@ static void hash_product(
                 static int g_cpf = -1;   // spec86-B:CURSOR_PF=1 门(默认关)
                 static int g_cbat = -1;   // spec89-#1:CURSOR_BATCH=1 门(默认关)
                 if (g_cbat < 0) { const char *e5 = getenv("CURSOR_BATCH"); g_cbat = (e5 && *e5) ? 1 : 0; }
+                static int g_cnf = -1;   // spec89-#4':CNT_FUSE=1(est-gapped 免计数;L2a 布线,L2b 重排后启用)
+                if (g_cnf < 0) { const char *e6 = getenv("CNT_FUSE"); g_cnf = (e6 && *e6) ? 1 : 0; }
+                static int *d_dtmp_col = nullptr; static double *d_dtmp_val = nullptr;
+                if (g_cnf && !d_dtmp_col && total_est > 0) {   // 惰性过量 alloc(全行 est×1.8;L3 精确化)
+                    d_dtmp_col = (int*)dev_alloc((size_t)(total_est * 2) * sizeof(int));
+                    d_dtmp_val = (double*)dev_alloc((size_t)(total_est * 2) * sizeof(double));
+                }
                 if (g_cpf < 0) { const char *e4 = getenv("CURSOR_PF"); g_cpf = (e4 && *e4) ? 1 : 0; }
                 hash_dense_direct_kernel<<<old_nr, MAX_BLOCK_THREADS, wsm>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, A_cols,
                     dC_rp, dC_ci, d_val, d_row_nnz, old_rows, old_rows ? d_span_lo : nullptr,
                     d_flop, d_maxbl, d_smap, d_smap_off, sm_tot, uc, d_ddrt, d_ddmode, g_pb2avgb,
-                    (g_cb16 && dB16) ? dB16 : nullptr, g_cpf, g_cbat);
+                    (g_cb16 && dB16) ? dB16 : nullptr, g_cpf, g_cbat,
+                    (g_cnf && d_dtmp_col) ? d_dtmp_col : nullptr,
+                    (g_cnf && d_dtmp_col) ? d_dtmp_val : nullptr,
+                    (g_cnf && d_dtmp_col) ? d_off : nullptr);   // spec89-#4'-L2a:tmp 三参(默认 null=旧路;L2b 相位重排后才有意义)
                 CHECK_CUDA(cudaGetLastError());
             }
             if (d_rows_sorted) dev_free(d_rows_sorted);
