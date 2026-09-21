@@ -1066,7 +1066,9 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
     int use_cursor = 1,
     unsigned long long *rowtime = nullptr,   // DD_ROWTIME:逐行执行周期(docs/66 采数)
     int *rowmode = nullptr,                  // 0=search 路径 / 1=cursor 路径(同数组落盘)
-    int avgB_thr_param = 0)                  // PB2_AVGB 复审门(docs/66 §8;0 = 默认 64)
+    int avgB_thr_param = 0,                  // PB2_AVGB 复审门(docs/66 §8;0 = 默认 64)
+    const uint4 *B16p = nullptr)             // spec86-A:④交织 B 单股流(col+val 一次 uint4);
+                                             // 空走旧双流;仅 col+val 双流读点获益(col-only 点不划算)
 {
     int i = bucket_rows ? bucket_rows[blockIdx.x] : blockIdx.x;
     if (i >= A_rows) return;
@@ -1129,9 +1131,11 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
                 int ks = dev_lower_bound(B_col_idx, B_row_ptr[k], B_row_ptr[k + 1], c0);
                 int ke = dev_lower_bound(B_col_idx, ks, B_row_ptr[k + 1], c1);
                 for (int q = ks + lane; q < ke; q += 32) {
-                    int j = B_col_idx[q] - c0;
+                    int j; double bv;                       // spec86-A:B16 单股流
+                    if (B16p) { uint4 e = B16p[q]; j = (int)e.x - c0; bv = __hiloint2double(e.w, e.z); }
+                    else { j = B_col_idx[q] - c0; bv = B_val[q]; }
                     if (upper_tri && (c0 + j) < i) continue;
-                    atomicAdd(&dval[j], a * B_val[q]);
+                    atomicAdd(&dval[j], a * bv);
                     dflag[j] = 1;
                 }
             }
@@ -1191,15 +1195,18 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
                 double a = A_val[p];
                 int b_end = B_row_ptr[k + 1];
                 for (int q = st + my_id; q < b_end; q += G) {
-                    int j = B_col_idx[q] - win_lo;
+                    int jcol; double bv;                    // spec86-A:B16 单股流(cursor 主路径)
+                    if (B16p) { uint4 e = B16p[q]; jcol = (int)e.x; bv = __hiloint2double(e.w, e.z); }
+                    else { jcol = B_col_idx[q]; bv = B_val[q]; }
+                    int j = jcol - win_lo;
                     if (j >= w) {
                         atomicMin(&smap[p - rs], q);
-                        if (B_col_idx[q] < my_next) my_next = B_col_idx[q];
+                        if (jcol < my_next) my_next = jcol;
                         break;
                     }
                     int col = win_lo + j;
                     if (upper_tri && col < i) continue;
-                    atomicAdd(&dval[j], a * B_val[q]);
+                    atomicAdd(&dval[j], a * bv);
                     dflag[j] = 1;
                 }
             }
@@ -5456,10 +5463,13 @@ static void hash_product(
                 size_t wsm = ((size_t)PB2_W * 9 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
                            + 2 * (size_t)SMAP_SMEM_MAX * sizeof(int);
                 if (const char *dp2 = getenv("DFLAG_PROBE")) { int pr = atoi(dp2); cudaMemcpyToSymbol(g_dflag_probe_row, &pr, sizeof(int)); }
+                static int g_cb16 = -1;   // spec86-A:CURSOR_B16=1 门(默认关;hash_spa 的 B16 分裂人格前科,系统电池裁决)
+                if (g_cb16 < 0) { const char *e3 = getenv("CURSOR_B16"); g_cb16 = (e3 && *e3) ? 1 : 0; }
                 hash_dense_direct_kernel<<<old_nr, MAX_BLOCK_THREADS, wsm>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, A_cols,
                     dC_rp, dC_ci, d_val, d_row_nnz, old_rows, old_rows ? d_span_lo : nullptr,
-                    d_flop, d_maxbl, d_smap, d_smap_off, sm_tot, uc, d_ddrt, d_ddmode, g_pb2avgb);
+                    d_flop, d_maxbl, d_smap, d_smap_off, sm_tot, uc, d_ddrt, d_ddmode, g_pb2avgb,
+                    (g_cb16 && dB16) ? dB16 : nullptr);
                 CHECK_CUDA(cudaGetLastError());
             }
             if (d_rows_sorted) dev_free(d_rows_sorted);
