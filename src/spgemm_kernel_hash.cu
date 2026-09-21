@@ -1179,7 +1179,7 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
             __syncthreads();
         }
         if (tid == 0) {
-            if (out != cap) row_nnz[i] = out;
+            row_nnz[i] = out;   /* #4': tmp 模式需无条件写(count 已免,陈旧值会毒化晚 cnnz) */
             if (rowtime) rowtime[i] = clock64() - rt0;   // search 路径出口
         }
         return;
@@ -1316,7 +1316,7 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
         win_lo = next;
     }
     if (tid == 0) {
-        if (out != cap) row_nnz[i] = out;
+        row_nnz[i] = out;   /* #4': tmp 模式需无条件写(count 已免,陈旧值会毒化晚 cnnz) */
         if (rowtime) rowtime[i] = clock64() - rt0;       // cursor 路径出口
     }
 }
@@ -4522,10 +4522,14 @@ static void hash_product(
                     }
                     dev_free(d_sp);
                 }
-                if (!bcnt_launched)
-                hash_dense_count_kernel<<<dense_nr, DENSE_BLK, csm>>>(
-                    dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows, A_cols,
-                    d_row_nnz, dense_rows, dense_rows ? d_span_lo : nullptr, d_flop, d_maxbl, cnt_w, g_ccur);
+                if (!bcnt_launched) {   // #4':CNT_FUSE 时收缩为仅梯段(老段免计数)
+                    int cnt_nr = (g_cnf && d_rows_sorted) ? h_big_off : dense_nr;
+                    const int *cnt_rows = (g_cnf && d_rows_sorted) ? d_rows_sorted : dense_rows;
+                    if (cnt_nr > 0)
+                    hash_dense_count_kernel<<<cnt_nr, DENSE_BLK, csm>>>(
+                        dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows, A_cols,
+                        d_row_nnz, cnt_rows, cnt_rows ? d_span_lo : nullptr, d_flop, d_maxbl, cnt_w, g_ccur);
+                }
                 CHECK_CUDA(cudaGetLastError());
                 unsigned long long *d_sums = decltype(d_sums)(dev_alloc(2 * sizeof(long long)));
                 CHECK_CUDA(cudaMemset(d_sums, 0, 2 * sizeof(long long)));

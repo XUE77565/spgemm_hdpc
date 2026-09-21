@@ -41,3 +41,10 @@
 
 - 09-22 07:0x #4' 值级门:**cf0(CNT_FUSE=0)↔cf1(=1) PASS(1e-9)=刀值中立逐位**;truth17 FAIL=c-64
   既有 artifact(豁免口径,cf0 同 FAIL 非本刀引入);剩=有序+memcheck+净窗×3 双阵+20 阵快屏(07:39 轮)
+
+- 09-22 07:5x #4' 守门收口中:有序 SORTED-OK(155M)✓;**memcheck 158→187 errors 未清**(无条件写 row_nnz 修复未中);
+  病灶=hash_compact_copy_warp 越界写 84MB 越过一个 204KB 分配——**新根因候选:dC 缓冲按早 cnnz 的
+  C_nnz_result(融合态=垃圾)定尺寸,晚 cnnz 真值偏移超出→compact 越界**;修法=晚 cnnz 后
+  C_nnz_result>早值时 realloc dC_ci/d_val(或直接按 total_est×2 上界分配);
+  性能数字(−21.9%)无 sanitizer 下取得,值级 cf0↔cf1 仍逐位(越界写落在 slack 区,仍必修);
+  下一轮:fresh 上下文实施 realloc→memcheck 清零→×3 双阵→20 阵→#4' 登顶
