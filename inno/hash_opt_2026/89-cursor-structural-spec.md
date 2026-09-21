@@ -18,7 +18,11 @@
 4. count/direct 融合(2.64ms 相位消失)
 - 预期叠加:13.6→9-10ms=c-64 全阵 0.98→~0.79(spec82 旧账)
 
-- 09-22 04:0x 单发#35 **#2 双缓冲分析判"先验负"**:SMEM×2(PB2_W 21B/列×2≈184KB)→1024thr 档
+- 09-22 04:2x 单发#36 **#4' 设计定稿(诚实赢面模型)**:改点=count 相位(读全部 B 乘积=贵)换成
+  squeeze(只拷输出 Σnnz×24B≈c-64 1.8ms/in-2004 1.25ms);**赢面人口依赖**:c-64 净省仅 ~0.8ms(−4%),
+  in-2004 净省 ~7.9ms(−16%);**基建全在**:est-gapped 偏移(est_scan/d_off 既有)+hash compact 本就
+  做 gapped→tight 挤压=最小改点「diter 行改走该机械+跳 count」;注意与方案5 规模门(4411)的关系
+  待读;实施=下轮(需读 4400-4560 方案5 全链后落 CNT_FUSE env)
   驻留 2→1 块=占用恒等式反向(spec82 同族)——重叠收益大概率被占用腰斩吃掉;不实施,停靠
 - **#4' 升为新优先:count/direct 融合经 est-gapped 免计数**——dense_count(2.64ms c-64)只为
   精确偏移(exact_rp)预配;est×1.8 本就超配 → 改 est-gapped 缓冲+compact 挤压(hash 侧同款
