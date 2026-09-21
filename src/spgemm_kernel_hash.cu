@@ -4036,6 +4036,11 @@ static void hash_product(
     long long total_est = 0;
     static int g_cnf = -1;   /* spec89-#4': CNT_FUSE=1 (function scope) */
     if (g_cnf < 0) { const char *e6 = getenv("CNT_FUSE"); g_cnf = (e6 && *e6) ? 1 : 0; }
+    static int *d_dtmp_col = nullptr; static double *d_dtmp_val = nullptr;   /* #4' L2 */
+    if (g_cnf && !d_dtmp_col && total_est > 0) {
+        d_dtmp_col = (int*)dev_alloc((size_t)(total_est * 2) * sizeof(int));
+        d_dtmp_val = (double*)dev_alloc((size_t)(total_est * 2) * sizeof(double));
+    }
     prof("est_scan", [&]{
         CHECK_CUDA(cudaMemset(d_off, 0, sizeof(long long)));
         if (A_rows <= MAX_BLOCK_THREADS) {
@@ -4488,7 +4493,7 @@ static void hash_product(
                             CHECK_CUDA(cudaGetLastError());
                         });
                     }
-                    if (split_cnt && h_big_off < dense_nr) {   // 超档段:老窗式 count(与 legacy 同参)
+                    if (!g_cnf && split_cnt && h_big_off < dense_nr) {   // 超档段:老窗式 count(#4' CNT_FUSE=1 跳过=免计数)
                         int old_nr = dense_nr - h_big_off;
                         hash_dense_count_kernel<<<old_nr, DENSE_BLK, csm>>>(
                             dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows, A_cols,
@@ -5372,19 +5377,7 @@ static void hash_product(
         return;
     }
     }  /* end !g_cnf wrap */
-    if (g_cnf) {   /* L2b-3/4: late cnnz after direct + underflow recheck */
-        CHECK_CUDA(cudaMemset(dC_rp, 0, sizeof(int)));
-        if (A_rows <= MAX_BLOCK_THREADS) {
-            int b = 1; while (b < A_rows) b <<= 1;
-            scan_inclusive_kernel<int><<<1, b, b * sizeof(int)>>>(d_row_nnz, dC_rp + 1, A_rows);
-        } else {
-            thrust::inclusive_scan(thrust::device_ptr<int>(d_row_nnz),
-                                   thrust::device_ptr<int>(d_row_nnz + A_rows),
-                                   thrust::device_ptr<int>(dC_rp + 1));
-        }
-        CHECK_CUDA(cudaMemcpy(&C_nnz_result, dC_rp + A_rows, sizeof(int), cudaMemcpyDeviceToHost));
-        if ((long long)C_nnz_result > total_est * 2) { fprintf(stderr, "[hash] CNT_FUSE underflow: C=%d\n", C_nnz_result); }
-    }
+    /* late cnnz relocated after direct block */
 
     // Stage 4+5+6: per-row compact+sort(BlockRadixSort)替掉 compact+全局 sort+split_key;按 bin 选 config,直写连续 dC
     size_t C_rp_sz  = (A_rows + 1) * sizeof(int);
@@ -5560,11 +5553,7 @@ static void hash_product(
                 static int g_cbat = -1;   // spec89-#1:CURSOR_BATCH=1 门(默认关)
                 if (g_cbat < 0) { const char *e5 = getenv("CURSOR_BATCH"); g_cbat = (e5 && *e5) ? 1 : 0; }
                 // (g_cnf 已提前解析)
-                static int *d_dtmp_col = nullptr; static double *d_dtmp_val = nullptr;
-                if (g_cnf && !d_dtmp_col && total_est > 0) {   // 惰性过量 alloc(全行 est×1.8;L3 精确化)
-                    d_dtmp_col = (int*)dev_alloc((size_t)(total_est * 2) * sizeof(int));
-                    d_dtmp_val = (double*)dev_alloc((size_t)(total_est * 2) * sizeof(double));
-                }
+                /* d_dtmp alloc moved to function scope */
                 if (g_cpf < 0) { const char *e4 = getenv("CURSOR_PF"); g_cpf = (e4 && *e4) ? 1 : 0; }
                 hash_dense_direct_kernel<<<old_nr, MAX_BLOCK_THREADS, wsm>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, A_cols,
@@ -5662,6 +5651,34 @@ static void hash_product(
             dev_free(d_seg_beg); dev_free(d_seg_end); dev_free(d_scr_key); dev_free(d_scr_val); dev_free(d_cub_tmp);
             dev_free(d_smap); dev_free(d_smap_off); dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val); dev_free(dB16);
             return;
+        }
+    }
+    if (g_cnf) {   /* L2b-3/4: late cnnz after direct + underflow recheck */
+        CHECK_CUDA(cudaMemset(dC_rp, 0, sizeof(int)));
+        if (A_rows <= MAX_BLOCK_THREADS) {
+            int b = 1; while (b < A_rows) b <<= 1;
+            scan_inclusive_kernel<int><<<1, b, b * sizeof(int)>>>(d_row_nnz, dC_rp + 1, A_rows);
+            /* L2b-5: old-segment squeeze copy (tmp->dC) */
+        if (g_cnf && h_big_off > 0 && d_rows_sorted) {
+            diter_gapped_copy_kernel<<<(h_big_off + 255) / 256, 256>>>(
+                d_rows_sorted, h_big_off, d_off, d_row_nnz, d_dtmp_col, d_dtmp_val, dC_rp, dC_ci, d_val);
+        }
+    } else {
+            thrust::inclusive_scan(thrust::device_ptr<int>(d_row_nnz),
+                                   thrust::device_ptr<int>(d_row_nnz + A_rows),
+                                   thrust::device_ptr<int>(dC_rp + 1));
+            /* L2b-5: old-segment squeeze copy (tmp->dC) */
+        if (g_cnf && h_big_off > 0 && d_rows_sorted) {
+            diter_gapped_copy_kernel<<<(h_big_off + 255) / 256, 256>>>(
+                d_rows_sorted, h_big_off, d_off, d_row_nnz, d_dtmp_col, d_dtmp_val, dC_rp, dC_ci, d_val);
+        }
+    }
+        CHECK_CUDA(cudaMemcpy(&C_nnz_result, dC_rp + A_rows, sizeof(int), cudaMemcpyDeviceToHost));
+        if ((long long)C_nnz_result > total_est * 2) { fprintf(stderr, "[hash] CNT_FUSE underflow: C=%d\n", C_nnz_result); }
+        /* L2b-5: old-segment squeeze copy (tmp->dC) */
+        if (g_cnf && h_big_off > 0 && d_rows_sorted) {
+            diter_gapped_copy_kernel<<<(h_big_off + 255) / 256, 256>>>(
+                d_rows_sorted, h_big_off, d_off, d_row_nnz, d_dtmp_col, d_dtmp_val, dC_rp, dC_ci, d_val);
         }
     }
     prof("compact+sort", [&]{
