@@ -203,6 +203,18 @@
   正解=从彼 analysis/stats 提取其 dense 行集→我方强制到**同一行集**→逐相位对拍(下轮)
 - 系统级 1.56× 即当前决赛记分(保守口径我方相位和 vs 彼单括号,三不对称全偏我方仍输=真差距)
 
+### §2.5 人口同一化判据+对局重定(09-21 18:1x,单发#24)
+
+- **彼判据提取(Analysis.cuh 240-268)**:`range`(链列跨度)≤ DENSE_NUMERIC_BIN_SIZES_GPU[b]
+  找最小档 dense_bin_id;est 落 HASH_NUMERIC_BIN_SIZES 梯得 bin_id;**dense_bin_id ≤ bin_id 即送
+  dense**(与我方 DTIER_CMP 双键同构——docs/76 §22b 判断证实)
+- **人口账目对表(in-2004)**:彼 dense 阶梯块数和 ≈7413+6723+4085≈**18.2K 行**(每块 1 行);
+  我方 diter 仅 10.4K 但**档位梯人口 ≈2 万级(v33 时代赢家)** ⇒ **决赛同人口对局重定:
+  我方档位梯 dense_struct 家族 vs 彼 denseNumeric 七档阶梯**(不是 cursor vs 彼——cursor 人口
+  是宽行子集,彼宽行走 hash)
+- 下一步配方:我方 DUMP_ROUTING(in-2004)离线复算彼判据(需彼 DENSE_NUMERIC_BIN_SIZES 值,
+  Common.h 提取)→ 行集交集/差集 → 我方按行集强制(临时 env)→ §2.5b 终版逐相位对表
+
 ## 状态
 
 - 09-21 09:41 单发#11:§2.1 人口普查入档(四定谳;cursor 单一形态确立)
