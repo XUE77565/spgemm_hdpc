@@ -18,7 +18,11 @@
 4. count/direct 融合(2.64ms 相位消失)
 - 预期叠加:13.6→9-10ms=c-64 全阵 0.98→~0.79(spec82 旧账)
 
-- 09-22 05:0x 单发#38 **#4' 升格半天级刀,三级脚手架实施**(一次动 4 接缝=参数错位事故温床):
+- 09-22 05:4x 单发#41 **L2b 双 cnnz 设计定稿+依赖清单(未实施,新会话执行)**:档位梯 direct 也吃
+  C_row_ptr→简单重排成环;解法=**早 cnnz(供梯基址,老行条目垃圾但不用)+老内核行 tmp/d_off+
+  晚 cnnz(老 direct 出 row_nnz 后重建,供 compact)+underflow 检查随晚 cnnz 后移**;
+  发射点:老 count=4448(d_rows_sorted+h_big_off 段,可独跳)/梯 count=4476 保留/cnnz=5317(10 行
+  inclusive_scan)/underflow=5335;爆炸半径五处协同=新鲜上下文专轮做,勿残上下文蛮干
   **L1**=direct 双输出形态脚手架(加 tmp 输出参数对,默认 null 走旧路,编译过+off 逐位不变)
   **L2**=diter tmp 缓冲+相位重排脚手架(direct→cnnz→compact 新序,CNT_FUSE=0 时旧序不变)
   **L3**=CNT_FUSE=1 全链启用+守门;每级独立可验,事故面最小化
