@@ -2394,6 +2394,88 @@ __global__ void hash_global_kernel(
     }
 }
 
+// R1c(spec85,RETRY2=1):hash_global 拆三段——原版每 block 自含 init+probe+extract,
+// __syncthreads 假设单 block 独占行(R0 解剖:3 行鲸鱼 1 block/行 = GPU 尾 ~190µs 真源)。
+// 拆段:init(host memsetAsync)/probe(grid.y=S 段并行,共表原子 CAS——块内并发本依赖原子,
+// 跨 block 天然成立)/extract(单 block/行,流序保证 probe 全落)。仅 retry 路径调用,原 kernel 不动。
+__global__ void retry2_gprobe_kernel(
+    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
+    const int *B_row_ptr, const int *B_col_idx, const double *B_val, int upper_tri,
+    const int *bucket_rows, int n_in_bucket, int S,
+    const long long *row_ht, const long long *tab_off,
+    int *tab_col, double *tab_val,
+    int *overflow_flag, int *ovf_rows, int *ovf_cnt, int *row_ovf)
+{
+    int idx = blockIdx.x;
+    if (idx >= n_in_bucket) return;
+    int i = bucket_rows[idx];
+    int seg = blockIdx.y;
+    int tid = threadIdx.x;
+    int ht_size = (int)row_ht[idx];
+    int mask = ht_size - 1;
+    int *sh_col = tab_col + tab_off[idx];      // 本行的全局表段(已由 host memset 初始化)
+    double *sh_val = tab_val + tab_off[idx];
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    int chunk = ((re - rs) + S - 1) / S;        // k 值域连续段切分;空段(s0>=s1)自然跳过
+    int s0 = rs + seg * chunk;
+    int s1 = min(rs + (seg + 1) * chunk, re);
+    int G = WARP_SIZE, num_groups = HASH_BLOCK / G, my_group = tid / G, my_id = tid % G;
+    for (int p = s0 + my_group; p < s1; p += num_groups) {
+        int k = A_col_idx[p];
+        double a_ik = A_val[p];
+        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
+        for (int q = ks + my_id; q < ke; q += G) {
+            int j = B_col_idx[q];
+            if (upper_tri && j < i) continue;
+            double v = a_ik * B_val[q];
+            unsigned slot = ((unsigned)(j * 2654435761u)) & mask;
+            int probes = 0;
+            while (true) {
+                int old = atomicCAS(&sh_col[slot], -1, j);
+                if (old == -1 || old == j) { atomicAdd(&sh_val[slot], v); break; }
+                slot = (slot + 1) & mask;
+                if (++probes >= ht_size) {
+                    atomicExch(overflow_flag, 1);
+                    if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
+                    break;
+                }
+            }
+        }
+    }
+}
+__global__ void retry2_gextract_kernel(
+    const int *bucket_rows, int n_in_bucket,
+    const long long *row_ht, const long long *tab_off,
+    int *tab_col, double *tab_val,
+    const long long *row_off, const int *rslot_cap,
+    unsigned long long *tmp_key, double *tmp_val,
+    int *row_nnz, int *overflow_flag)
+{
+    int idx = blockIdx.x;
+    if (idx >= n_in_bucket) return;
+    int i = bucket_rows[idx];
+    int tid = threadIdx.x;
+    int ht_size = (int)row_ht[idx];
+    int *sh_col = tab_col + tab_off[idx];
+    double *sh_val = tab_val + tab_off[idx];
+    __shared__ int cnt;
+    if (tid == 0) cnt = 0;
+    __syncthreads();
+    long long base = row_off[i];
+    int cap = rslot_cap[i];   // retry 路径实参 = d_rslot(min(flop,ncols) ≥ distinct)
+    for (int s = tid; s < ht_size; s += HASH_BLOCK) {
+        int c = sh_col[s];
+        if (c >= 0) {
+            int pos = atomicAdd(&cnt, 1);
+            if (pos >= cap) { atomicExch(overflow_flag, 1); continue; }
+            tmp_key[base + pos] = ((unsigned long long)i << 32) | (unsigned int)c;
+            tmp_val[base + pos] = sh_val[s];
+        }
+    }
+    __syncthreads();
+    if (tid == 0) row_nnz[i] = cnt > cap ? cap : cnt;
+}
+
 // heavy 混合版(2026-08-26,Step2):keys 进 SMEM(ht ≤ HYBRID_HT_MAX,128KB)、values 留全局
 // arena —— SMEM atomicCAS 比全局快 ~4-8×,治 TSOPF 类 heavy 全局表 3.86× 的主源。
 // 对标 Ocean HYBRID_HASHMAP(keys SMEM + values 全局池)。smem 每 launch 均一 →
@@ -2566,6 +2648,72 @@ __global__ void retry_slot_kernel(const int *rows, int n, const int *flop, int *
     int f = flop[rows[t]];
     if (f > ncols) f = ncols;
     rslot[rows[t]] = f;
+}
+
+// R1 子集快路(spec85 RETRY2=1):重试区偏移只在溢出行子集上求,替代全 A_rows memset+inclusive_scan
+// (R0 解剖:全 A_rows 扫+memset ≈195μs 是 host 编排最大项;消费者只按 ovf 行列表读 d_roff/d_rslot)
+__global__ void retry_rsub_gather_kernel(const int *rows, int n, const int *flop, long long *rsub, int ncols)
+{
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= n) return;
+    long long f = flop[rows[t]];
+    if (f > ncols) f = ncols;
+    rsub[t] = f;
+}
+__global__ void retry_suboff_scatter_kernel(const int *rows, int n, const long long *rosub, const long long *rsub,
+                                            int *rslot, long long *roff)
+{
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= n) return;
+    int row = rows[t];
+    rslot[row] = (int)rsub[t];
+    roff[row]  = rosub[t];
+}
+
+// R1b(spec85,RETRY2=1):单 block 融合 kernel,替代 retry 路径全部 thrust 调用——R1 v1 教训:
+// thrust sort/scan 每调用临时 cudaMalloc,legacy 分配器下同步百 µs 级,是 retry 相位真凶。
+// 一次完成:①d_rtab = rht 原始序 exclusive scan(全局路按 d_ovf_rows 序消费,语义不变)
+// ②ovf 行稳定升序排名(SMEM,O(n²) 微秒级)③rank 序 rsub exclusive scan ④scatter d_roff/d_rslot
+// ⑤尾值(r_slots/last_h/rt_prev)一次写出 → host 仅 1 次 24B D2H。n ≤ R2B_MAX_N;更大回退 R1 v1 路径。
+#define R2B_MAX_N 1024
+template <int TPB>
+__global__ void retry_fused_off_kernel(
+    const int *rows, int n, const int *flop, int ncols,
+    const long long *rht, long long *rtab,
+    int *rslot, long long *roff, long long *tails)
+{
+    using BlockScanLL = cub::BlockScan<long long, TPB>;
+    __shared__ typename BlockScanLL::TempStorage ts;
+    __shared__ int s_rows[R2B_MAX_N];
+    __shared__ int s_rsub[R2B_MAX_N];    // rank 序 rsub
+    __shared__ int s_rbyr[R2B_MAX_N];    // rank 序行号
+    constexpr int IPT = (R2B_MAX_N + TPB - 1) / TPB;
+    int tid = threadIdx.x;
+    for (int t = tid; t < n; t += blockDim.x) s_rows[t] = rows[t];
+    __syncthreads();
+    // ① 稳定排名(行号升序)+ 按 rank 摆 rsub/行号
+    for (int t = tid; t < n; t += blockDim.x) {
+        int v = s_rows[t], r = 0;
+        for (int u = 0; u < n; u++) r += (s_rows[u] < v) || (s_rows[u] == v && u < t);
+        long long f = flop[v]; if (f > ncols) f = ncols;
+        s_rbyr[r] = v; s_rsub[r] = (int)f;
+    }
+    __syncthreads();
+    // ② rht 原始序 exclusive scan → rtab
+    { long long a[IPT]; int k = 0;
+      for (int t = tid * IPT; t < tid * IPT + IPT; t++) a[k++] = (t < n) ? rht[t] : 0;
+      BlockScanLL(ts).ExclusiveSum(a, a);
+      for (int t = tid * IPT, k = 0; t < tid * IPT + IPT; t++, k++) if (t < n) rtab[t] = a[k];
+    }
+    __syncthreads();
+    // ③ rank 序 scan → roff/rslot 散射 ④ 尾值
+    { long long a[IPT], tot = 0; int k = 0;
+      for (int t = tid * IPT; t < tid * IPT + IPT; t++) a[k++] = (t < n) ? (long long)s_rsub[t] : 0;
+      BlockScanLL(ts).ExclusiveSum(a, a, tot);
+      for (int t = tid * IPT, k = 0; t < tid * IPT + IPT; t++, k++)
+          if (t < n) { int row = s_rbyr[t]; rslot[row] = s_rsub[t]; roff[row] = a[k]; }
+      if (tid == 0) { tails[0] = tot; tails[1] = rht[n - 1]; tails[2] = rtab[n - 1]; }
+    }
 }
 
 // compact:每行 row_nnz 项从 tmp(row_off 起)拷到连续 CSR(C_row_ptr 起)
@@ -3874,6 +4022,15 @@ static void hash_product(
     unsigned long long *rk = nullptr, *rk2 = nullptr;
     double *rv = nullptr, *rv2 = nullptr;
     void *rct = nullptr;
+    // R1d(spec85,RETRY2=1):持久 retry arena——legacy 分配器下 arena+A_rows 级 allocs ≈200µs/轮
+    // (R0/R1c 解剖定谳的剩余大头);hash_product 内跨轮复用惰性扩容;收尾三处 free 按
+    // s_r2_arena_active 卫兵跳过(进程结束 OS 回收)。分流段 pinned 双读同批(s_hf/s_hr)。
+    static unsigned long long *s_rk = nullptr; static double *s_rv = nullptr;
+    static int *s_rtc = nullptr; static double *s_rtv = nullptr;
+    static long long s_cap_k = 0, s_cap_tc = 0;
+    static int *s_rslot_p = nullptr; static long long *s_roff_p = nullptr; static int s_arows_p = 0;
+    static int *s_hf = nullptr, *s_hr = nullptr; static int s_hpin_cap = 0;
+    static bool s_r2_arena_active = false;
     unsigned long long *d_tmp_key; double *d_tmp_val;
     // (tmp 分配挪到 binning/方案5 之后:dense 行直写不占 gapped 槽 → 缩容 Σest_dense,见 tmp_slots)
     // d_val(C_val)现 alias 进连续 dC(compact+sort 直写,见 cnnz_scan 后),不再单独分配/释放。
@@ -4784,34 +4941,107 @@ static void hash_product(
             dbg("[hash] row-retry: %d 行 → flop 定表重跑\n", h_ovf);
             prof("retry", [&]{
                 CHECK_CUDA(cudaMemset(d_overflow, 0, sizeof(int)));   // 清 accumulate 的旧标志;不可重试行会重置
+                dbg("[rtprof] 2 memset_overflow\n");   // R0:run_retry 编排队分解(spec85,dbg 时戳差=步耗时)
                 d_rht  = decltype(d_rht)(dev_alloc(h_ovf * sizeof(long long)));
                 d_rtab = decltype(d_rtab)(dev_alloc((h_ovf + 1) * sizeof(long long)));
                 retry_prep_kernel<<<(h_ovf + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
                     d_ovf_rows, h_ovf, d_flop, d_rht, d_row_ovf, d_overflow, A_cols);
-                thrust::exclusive_scan(thrust::device_ptr<long long>(d_rht),
-                                       thrust::device_ptr<long long>(d_rht + h_ovf),
-                                       thrust::device_ptr<long long>(d_rtab));
-                // 重试区槽位(按行 id;非重试行 0)
-                d_rslot = decltype(d_rslot)(dev_alloc(A_rows * sizeof(int)));
-                CHECK_CUDA(cudaMemset(d_rslot, 0, (size_t)A_rows * sizeof(int)));
-                retry_slot_kernel<<<(h_ovf + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_ovf_rows, h_ovf, d_flop, d_rslot, A_cols);
-                d_roff = decltype(d_roff)(dev_alloc((A_rows + 1) * sizeof(long long)));
-                CHECK_CUDA(cudaMemset(d_roff, 0, sizeof(long long)));
-                thrust::inclusive_scan(thrust::make_transform_iterator(thrust::device_ptr<int>(d_rslot), ToLL()),
-                                       thrust::make_transform_iterator(thrust::device_ptr<int>(d_rslot + A_rows), ToLL()),
-                                       thrust::device_ptr<long long>(d_roff + 1));   // Fix#3(审查):int 累加 2^31 回绕,同 est_scan 坑
-                long long r_slots;
-                CHECK_CUDA(cudaMemcpy(&r_slots, d_roff + A_rows, sizeof(long long), cudaMemcpyDeviceToHost));
-                if (r_slots > 0) {
-                    // 表 arena 总量 = rtab[h_ovf-1] + rht[h_ovf-1](exclusive scan 只写 [0..h_ovf-1])
-                    long long last_h, rt_prev;
+                static int g_retry2 = -1;   // R1b:提前解析(prep 的 thrust scan 也要按它让路)
+                if (g_retry2 < 0) { const char *e2 = getenv("RETRY2"); g_retry2 = (e2 && *e2) ? 1 : 0; }
+                if (!g_retry2 || h_ovf > R2B_MAX_N)   // fused kernel 兼做 rtab scan
+                    thrust::exclusive_scan(thrust::device_ptr<long long>(d_rht),
+                                           thrust::device_ptr<long long>(d_rht + h_ovf),
+                                           thrust::device_ptr<long long>(d_rtab));
+                // 重试区槽位(按行 id;非重试行 0)。
+                // RETRY2=1 子集快路(spec85 R1):排序 ovf 子集+子集 scan+scatter 写 d_roff/d_rslot
+                // + 4 读合批 1 次 sync,替代全 A_rows memset+inclusive_scan+3 次阻塞 D2H(R0 解剖 ~195μs)
+                // (g_retry2 已在 prep 段解析)
+                long long r_slots = 0, last_h = 0, rt_prev = 0;
+                if (!g_retry2) {
+                    d_rslot = decltype(d_rslot)(dev_alloc(A_rows * sizeof(int)));
+                    CHECK_CUDA(cudaMemset(d_rslot, 0, (size_t)A_rows * sizeof(int)));
+                    retry_slot_kernel<<<(h_ovf + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_ovf_rows, h_ovf, d_flop, d_rslot, A_cols);
+                    dbg("[rtprof] 3 prep_scan+rslot(全A_rows memset %d)\n", A_rows);
+                    d_roff = decltype(d_roff)(dev_alloc((A_rows + 1) * sizeof(long long)));
+                    CHECK_CUDA(cudaMemset(d_roff, 0, sizeof(long long)));
+                    thrust::inclusive_scan(thrust::make_transform_iterator(thrust::device_ptr<int>(d_rslot), ToLL()),
+                                           thrust::make_transform_iterator(thrust::device_ptr<int>(d_rslot + A_rows), ToLL()),
+                                           thrust::device_ptr<long long>(d_roff + 1));   // Fix#3(审查):int 累加 2^31 回绕,同 est_scan 坑
+                    CHECK_CUDA(cudaMemcpy(&r_slots, d_roff + A_rows, sizeof(long long), cudaMemcpyDeviceToHost));
+                    dbg("[rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1\n");
                     CHECK_CUDA(cudaMemcpy(&last_h, d_rht + (h_ovf - 1), sizeof(long long), cudaMemcpyDeviceToHost));
                     CHECK_CUDA(cudaMemcpy(&rt_prev, d_rtab + (h_ovf - 1), sizeof(long long), cudaMemcpyDeviceToHost));
+                } else if (h_ovf <= R2B_MAX_N) {
+                    // R1b fused:排序+双 scan+scatter+尾值,单 kernel 单 D2H,零 thrust 零临时分配
+                    static long long *d_r2tails = nullptr;
+                    if (!d_r2tails) d_r2tails = (long long*)dev_alloc(3 * sizeof(long long));
+                    if (A_rows > s_arows_p) {   // R1d:A_rows 级两数组持久
+                        if (s_rslot_p) { dev_free(s_rslot_p); dev_free(s_roff_p); }
+                        s_rslot_p = (int*)dev_alloc((size_t)A_rows * sizeof(int));
+                        s_roff_p = (long long*)dev_alloc((size_t)(A_rows + 1) * sizeof(long long));
+                        s_arows_p = A_rows;
+                    }
+                    d_rslot = s_rslot_p;        // 仅 ovf 条目有效
+                    d_roff  = s_roff_p;         // 仅 ovf 条目被读
+                    retry_fused_off_kernel<256><<<1, 256>>>(
+                        d_ovf_rows, h_ovf, d_flop, A_cols, d_rht, d_rtab, d_rslot, d_roff, d_r2tails);
+                    dbg("[rtprof] 3f fused sort+双scan+scatter(n=%d)\n", h_ovf);
+                    long long h3[3];
+                    CHECK_CUDA(cudaMemcpy(h3, d_r2tails, 3 * sizeof(long long), cudaMemcpyDeviceToHost));
+                    r_slots = h3[0]; last_h = h3[1]; rt_prev = h3[2];
+                    dbg("[rtprof] 4f 单次 24B D2H(r_slots=%lld)\n", r_slots);
+                } else {
+                    // 表 arena 总量 = rtab[h_ovf-1] + rht[h_ovf-1](exclusive scan 只写 [0..h_ovf-1])
+                    int *rsort = (int*)dev_alloc((size_t)h_ovf * sizeof(int));
+                    CHECK_CUDA(cudaMemcpy(rsort, d_ovf_rows, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToDevice));
+                    thrust::sort(thrust::device_ptr<int>(rsort), thrust::device_ptr<int>(rsort + h_ovf));
+                    long long *rsub  = (long long*)dev_alloc((size_t)h_ovf * sizeof(long long));
+                    long long *rosub = (long long*)dev_alloc((size_t)h_ovf * sizeof(long long));
+                    retry_rsub_gather_kernel<<<(h_ovf + 127) / 128, 128>>>(rsort, h_ovf, d_flop, rsub, A_cols);
+                    thrust::exclusive_scan(thrust::device_ptr<long long>(rsub),
+                                           thrust::device_ptr<long long>(rsub + h_ovf),
+                                           thrust::device_ptr<long long>(rosub));
+                    d_rslot = s_rslot_p ? s_rslot_p : decltype(d_rslot)(dev_alloc(A_rows * sizeof(int)));        // R1d 持久(仅 ovf 条目有效)
+                    d_roff  = s_roff_p ? s_roff_p : decltype(d_roff)(dev_alloc((A_rows + 1) * sizeof(long long)));   // 仅 ovf 条目被读
+                    if (!s_rslot_p) { s_rslot_p = d_rslot; s_roff_p = d_roff; s_arows_p = A_rows; }
+                    retry_suboff_scatter_kernel<<<(h_ovf + 127) / 128, 128>>>(rsort, h_ovf, rosub, rsub, d_rslot, d_roff);
+                    dbg("[rtprof] 3r 子集路 sort+scan+scatter(n=%d)\n", h_ovf);
+                    // 4 尾读合批:总量=rosub尾+rsub尾;rht/rtab 尾供 arena 定容
+                    long long h4[4];
+                    CHECK_CUDA(cudaMemcpyAsync(&h4[0], rsub + h_ovf - 1, sizeof(long long), cudaMemcpyDeviceToHost, 0));
+                    CHECK_CUDA(cudaMemcpyAsync(&h4[1], rosub + h_ovf - 1, sizeof(long long), cudaMemcpyDeviceToHost, 0));
+                    CHECK_CUDA(cudaMemcpyAsync(&h4[2], d_rht + h_ovf - 1, sizeof(long long), cudaMemcpyDeviceToHost, 0));
+                    CHECK_CUDA(cudaMemcpyAsync(&h4[3], d_rtab + h_ovf - 1, sizeof(long long), cudaMemcpyDeviceToHost, 0));
+                    CHECK_CUDA(cudaStreamSynchronize(0));
+                    r_slots = h4[0] + h4[1];   // Σ子集槽位(exclusive_scan 补末元)
+                    last_h = h4[2]; rt_prev = h4[3];
+                    dbg("[rtprof] 4r 合批读回 4async→1sync\n");
+                    dev_free(rsort); dev_free(rsub); dev_free(rosub);
+                }
+                if (r_slots > 0) {
                     long long rt_total = rt_prev + last_h;
-                    rtc = decltype(rtc)(dev_alloc((size_t)rt_total * sizeof(int)));
-                    rtv = decltype(rtv)(dev_alloc((size_t)rt_total * sizeof(double)));
-                    rk  = decltype(rk)(dev_alloc((size_t)r_slots * sizeof(unsigned long long)));
-                    rv  = decltype(rv)(dev_alloc((size_t)r_slots * sizeof(double)));
+                    if (g_retry2) {   // R1d:持久 arena 惰性扩容,免每轮 4 次 alloc
+                        s_r2_arena_active = true;
+                        if (rt_total > s_cap_tc) {
+                            if (s_rtc) { dev_free(s_rtc); dev_free(s_rtv); }
+                            s_rtc = (int*)dev_alloc((size_t)rt_total * sizeof(int));
+                            s_rtv = (double*)dev_alloc((size_t)rt_total * sizeof(double));
+                            s_cap_tc = rt_total;
+                        }
+                        if (r_slots > s_cap_k) {
+                            if (s_rk) { dev_free(s_rk); dev_free(s_rv); }
+                            s_rk = (unsigned long long*)dev_alloc((size_t)r_slots * sizeof(unsigned long long));
+                            s_rv = (double*)dev_alloc((size_t)r_slots * sizeof(double));
+                            s_cap_k = r_slots;
+                        }
+                        rtc = s_rtc; rtv = s_rtv; rk = s_rk; rv = s_rv;
+                    } else {
+                        rtc = decltype(rtc)(dev_alloc((size_t)rt_total * sizeof(int)));
+                        rtv = decltype(rtv)(dev_alloc((size_t)rt_total * sizeof(double)));
+                        rk  = decltype(rk)(dev_alloc((size_t)r_slots * sizeof(unsigned long long)));
+                        rv  = decltype(rv)(dev_alloc((size_t)r_slots * sizeof(double)));
+                    }
+                    dbg("[rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=%lld 槽\n", rt_total);
                     // docs/54:retry 免排序(仅 h_ovf<1000;web-Google 8720 行 +16% 教训 = 大集 csort 慢于 cub)
                     // v40 SMEM 重试车(study/16 ①:溢出载体——治"保险系数被迫开大"的根)。
                     // 按行分流:2×flop ≤ HASH_CAP ∧ flop ≥ 2^10 的行走 hash_spa(SMEM 原子,单批统一
@@ -4822,20 +5052,36 @@ static void hash_product(
                     int h_ovf_g = h_ovf;
                     std::vector<int> rows_s, rows_g;   // v40 按行分流结果,提升到两层可见:鲸鱼子集重建
                     long long mf = 0;                  // 必须复用 rows_g 本体(study/17 雷:二次重筛条件
+                    long long mf_g = 0;                // R1c:全局路最大 flop → S 段数
                                                        // ≠ 分流补集 → h_ovf_g > rg.size() → 拷未初始化尾段
                                                        // = 垃圾行号 → retry_prep flop[]/row_ovf[] 越界读写)
                     if (g_retry_smem && h_ovf > 0) {
                         int *d_ovf_flop = decltype(d_ovf_flop)(dev_alloc((size_t)h_ovf * sizeof(int)));
                         gather_flop_kernel<<<(h_ovf + 255) / 256, 256>>>(d_ovf_rows, h_ovf, d_flop, d_ovf_flop, A_cols);
                         std::vector<int> hf(h_ovf), hr(h_ovf);
-                        CHECK_CUDA(cudaMemcpy(hf.data(), d_ovf_flop, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
-                        CHECK_CUDA(cudaMemcpy(hr.data(), d_ovf_rows, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
+                        if (g_retry2) {
+                            if (h_ovf > s_hpin_cap) {   // R1d:分流双读 pinned 合批(2 阻塞 drain→1);仅刀路径
+                                if (s_hf) { cudaFreeHost(s_hf); cudaFreeHost(s_hr); }
+                                CHECK_CUDA(cudaMallocHost(&s_hf, (size_t)h_ovf * sizeof(int)));
+                                CHECK_CUDA(cudaMallocHost(&s_hr, (size_t)h_ovf * sizeof(int)));
+                                s_hpin_cap = h_ovf;
+                            }
+                            CHECK_CUDA(cudaMemcpyAsync(s_hf, d_ovf_flop, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost, 0));
+                            CHECK_CUDA(cudaMemcpyAsync(s_hr, d_ovf_rows, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost, 0));
+                            CHECK_CUDA(cudaStreamSynchronize(0));
+                            std::copy(s_hf, s_hf + h_ovf, hf.begin());
+                            std::copy(s_hr, s_hr + h_ovf, hr.begin());
+                        } else {   // 原路径原样(RETRY2=0 零触碰纪律)
+                            CHECK_CUDA(cudaMemcpy(hf.data(), d_ovf_flop, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
+                            CHECK_CUDA(cudaMemcpy(hr.data(), d_ovf_rows, (size_t)h_ovf * sizeof(int), cudaMemcpyDeviceToHost));
+                        }
+                        dbg("[rtprof] 6 gather_flop+2×D2H(分流)\n");
                         dev_free(d_ovf_flop);
                         for (int t = 0; t < h_ovf; t++) {
                             // hf≈0 = 异源溢出标记(dense 组合路径,flop 无效)→ 留老路吃默认大表;
                             // 正常 hash 行:2×flop ≤ HASH_CAP 且 flop ≥ 2^10 才上 SMEM 车
                             if (hf[t] >= (1 << 10) && 2LL * hf[t] <= HASH_CAP) { rows_s.push_back(hr[t]); mf = std::max(mf, (long long)hf[t]); }
-                            else rows_g.push_back(hr[t]);
+                            else { rows_g.push_back(hr[t]); mf_g = std::max(mf_g, (long long)hf[t]); }   // R1c:鲸鱼段数定 S
                         }
                         int h_ovf_s = (int)rows_s.size(); h_ovf_g = (int)rows_g.size();
                         if (h_ovf_s) {
@@ -4880,15 +5126,33 @@ static void hash_product(
                                                    thrust::device_ptr<long long>(rtab_g));
                             glb_rows = d_rows_g; glb_n = h_ovf_g;
                         }
-                        hash_global_kernel<<<glb_n, HASH_BLOCK>>>(
-                            dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
-                            glb_rows, glb_n, rht_g, rtab_g, rtc, rtv,
-                            d_roff, d_rslot, r_slots, rk, rv, d_row_nnz, d_overflow,
-                            d_ovf_rows, d_ovf_cnt, d_row_ovf);
+                        int S_r2 = 1;
+                        if (g_retry2 && mf_g > 4096)
+                            S_r2 = (int)std::min<long long>(8, (mf_g + 4095) / 4096);   // R1c:鲸鱼行 k 值域 S 段并行
+                        if (S_r2 > 1) {
+                            CHECK_CUDA(cudaMemsetAsync(rtc, 0xff, (size_t)rt_total * sizeof(int), 0));   // col=-1
+                            CHECK_CUDA(cudaMemsetAsync(rtv, 0, (size_t)rt_total * sizeof(double), 0));
+                            dim3 g3(glb_n, S_r2);
+                            retry2_gprobe_kernel<<<g3, HASH_BLOCK>>>(
+                                dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
+                                glb_rows, glb_n, S_r2, rht_g, rtab_g, rtc, rtv,
+                                d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf);
+                            retry2_gextract_kernel<<<glb_n, HASH_BLOCK>>>(
+                                glb_rows, glb_n, rht_g, rtab_g, rtc, rtv,
+                                d_roff, d_rslot, rk, rv, d_row_nnz, d_overflow);
+                            dbg("[rtprof] 7g 全局路拆段 S=%d(n=%d)\n", S_r2, glb_n);
+                        } else {
+                            hash_global_kernel<<<glb_n, HASH_BLOCK>>>(
+                                dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
+                                glb_rows, glb_n, rht_g, rtab_g, rtc, rtv,
+                                d_roff, d_rslot, r_slots, rk, rv, d_row_nnz, d_overflow,
+                                d_ovf_rows, d_ovf_cnt, d_row_ovf);
+                        }
                     }
                     // retry_prep 遇不可重试行会重置 overflow → 仍有则整阵回退
                     d_retry_rows = d_ovf_rows; d_retry_n = h_ovf;
                     d_retry_off = d_roff; d_retry_key = rk; d_retry_val = rv;
+                    dbg("[rtprof] 7 车发射+全局路完成\n");
                     if (retry_sortfree) {
                         d_retry_needs_sort = true;
                         dbg("[hash] docs/54 retry 免排序: %d 行(r_slots=%lld)→csort\n", h_ovf, r_slots);
@@ -4910,6 +5174,7 @@ static void hash_product(
                         d_retry_needs_sort = false;
                     }
                 }
+                dbg("[rtprof] 8 retry排序段完成\n");
             });
         }
     };  // D5H:count/legacy 的 ovf 都在 scan 前覆盖(retry 产精确 row_nnz;MODE=2 跳过 ovf 行)
@@ -4962,8 +5227,11 @@ static void hash_product(
     if (!g_d5h_on && overflow) {
         fprintf(stderr, "[hash] OVERFLOW: 某行 distinct 列 > HASH_CAP=%d → 回退 merge(dispatcher 处理)\n", HASH_CAP);
         *C_buffer_out = nullptr; *C_rows = A_rows; *C_cols = A_cols; *C_nnz = -1;
-        dev_free(rtc); dev_free(rtv); dev_free(rk); dev_free(rv); dev_free(rk2); dev_free(rv2); dev_free(rct);   // docs/21 Fix0
-        dev_free(d_rht); dev_free(d_rtab); dev_free(d_rslot); dev_free(d_roff); dev_free(d_rsb); dev_free(d_rse);
+        if (!s_r2_arena_active) { dev_free(rtc); dev_free(rtv); dev_free(rk); dev_free(rv); }   // R1d:持久 arena 不逐轮 free
+        dev_free(rk2); dev_free(rv2); dev_free(rct);   // docs/21 Fix0
+        dev_free(d_rht); dev_free(d_rtab);
+        if (!s_r2_arena_active) { dev_free(d_rslot); dev_free(d_roff); }
+        dev_free(d_rsb); dev_free(d_rse);
         dev_free(dA); dev_free(d_off); dev_free(d_row_nnz);
         dev_free(d_overflow); dev_free(d_tmp_key); dev_free(d_tmp_val);
         dev_free(d_bkid); dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos); dev_free(d_sort); dev_free(d_est); dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); dev_free(d_gv); dev_free(d_gv_off);
@@ -5003,8 +5271,11 @@ static void hash_product(
                 C_nnz_result, total_est, dense_nr, dense_nnz_sum, d5h_rows, d5h_nnz_sum,
                 tmp_slots, (long long)C_nnz_result - dense_nnz_sum - d5h_nnz_sum);
         *C_buffer_out = nullptr; *C_rows = A_rows; *C_cols = A_cols; *C_nnz = -1;
-        dev_free(rtc); dev_free(rtv); dev_free(rk); dev_free(rv); dev_free(rk2); dev_free(rv2); dev_free(rct);   // docs/21 Fix0
-        dev_free(d_rht); dev_free(d_rtab); dev_free(d_rslot); dev_free(d_roff); dev_free(d_rsb); dev_free(d_rse);
+        if (!s_r2_arena_active) { dev_free(rtc); dev_free(rtv); dev_free(rk); dev_free(rv); }   // R1d:持久 arena 不逐轮 free
+        dev_free(rk2); dev_free(rv2); dev_free(rct);   // docs/21 Fix0
+        dev_free(d_rht); dev_free(d_rtab);
+        if (!s_r2_arena_active) { dev_free(d_rslot); dev_free(d_roff); }
+        dev_free(d_rsb); dev_free(d_rse);
         dev_free(dA); dev_free(d_off); dev_free(d_row_nnz);
         dev_free(d_overflow); dev_free(d_tmp_key); dev_free(d_tmp_val);
         dev_free(d_bkid); dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos); dev_free(d_sort); dev_free(d_est); dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); dev_free(d_gv); dev_free(d_gv_off);
@@ -5408,8 +5679,11 @@ static void hash_product(
     outscan("post-compact");
     // docs/21 Fix0:重试中间缓冲(compact 消费完)立即释放 —— 此前从不释放,高 flop 阵每调用
     // 泄漏 r_slots×32B + rt_total×12B,warmup 多轮累加直接 OOM(rajat 类 DNF 帮凶)
-    dev_free(rtc); dev_free(rtv); dev_free(rk); dev_free(rv); dev_free(rk2); dev_free(rv2); dev_free(rct);
-    dev_free(d_rht); dev_free(d_rtab); dev_free(d_rslot); dev_free(d_roff); dev_free(d_rsb); dev_free(d_rse);
+    if (!s_r2_arena_active) { dev_free(rtc); dev_free(rtv); dev_free(rk); dev_free(rv); }   // R1d:持久 arena 不逐轮 free
+    dev_free(rk2); dev_free(rv2); dev_free(rct);
+    dev_free(d_rht); dev_free(d_rtab);
+    if (!s_r2_arena_active) { dev_free(d_rslot); dev_free(d_roff); }
+    dev_free(d_rsb); dev_free(d_rse);
 
 // (hash_check_sorted 校验已移除:DBG 计时必需但校验使命完成,免 43% 墙钟税)
 
