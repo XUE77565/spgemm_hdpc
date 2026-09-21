@@ -1,0 +1,50 @@
+# dense 机制 SOTA 学习档案(study/25,09-21 晚;单发#26;用户钦定"学习 ocean 的 dense+其他 SpGEMM")
+
+> 铁律执行:只吸收机理不 copy 形态;判据来源=决赛记分(每人口 5-8×,study/24 §2.5b)。
+
+## §1 ocean denseNumericKernel 解剖(AccumulatorDense.cuh 228-346)
+
+**形态**(单窗档):SMEM = val 8B/列 + **bitmap 1bit/列** + prefix 1/32 列 ≈ **8.06B/列**;
+单窗覆盖全 span(binning 保证:档宽={236..7277} 同我 v33 公式)——**无窗循环/无游标/无二分**;
+G-group=localLoadBalance(=我方 LLB 已移植已测中性);提取=denseCompact(bitmap→prefix→
+**精确座位直写**);溢出=in-flight 旗+buffer 预订(≈我 RETRY2.0 同代)。
+
+**55-70ns/行的成本构成(定谳)**:
+1. **人口窄**(est 中位 145-673 档):窗小、一遍完
+2. 单窗无窗机器(我方 800ns/行的大头=窗循环/清窗/游标机制税,服务宽行的必要税)
+3. 1-bit bitmap→提取免排序+直写
+4. QUERY_BITMAP(读后写跳过多余 atomicOr)微优化
+
+**关键判读:他们的便宜一半来自"行本来就窄"**(路由把 est≤331/673/1327 的窄行判给 dense;
+我方 hash 梯扣住这些行)——**人口再成分歧是每行成本差的主因**,与决赛代理口径的 profile 差
+(彼收最窄行我收最肥行)互证。
+
+**SubWarpDispatcher(443-)**:tiny 行多行打包进一块(≤32 线程/行)——与我方 BIN_BATCH
+(est≤64 打包)同族,规模边界不同(彼至 est~331)。
+**denseNumericIterKernel(611-)**:多窗迭代族(宽行用)=与我 cursor 同生态位(此前已对拍)。
+
+## §2 外部 SpGEMM dense 机制盘点(archives:external_sota/+inno 文献轮 12/28/33/36/73)
+
+| 机理 | 出处 | 先例状态 | 我方状态 |
+|---|---|---|---|
+| bitmap 累加器(1bit 标记) | Gustavson 系/MH-SpGEMM bitmap-symbolic+bitonic(inno/28) | **公开先例,可引** | dense_struct 8.25B/列(val+字节 flag)——**flag 未压到 1bit** |
+| bitmap→prefix→精确座位直写 | 经典/MH-SpGEMM | 公开 | 方案5 直写有(dense 行);dense_struct 提取待核 |
+| 读后写跳 RED | 常见微优化 | 公开 | 无(可 3 行吸收) |
+| 行打包(tiny 行/块) | bhSparse/彼 SubWarp | 公开 | **已有**(BIN_BATCH/BATCH2 est≤64/256) |
+| 跨行块内排序提取 | MH-SpGEMM bitonic | 公开 | csort 家族(更强) |
+| 单遍 symbolic-numeric 融合 | HSMU/MMSpGEMM 族 | 公开 | 方案5/count-direct 融合(结构件) |
+| 堆归并/tiling 累加 | bhSparse/TileSpGEMM | 公开 | merge 线(另有生态位) |
+
+**查重结论:ocean 的 dense 无一是形态原创**——全是公开机理的工程咬合(档×块×驻卡联动);
+他们的真功夫=**binning 把每行送进恰好装得下的一遍窗**。学习安全度高。
+
+## §3 spec88 刀口候选重排(按学习重排,吸收优先级)
+
+1. **K1 路由边界吸收(最大头)**:窄 est 行(145-1327 带)从 hash 梯改判 dense 族——
+   纯 dispatcher 改动(env 门可试),不动 kernel;预期把"每人口差"的主成分(人口 profile)打掉
+2. **K2 flag 1B→1bit(dense_struct+direct 窗)**:窗容量 ×~1.12+SMEM/L2 流量降;提取换
+   bitmap+prefix 直写(方案5 形态已有,接缝干净)
+3. **K3 QUERY_BITMAP 微优化**(3 行)
+4. 不学:窗循环/游标(那是我们的机制胜点,彼没有);Iter 族(c-64 已赢)
+5. spec88 形态:K1(env 门路由实验先行)+K2(kernel 小刀)组合,验收=in-2004 dense 族
+   同人口成本 800→<300ns/行 + 系统差距 1.56× 收敛
