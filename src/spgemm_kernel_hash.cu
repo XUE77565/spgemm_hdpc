@@ -4064,6 +4064,7 @@ static void hash_product(
 
     // Stage 2: GPU 端分桶(全 device,无 host 往返)+ 预分配大 buffer(零 per-bucket malloc/free)
     int *d_row_nnz; d_row_nnz = decltype(d_row_nnz)(dev_alloc(A_rows * sizeof(int)));
+    CHECK_CUDA(cudaMemset(d_row_nnz, 0, (size_t)A_rows * sizeof(int)));   /* R1:无条件清零——off 态各写者全覆盖=零行为差;CNT_FUSE 态消垃圾项回绕(int32 溢出病根) */
     int *d_overflow; d_overflow = decltype(d_overflow)(dev_alloc(sizeof(int)));
     // 行级重试(2026-08-26,Ocean out_overflow_row_ids 同款):欠估行收集 → flop 定表重跑 → d_off[i] 改指重试区
     int *d_ovf_rows; d_ovf_rows = decltype(d_ovf_rows)(dev_alloc(A_rows * sizeof(int)));
