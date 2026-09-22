@@ -1082,7 +1082,8 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
     int pf_on = 0,                           // spec86-B:书签预取(窗尾 touch 下窗链头进 L2;CURSOR_PF)
     int batch_on = 0,                        // spec89-#1:批量装载 2 发在飞(CURSOR_BATCH;默认关)
     int *tmp_col = nullptr, double *tmp_val = nullptr,   // spec89-#4'-L1:est-gapped tmp 输出对(非空=写 tmp 而非 dC 终态)
-    const long long *gap_off = nullptr)      // #4'-L1:gapped 行基址(d_off);null=旧路逐位不变
+    const long long *gap_off = nullptr,     // #4'-L1:gapped 行基址(d_off);null=旧路逐位不变
+    int *drop_cnt = nullptr)                // #4'-fix:静默丢检出器(免计数态 rank>=cap 即丢;host 读取判废
 {
     int i = bucket_rows ? bucket_rows[blockIdx.x] : blockIdx.x;
     if (i >= A_rows) return;
@@ -1170,7 +1171,7 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
             for (int j = tid; j < w; j += blockDim.x) {
                 if (dflag[j]) {
                     int rank = out + dpref[j];
-                    if (rank >= cap) continue;
+                    if (rank >= cap) { if (drop_cnt) atomicAdd(drop_cnt, 1); continue; }   /* #4'-fix:不许无痕丢 */
                     if (tmp_col) { tmp_col[base + rank] = c0 + j; tmp_val[base + rank] = dval[j]; }
                     else { dC_ci[base + rank] = c0 + j; dC_val[base + rank] = dval[j]; }
                 }
@@ -1297,7 +1298,7 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
             for (int j = tid; j < w; j += blockDim.x) {
                 if (dflag[j]) {
                     int rank = out + dpref[j];
-                    if (rank >= cap) continue;
+                    if (rank >= cap) { if (drop_cnt) atomicAdd(drop_cnt, 1); continue; }   /* #4'-fix:不许无痕丢 */
                     if (tmp_col) { tmp_col[base + rank] = win_lo + j; tmp_val[base + rank] = dval[j]; }
                     else { dC_ci[base + rank] = win_lo + j; dC_val[base + rank] = dval[j]; }
                 }
@@ -2785,6 +2786,8 @@ __global__ void diter_gapped_copy_kernel(   // spec89-#4'-L2b⑤:CNT_FUSE 老段
     if (t >= n) return;
     int row = rows[t];
     long long src = gap_off[row]; int dst = C_row_ptr[row]; int k = row_nnz[row];
+    int slot = (int)(gap_off[row + 1] - src);            /* #4'-fix2:行槽宽 clamp,防越界读 */
+    if (k > slot) k = slot;
     for (int j = 0; j < k; j++) { out_col[dst + j] = tmp_col[src + j]; out_val[dst + j] = tmp_val[src + j]; }
 }
 
@@ -4037,6 +4040,7 @@ static void hash_product(
     static int g_cnf = -1;   /* spec89-#4': CNT_FUSE=1 (function scope) */
     if (g_cnf < 0) { const char *e6 = getenv("CNT_FUSE"); g_cnf = (e6 && *e6) ? 1 : 0; }
     static int *d_dtmp_col = nullptr; static double *d_dtmp_val = nullptr;   /* #4' L2 */
+    static int *d_drop = nullptr;   /* #4'-fix1:免计数态丢条计数 */
     if (g_cnf && !d_dtmp_col && total_est > 0) {
         d_dtmp_col = (int*)dev_alloc((size_t)(total_est * 2) * sizeof(int));
         d_dtmp_val = (double*)dev_alloc((size_t)(total_est * 2) * sizeof(double));
@@ -5567,7 +5571,8 @@ static void hash_product(
                     (g_cb16 && dB16) ? dB16 : nullptr, g_cpf, g_cbat,
                     (g_cnf && d_dtmp_col) ? d_dtmp_col : nullptr,
                     (g_cnf && d_dtmp_col) ? d_dtmp_val : nullptr,
-                    (g_cnf && d_dtmp_col) ? d_off : nullptr);   // spec89-#4'-L2a:tmp 三参(默认 null=旧路;L2b 相位重排后才有意义)
+                    (g_cnf && d_dtmp_col) ? d_off : nullptr,   // spec89-#4'-L2a:tmp 三参(默认 null=旧路)
+                    (g_cnf && d_dtmp_col) ? d_drop : nullptr);   // #4'-fix1:丢条检出器
                 CHECK_CUDA(cudaGetLastError());
             }
             if (d_rows_sorted) dev_free(d_rows_sorted);
@@ -5679,7 +5684,13 @@ static void hash_product(
         }
     }
         CHECK_CUDA(cudaMemcpy(&C_nnz_result, dC_rp + A_rows, sizeof(int), cudaMemcpyDeviceToHost));
-        if ((long long)C_nnz_result > total_est * 2) { fprintf(stderr, "[hash] CNT_FUSE underflow: C=%d\n", C_nnz_result); }
+        int h_drop = 0;
+        if (d_drop) CHECK_CUDA(cudaMemcpy(&h_drop, d_drop, sizeof(int), cudaMemcpyDeviceToHost));
+        if (g_cnf && !d_drop) { d_drop = (int*)dev_alloc(sizeof(int)); CHECK_CUDA(cudaMemset(d_drop, 0, sizeof(int))); }
+        if ((long long)C_nnz_result > total_est * 2 || h_drop > 0) {
+            fprintf(stderr, "[hash] CNT_FUSE INVALID: C=%lld drops=%d — 输出不可信,本刀此阵禁用\n", (long long)C_nnz_result, h_drop);
+            C_nnz_result = -1;   /* 判废标记:门/屏见 -1 即弃 */
+        }
         /* L2b-5: old-segment squeeze copy (tmp->dC) */
         if (g_cnf && h_big_off > 0 && d_rows_sorted) {
             diter_gapped_copy_kernel<<<(h_big_off + 255) / 256, 256>>>(

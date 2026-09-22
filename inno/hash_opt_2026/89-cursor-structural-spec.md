@@ -72,3 +72,12 @@
   nnz>est 检出->溢出兜底,不许静默丢)+copy 核 clamp+dC 按 flop 封顶
 - 杜绝红线(新增):1)先门后屏(值级0<->1+nnz 总对账+有序+memcheck 含代表大阵,全绿才许性能屏)
   2)电池脚本每轮查 journal Xid(见 spgemm 进程名即停) 3)大赢面(>15%)自动触发值级复审
+
+## CNT_FUSE 破损定谳:int32 溢出实锤(09-22 13:0x)
+
+- crankseg_2 on=CNT_FUSE 跑出 **C_nnz=-1792527655(负数=int32 回绕)**——晚 cnnz 全阵 scan 求和
+  包含未覆盖/陈旧 row_nnz 的垃圾项→回绕→负偏移进 compact=**Xid 31 VIRT_WRITE 完整因果链**
+  (=wedge#4 我方越界的病根);Zd_Jac2 off/on nnz 一致(15,374,812)小阵幸存;c-64/in-2004 已验值真赢
+- 修复①②已入库(drop 检出器+copy clamp):c-64/crankseg drop=0=extract 丢不是 crankseg 病根
+- **判定:CNT_FUSE 停补丁化修复,转"破损-需重构"档**(病根=row_nnz 覆盖语义+int64+预 compact bail
+  三件深度件;env 默认关=生产安全,保留 c-64/in-2004 已验赢面作重构后的对照组)
