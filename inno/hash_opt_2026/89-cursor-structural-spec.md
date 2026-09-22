@@ -58,3 +58,17 @@
 - 实施链复盘:L1 双输出脚手架→L2a 布线→L2b 双 cnnz 五接缝(三批+两根因修复:
   row_nnz 条件写残留/dC 尺寸)→L3 激活;沿途 6 个 bug 全被守门/烟拦下(脚手架分级的价值)
 - **CNT_FUSE=1 候默认**(20 阵快屏待跑);cursor 线收官:0.98→0.88;①剩=③创新 kernel
+
+## CNT_FUSE 判决撤销+事故档案(09-22 12:2x,boot -1 journal 实锤)
+
+- 20 阵屏数据全部作废:crankseg -47.4/wb-edu -43.6 等大赢面=丢数据假加速嫌疑(值门未跑
+  先跑了屏=方法论违规,顺序应先门后屏)
+- Xid 实锤:10:59:05 与 11:05:39 两次 Xid 31 pid=spgemm_cct ACCESS_TYPE_VIRT_WRITE
+  (GPU1 b1:00)——CNT_FUSE 刀有真越界写;机理嫌疑=est 低估行 rank>=cap 静默丢 +
+  diter_gapped_copy row_nnz>est 越界读/晚 cnnz C_nnz 超 dC
+- 同 boot 双事件分离:GPU0 GSP 固件死亡(10:57:22,同款 MMU_FAULT->LOCKDOWN,在场 pid 8636
+  非我方)先于我方首错(10:59)——楔死本身非我方触发,但我方越界独立存在
+- CNT_FUSE 状态:已知有 bug,env 冻结;修法候选=低估行强制走溢出路径(免计数下必须有
+  nnz>est 检出->溢出兜底,不许静默丢)+copy 核 clamp+dC 按 flop 封顶
+- 杜绝红线(新增):1)先门后屏(值级0<->1+nnz 总对账+有序+memcheck 含代表大阵,全绿才许性能屏)
+  2)电池脚本每轮查 journal Xid(见 spgemm 进程名即停) 3)大赢面(>15%)自动触发值级复审
