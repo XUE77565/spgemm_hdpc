@@ -81,3 +81,14 @@
 - 修复①②已入库(drop 检出器+copy clamp):c-64/crankseg drop=0=extract 丢不是 crankseg 病根
 - **判定:CNT_FUSE 停补丁化修复,转"破损-需重构"档**(病根=row_nnz 覆盖语义+int64+预 compact bail
   三件深度件;env 默认关=生产安全,保留 c-64/in-2004 已验赢面作重构后的对照组)
+
+## CNT_FUSE 重构设计(09-22 13:3x,#50;病根=garbage row_nnz:dev_alloc 无 memset+融合态覆盖不全→晚 cnnz 求和回绕)
+
+- **R1 覆盖语义**(一轮):d_row_nnz 分配后**无条件 cudaMemset 0**(全阵);direct 两出口已无条件写
+  (1183/1320);未被任何写者覆盖的行=0(空行语义,compact 安全)——一行 host 改动,消"垃圾项"
+- **R2 int64 防护**(一轮):晚 cnnz 的 thrust scan 改 long long 输入视图(或预 cast kernel);
+  C_nnz_result 判废条件:C<0∨C>total_est×2∨drop>0→INVALID
+- **R3 预 compact bail**(一轮):INVALID 判定**提到 copy/compact 发射之前**(现检查在晚 cnnz
+  fprintf 处但 copy 已在 compact 相位内先跑?核实顺序)——拦截后走 underflow bail 模板清理返回,
+  **负偏移永不进写路径**;三件各自独立可验,顺序 R1→R3→R2(R1 消主垃圾源即大概率自愈)
+- 回归对照:c-64(18.34/in-2004 41.90)+Zd(nnz 一致)+crankseg(重构后应=C_nnz 104,590,168 或 INVALID 而非负数)
