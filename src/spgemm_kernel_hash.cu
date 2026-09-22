@@ -5385,8 +5385,9 @@ static void hash_product(
 
     // Stage 4+5+6: per-row compact+sort(BlockRadixSort)替掉 compact+全局 sort+split_key;按 bin 选 config,直写连续 dC
     size_t C_rp_sz  = (A_rows + 1) * sizeof(int);
-    size_t C_ci_sz  = (size_t)C_nnz_result * sizeof(int);
-    size_t C_v_sz   = (size_t)C_nnz_result * sizeof(double);
+    long long C_alloc_n = g_cnf ? (total_est * 2) : (long long)C_nnz_result;   /* #4': 融合态早 cnnz 为垃圾,按 est×2 上界分配(memcheck 越界修) */
+    size_t C_ci_sz  = (size_t)C_alloc_n * sizeof(int);
+    size_t C_v_sz   = (size_t)C_alloc_n * sizeof(double);
     size_t C_rp_al  = ALIGN8(C_rp_sz);
     size_t C_ci_al  = ALIGN8(C_ci_sz);
     size_t C_total  = C_rp_al + C_ci_al + C_v_sz;
