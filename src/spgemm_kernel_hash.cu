@@ -5670,7 +5670,7 @@ static void hash_product(
             int b = 1; while (b < A_rows) b <<= 1;
             scan_inclusive_kernel<int><<<1, b, b * sizeof(int)>>>(d_row_nnz, dC_rp + 1, A_rows);
             /* L2b-5: old-segment squeeze copy (tmp->dC) */
-        if (g_cnf && h_big_off > 0 && d_rows_sorted) {
+        if (g_cnf && h_big_off > 0 && d_rows_sorted && C_nnz_result >= 0) {
             diter_gapped_copy_kernel<<<(h_big_off + 255) / 256, 256>>>(
                 d_rows_sorted, h_big_off, d_off, d_row_nnz, d_dtmp_col, d_dtmp_val, dC_rp, dC_ci, d_val);
         }
@@ -5679,7 +5679,7 @@ static void hash_product(
                                    thrust::device_ptr<int>(d_row_nnz + A_rows),
                                    thrust::device_ptr<int>(dC_rp + 1));
             /* L2b-5: old-segment squeeze copy (tmp->dC) */
-        if (g_cnf && h_big_off > 0 && d_rows_sorted) {
+        if (g_cnf && h_big_off > 0 && d_rows_sorted && C_nnz_result >= 0) {
             diter_gapped_copy_kernel<<<(h_big_off + 255) / 256, 256>>>(
                 d_rows_sorted, h_big_off, d_off, d_row_nnz, d_dtmp_col, d_dtmp_val, dC_rp, dC_ci, d_val);
         }
@@ -5693,7 +5693,7 @@ static void hash_product(
             C_nnz_result = -1;   /* 判废标记:门/屏见 -1 即弃 */
         }
         /* L2b-5: old-segment squeeze copy (tmp->dC) */
-        if (g_cnf && h_big_off > 0 && d_rows_sorted) {
+        if (g_cnf && h_big_off > 0 && d_rows_sorted && C_nnz_result >= 0) {
             diter_gapped_copy_kernel<<<(h_big_off + 255) / 256, 256>>>(
                 d_rows_sorted, h_big_off, d_off, d_row_nnz, d_dtmp_col, d_dtmp_val, dC_rp, dC_ci, d_val);
         }
