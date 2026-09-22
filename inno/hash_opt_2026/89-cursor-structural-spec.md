@@ -92,3 +92,10 @@
   fprintf 处但 copy 已在 compact 相位内先跑?核实顺序)——拦截后走 underflow bail 模板清理返回,
   **负偏移永不进写路径**;三件各自独立可验,顺序 R1→R3→R2(R1 消主垃圾源即大概率自愈)
 - 回归对照:c-64(18.34/in-2004 41.90)+Zd(nnz 一致)+crankseg(重构后应=C_nnz 104,590,168 或 INVALID 而非负数)
+
+## CNT_FUSE 三门全绿重建(09-22 14:4x,R1+R3 后)
+
+- 值级 0↔1:c-64 PASS+**crankseg_2 PASS**(1e-9,R1 修复后首次!)
+- crankseg 有序:OK(104,590,168=与 off 精确同数)
+- memcheck:crankseg 0 errors(Xid 阵洗净)+c-64 早前 0
+- **判定:CNT_FUSE 从"破损"回到"三门全绿";R2(int64 scan)为纵深加固非必需**
