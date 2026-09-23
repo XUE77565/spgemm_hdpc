@@ -1677,7 +1677,14 @@ static inline bool probe_rf_on() {
 // 命中路径零 CAS;空槽才 atomicCAS 占位(占败 = 他人已入他键,前进重探)。该探测模式为领域
 // 公共形态(nsparse kernel_spgemm_hash_s.cu:298-315 / spECK HashMap.cuh 同构先例);散列用
 // 自有 Knuth 乘法常数 2654435761u 全值域映射 + mask 线性探测(pow2 表)。
-template<int MODE, int PROBE_RF = 1>
+template<int MODE, int PROBE_RF = 1, int PROBE_HIST_ON = 0, int VAL_GMEM = 0>
+// PROBE_HIST_ON(spec91 ①:探测计数编译期化):1=仪器态实例(每探测环退出 atomicAdd 计数),
+// 0=生产实例,热路径计数指令整体消除(此前是逐产品运行时 if(probe_hist) 分支)。
+// 仪器态由 MODE=0 主发射点按 d_phist!=nullptr 分支实例化,其余发射点恒生产态。
+// VAL_GMEM(spec91 刀E:值区几何):1=值区在 gmem 池行切片(vg_off[i] 基址,池 host 预清零,
+// 累加 atomicAdd 返回值弃用 → ptxas 出 RED.E.ADD.F64 原生归约一条/乘积,替代 SMEM F64 的
+// ATOMS.CAST.SPIN.64 模拟 5-6 条+热槽重试;SASS 对拍定谳 inno/91 §1.5);0=SMEM sh_val(默认)。
+// 探测/claim 恒在 SMEM sh_col;extract/清零路径经同一指针自动切换,下游零改动。
 
 // __launch_bounds__(1024,2)(09-18,hash_spa 占用抬升实验):REG:40 下 1024thr 档只驻 1 块/SM(50%),
 // 512thr 档 3 块(75%,crankseg 主发射 31,770 块实测 74.7%)。压 ≤32 regs → 1024 档 2 块/512 档 4 块。
@@ -1709,8 +1716,10 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
                                             // min(probes,32) 桶;null=生产零开销。probes=额外步数(0=首发命中)
     int rt_pre_extract = 0,                 // HASH_RT_NOEXTRACT=1:行计时截在探测循环尾(不含 extract),
                                             // 对齐 ocean ROWCYCLES 窗(用户钦定口径 A+ 修正)
-    int extract2 = 0)                       // HASH_EXTRACT=2(spec 81):ht≥512 小行 extract 的 O(d²) count-sort
+    int extract2 = 0,                       // HASH_EXTRACT=2(spec 81):ht≥512 小行 extract 的 O(d²) count-sort
                                             // → 两级计数排序 O(d+1024);0 = legacy(默认)
+    long long vg_base = 0,                  // spec91 刀E(VAL_GMEM=1):本 bin 值池切片基址(发射点按 h_cnt 前缀现算)
+    double *vg_val = nullptr)               // spec91 刀E(VAL_GMEM=1):值池基址(d_gv,host memset 0);每调用重置;行切片 = vg_base + blockIdx.x×ht_size
 {
     int idx = blockIdx.x;
     if (idx >= n_in_bucket) return;
@@ -1724,8 +1733,15 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
 
     extern __shared__ __align__(8) int smem[];
     int   *sh_col = smem;                      // [ht_size]
-    double *sh_val = (double*)(smem + ht_size);  // [ht_size]
-    for (int s = tid; s < ht_size; s += blockDim.x) { sh_col[s] = -1; sh_val[s] = 0.0f; }
+    // spec91 刀E:VAL_GMEM=1 → 值区 = gmem 池块切片(vg_base+blockIdx.x×ht;池 host 预清零,单次使用免核内清)。
+    // ⚠ 累加必须双指针 + 编译期 if 特化:三元合一指针会把状态空间搅成 generic,ptxas 出 ATOMG(带返回
+    // 阻塞)而非 REDG(fire-and-forget)——刀E 全部收益所在。extract 读走 val_rd(generic 读无妨,窗内无读)。
+    double *sh_val = (double*)(smem + ht_size);                                    // SMEM 形态(VG 下仅 clear 分支不触)
+    double *gv_arr = (VAL_GMEM && vg_val) ? vg_val + vg_base + (long long)blockIdx.x * ht_size : nullptr;  // gmem 块切片
+    double *val_rd = VAL_GMEM ? gv_arr : sh_val;                                   // extract/WM 读统一指针
+#define SPA_VAL_ADD(SLOT_, V_) do { if (VAL_GMEM) atomicAdd(&gv_arr[SLOT_], V_); else atomicAdd(&sh_val[SLOT_], V_); } while (0)
+    // ↑ spec91 刀E:VAL_GMEM=1 时 atomicAdd 落在可证全局指针上,ptxas 弃返回值 → RED.E.ADD.F64 一条
+    for (int s = tid; s < ht_size; s += blockDim.x) { sh_col[s] = -1; if (!VAL_GMEM) sh_val[s] = 0.0f; }
     __syncthreads();
 
     int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
@@ -1782,10 +1798,10 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
                 int probes = 0;
                 while (true) {
                     int entry = sh_col[slot];
-                    if (entry == j) { if (MODE != 1) atomicAdd(&sh_val[slot], sv); break; }
+                    if (entry == j) { if (MODE != 1) SPA_VAL_ADD(slot, sv); break; }
                     if (entry == -1) {
                         int prev = atomicCAS(&sh_col[slot], -1, j);
-                        if (prev == -1 || prev == j) { if (MODE != 1) atomicAdd(&sh_val[slot], sv); break; }
+                        if (prev == -1 || prev == j) { if (MODE != 1) SPA_VAL_ADD(slot, sv); break; }
                     }
                     slot = (slot + 1) & mask;
                     if (++probes >= ht_size) {
@@ -1840,10 +1856,10 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
                     int probes = 0;
                     while (true) {
                         int entry = sh_col[slot];
-                        if (entry == j) { if (MODE != 1) atomicAdd(&sh_val[slot], sv); break; }
+                        if (entry == j) { if (MODE != 1) SPA_VAL_ADD(slot, sv); break; }
                         if (entry == -1) {
                             int prev = atomicCAS(&sh_col[slot], -1, j);
-                            if (prev == -1 || prev == j) { if (MODE != 1) atomicAdd(&sh_val[slot], sv); break; }
+                            if (prev == -1 || prev == j) { if (MODE != 1) SPA_VAL_ADD(slot, sv); break; }
                         }
                         slot = (slot + 1) & mask;
                         if (++probes >= ht_size) {
@@ -1877,14 +1893,14 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
             while (true) {                                                                    \
                 if (PROBE_RF) {                                                               \
                     int entry = sh_col[slot];                                                 \
-                    if (entry == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; }    \
+                    if (entry == j) { if (MODE != 1) SPA_VAL_ADD(slot, v); break; }    \
                     if (entry == -1) {                                                        \
                         int prev = atomicCAS(&sh_col[slot], -1, j);                           \
-                        if (prev == -1 || prev == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; } \
+                        if (prev == -1 || prev == j) { if (MODE != 1) SPA_VAL_ADD(slot, v); break; } \
                     }                                                                         \
                 } else {                                                                      \
                     int old = atomicCAS(&sh_col[slot], -1, j);                                \
-                    if (old == -1 || old == j) { if (MODE != 1) atomicAdd(&sh_val[slot], v); break; } \
+                    if (old == -1 || old == j) { if (MODE != 1) SPA_VAL_ADD(slot, v); break; } \
                 }                                                                             \
                 slot = (slot + 1) & mask;                                                     \
                 if (++probes >= ht_size) {                                                    \
@@ -1893,12 +1909,13 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
                     break;                                                                    \
                 }                                                                             \
             }                                                                                 \
-            if (probe_hist) atomicAdd(&probe_hist[probes < 32 ? probes : 32], 1);             \
+            if (PROBE_HIST_ON) atomicAdd(&probe_hist[probes < 32 ? probes : 32], 1);          \
         }                                                                                     \
     }
     if (upper_tri) { if (B16) { HASH_INNER_LOOP(1, 1) } else { HASH_INNER_LOOP(1, 0) } }
     else           { if (B16) { HASH_INNER_LOOP(0, 1) } else { HASH_INNER_LOOP(0, 0) } }
     #undef HASH_INNER_LOOP
+    #undef SPA_VAL_ADD
     }
     __syncthreads();
     // HASH_RT_NOEXTRACT(口径 A+ 窗对齐,用户钦定 09-18):行计时在【探测循环完成处】截断,不含 extract/输出搬运
@@ -2088,7 +2105,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
                 int pos = atomicAdd(&cnt, 1);
                 if (pos >= cap) { atomicExch(overflow_flag, 1); continue; }
                 tmp_key[base + pos] = ((unsigned long long)i << 32) | (unsigned int)c;
-                tmp_val[base + pos] = sh_val[s];
+                tmp_val[base + pos] = val_rd[s];   // spec91 刀E:VG 行值在 gmem 块切片(val_rd 统一指针)
             }
         }
         __syncthreads();
@@ -4247,33 +4264,29 @@ static void hash_product(
 
     });
 
-    // ---- 全 bin Hybrid Value(docs/24 §4.1):ht≥4096 的大表 bin 的 value 池(keys 留 SMEM,occupancy ×3)。
-    //      池 = 每行梯表尺寸 × 8B 的 scan;>8GB(鲸鱼阵)或 HYB_TIER=0 跳过。 ----
+    // ---- 全 bin Hybrid Value(spec91 刀E):ht≥4096 大表 bin 的 gmem 值池(keys 留 SMEM)。 ----
     double *d_gv = nullptr; long long *d_gv_off = nullptr;
     {
         static int g_hyb_tier = -1;
-        // 默认 0(2026-08-27 A/B 否决:Ge99 +16%/Ga3As3H12 2.9× 恶化 —— 每乘积一趟全局 L2 原子的
-        // 往返成本 > SMEM 争用成本;与 docs/23 bin0-only 收益微弱一致。保留代码供后续组合实验)
+        // 默认 0(2026-08-27 A/B 否决的是 hash_spa_hkv 残缺形态:每乘积必 CAS+无 B16+固定块宽;
+        // spec91 刀E(09-23)重开:gmem 值区 + 主力内核模板实例(REDG 原生 F64 归约),HYB_TIER=1
+        // 即启用值池 + VG 发射;SASS 对拍定谳 inno/91 §1.5。默认仍 0,电池定夺后议翻)
         if (g_hyb_tier < 0) { const char *e = getenv("HYB_TIER"); g_hyb_tier = (e && *e) ? atoi(e) : 0; }
         if (g_hyb_tier && !att) {
-            int *d_lht = decltype(d_lht)(dev_alloc(A_rows * sizeof(int)));
-            d_gv_off = decltype(d_gv_off)(dev_alloc((A_rows + 1) * sizeof(long long)));
-            ladder_ht_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, A_rows, d_lht);
-            CHECK_CUDA(cudaMemset(d_gv_off, 0, sizeof(long long)));
-            thrust::inclusive_scan(thrust::make_transform_iterator(thrust::device_ptr<int>(d_lht), ToLL()),
-                                   thrust::make_transform_iterator(thrust::device_ptr<int>(d_lht + A_rows), ToLL()),
-                                   thrust::device_ptr<long long>(d_gv_off + 1));
-            long long gv_slots;
-            CHECK_CUDA(cudaMemcpy(&gv_slots, d_gv_off + A_rows, sizeof(long long), cudaMemcpyDeviceToHost));
-            dev_free(d_lht);
+            // spec91 刀E:块作用域精确配池 Σ_{VG bin} n_bi×ht_bi(h_cnt 主机可见)。
+            // 旧 ladder_ht 估算梯与 compute_bucket 增益梯可发散 → 切片欠配=越界写,结构性消除;
+            // d_gv_off 淘汰(块址 = bin 基址 + blockIdx.x×ht,发射点按 h_cnt 前缀现算)
+            long long gv_slots = 0;
+            for (int b = 0; b <= HASH_LADDER_MAX_BIN && b < N_BINS; b++)
+                if (h_cnt[b] > 0 && (WARP_SIZE << b) >= TABLE_DOUBLING_THR)
+                    gv_slots += (long long)h_cnt[b] * (WARP_SIZE << b);
             long long gv_cap = HYB_VAL_POOL_MAX;                // 池上限 8GB(鲸鱼阵 est 巨大,跳过)
             if (gv_slots > 0 && gv_slots * (long long)sizeof(double) <= gv_cap) {
                 d_gv = decltype(d_gv)(dev_alloc((size_t)gv_slots * sizeof(double)));
                 CHECK_CUDA(cudaMemset(d_gv, 0, (size_t)gv_slots * sizeof(double)));
-                dbg("[%s] hybrid value pool: %.2f GB\n", tag, gv_slots * 8.0 / (1 << 30));
+                dbg("[%s] hybrid value pool(block-scoped): %.2f GB (%lld slots)\n", tag, gv_slots * 8.0 / (1 << 30), gv_slots);
             } else {
-                dev_free(d_gv_off); d_gv_off = nullptr;
-                dbg("[%s] hybrid value pool 跳过(%.2f GB 超 cap)\n", tag, gv_slots * 8.0 / (1 << 30));
+                dbg("[%s] hybrid value pool 跳过(%.2f GB 超 cap 或 0)\n", tag, gv_slots * 8.0 / (1 << 30));
             }
         }
     }
@@ -4285,6 +4298,10 @@ static void hash_product(
             CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
             CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,0>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
         }
+        // spec91 刀E:VG 实例 opt-in(ids-only 表 ht×4B;HASH_CAP=16384 → 64KB > 48KB 默认)
+        size_t maxsm_vg = (size_t)HASH_CAP * sizeof(int);
+        if (maxsm_vg > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM)
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm_vg));
     }
     // 2b-priv: warp 私有 SPA 门控(HASH_PRIV=1,HASH_PRIV_W 默认 8);仅 SMEM 可容纳的桶走 priv
     static int g_priv = -1, g_privW = PRIV_W_MAX;
@@ -4928,67 +4945,90 @@ static void hash_product(
                 if (g_extract2 < 0) { const char *e = getenv("HASH_EXTRACT"); g_extract2 = (e && atoi(e) == 2) ? 1 : 0; }
                 if (g_extract2 && ht >= CS2_MIN_HT && ht <= CSORT_HT) smem_flat += 3 * 1024 * sizeof(int);
                 size_t smem_priv = (size_t)PRIV_W * ht * (sizeof(int) + sizeof(double));
-                if (d_gv && ht >= TABLE_DOUBLING_THR) {
-                    // Hybrid Value 大表 bin:keys SMEM(4B/槽)+ values 全局 L2 原子(docs/24)
-                    hash_spa_hkv_kernel<<<n, HASH_BLOCK, (size_t)ht * sizeof(int), cur_s>>>(
+                // spec91 刀E:VG 发射所需 env statics + 块梯(原在下游 else 内,上提共用)
+                static int g_force_logG = -1;   // GFORCE(study/15 诊断):强制 G;0=正常梯
+                if (g_force_logG < 0) { const char *e = getenv("GFORCE"); g_force_logG = (e && *e) ? __builtin_ctz(atoi(e)) : 0; }
+                static int g_uo_x = -1;
+                if (g_uo_x < 0) { const char *e = getenv("HASH_UO_XTRACT"); g_uo_x = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                static int g_rt_nox = -1;
+                if (g_rt_nox < 0) { const char *e = getenv("HASH_RT_NOEXTRACT"); g_rt_nox = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                static int g_wm = -1;
+                if (g_wm < 0) { const char *e = getenv("HASH_WM"); g_wm = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                // docs/44 per-bin block 梯(Ocean BLOCK_SIZES 同哲学)+ v37 修正梯(study/06 §7 F2 对拍):
+                //   默认 = 旧三档 64/256/512 + bi≥8→1024T(修 occupancy 缺陷:ht≥8192 表 ≥96KB ×512T
+                //   只驻 2 CTA = 1024 线程;1024T 恢复满格 2048。F2/电池已证)。
+                //   HASH_BLK_LADDER=legacy 纯旧三档;=6:384,7:768 逐档覆写(32 倍数,免重编)。
+                // (spec91 刀E:梯计算上提——VG 发射同吃 hblk;旧 hkv 固定 256T 是 8月否决的
+                //  病因之一:同 bin SMEM 路径 512/1024T,VG 256T = 行车道少 2-4× → 行延迟 4-5×)
+                static int g_blk_lad[HASH_LADDER_MAX_BIN + 1];
+                static int g_blk_init = -1;
+                if (g_blk_init < 0) {
+                    for (int b = 0; b <= HASH_LADDER_MAX_BIN; b++)
+                        g_blk_lad[b] = (b <= ilog2c(SMALL_SPAN_MAX / WARP_SIZE)) ? HASH_BLOCK_STRUCT / 4
+                                         : (b <= ilog2c(CSORT_HT / WARP_SIZE)) ? HASH_BLOCK_STRUCT : DENSE_BLK;
+                    const char *e = getenv("HASH_BLK_LADDER");
+                    if (e && !strcmp(e, "legacy")) {
+                        // 纯旧梯,不加默认覆写
+                    } else if (e && *e) {
+                        // 用户逐档覆写全权(不再叠加默认)
+                        for (char *s = strdup(e), *tok = strtok(s, ","); tok; tok = strtok(nullptr, ","))
+                        {
+                            int b, t;
+                            if (sscanf(tok, "%d:%d", &b, &t) == 2 && b >= 0 && b <= HASH_LADDER_MAX_BIN &&
+                                t > 0 && t <= 1024 && (t & 31) == 0)
+                                g_blk_lad[b] = t;
+                        }
+                    } else {
+                        for (int b = 8; b <= HASH_LADDER_MAX_BIN; b++) g_blk_lad[b] = 1024;   // 默认(×5 电池已证)
+                    }
+                    g_blk_init = 1;
+                }
+                int hblk = g_blk_lad[bi <= HASH_LADDER_MAX_BIN ? bi : HASH_LADDER_MAX_BIN];
+                if (d_gv && ht >= TABLE_DOUBLING_THR && probe_rf_on()) {
+                    // spec91 刀E:大表 bin 值区 gmem 池 + 主力内核模板实例(VAL_GMEM=1)。
+                    // 取代 hash_spa_hkv_kernel(2026-08-27 否决的残缺形态:无 read-first 每乘积必
+                    // CAS/无 B16/固定块宽;刀E 保留探测全套现代机构,仅值区几何换 gmem——累加
+                    // atomicAdd 弃返回值 → RED.E.ADD.F64 原生归约一条/乘积,SASS 对拍见 inno/91 §1.5)。
+                    // probe_hist 仪器走 SMEM 形态(VG 行不采探测链);PRF 逃生门开着则回 SMEM 路径。
+                    long long vg_base = 0;   // 本 bin 切片基址 = 前 VG bin 的 n×ht 前缀(与池配额同式,免共享态)
+                    for (int b = 0; b < bi; b++)
+                        if (h_cnt[b] > 0 && (WARP_SIZE << b) >= TABLE_DOUBLING_THR && b <= HASH_LADDER_MAX_BIN)
+                            vg_base += (long long)h_cnt[b] * (WARP_SIZE << b);
+                    hash_spa_kernel<0,1,0,1><<<n, hblk, (size_t)ht * sizeof(int), cur_s>>>(
                         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                         rows_ptr, n, ht, d_off,
                         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                        d_gv, d_gv_off);
+                        d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr,
+                        g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, vg_base, d_gv);
+                    CHECK_CUDA(cudaGetLastError());   // 发射即时检查(opt-in/表大小问题即抓)
                 } else if (!att && g_priv && smem_priv <= (size_t)PRIV_SMEM_MAX) {
                     hash_spa_priv_kernel<<<n, PRIV_W * WARP_SIZE, smem_priv>>>(
                         dA_rp, dA_ci, dA_val, rows_ptr, n, ht, PRIV_W, d_off,
                         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow);
                 } else {
-                    static int g_force_logG = -1;   // GFORCE(study/15 诊断):强制 G;0=正常梯。跨 warp 协作一个 k(治发散+L2 乱流)
-                    if (g_force_logG < 0) { const char *e = getenv("GFORCE"); g_force_logG = (e && *e) ? __builtin_ctz(atoi(e)) : 0; }
-                    // docs/44 per-bin block 梯(Ocean BLOCK_SIZES 同哲学)+ v37 修正梯(study/06 §7 F2 对拍):
-                    //   默认 = 旧三档 64/256/512 + bi≥8→1024T(修 occupancy 缺陷:ht≥8192 表 ≥96KB ×512T
-                    //   只驻 2 CTA = 1024 线程;1024T 恢复满格 2048。F2/电池已证)。
-                    //   HASH_BLK_LADDER=legacy 纯旧三档;=6:384,7:768 逐档覆写(32 倍数,免重编)。
-                    static int g_blk_lad[HASH_LADDER_MAX_BIN + 1];
-                    static int g_blk_init = -1;
-                    if (g_blk_init < 0) {
-                        for (int b = 0; b <= HASH_LADDER_MAX_BIN; b++)
-                            g_blk_lad[b] = (b <= ilog2c(SMALL_SPAN_MAX / WARP_SIZE)) ? HASH_BLOCK_STRUCT / 4
-                                             : (b <= ilog2c(CSORT_HT / WARP_SIZE)) ? HASH_BLOCK_STRUCT : DENSE_BLK;
-                        const char *e = getenv("HASH_BLK_LADDER");
-                        if (e && !strcmp(e, "legacy")) {
-                            // 纯旧梯,不加默认覆写
-                        } else if (e && *e) {
-                            // 用户逐档覆写全权(不再叠加默认)
-                            for (char *s = strdup(e), *tok = strtok(s, ","); tok; tok = strtok(nullptr, ","))
-                            {
-                                int b, t;
-                                if (sscanf(tok, "%d:%d", &b, &t) == 2 && b >= 0 && b <= HASH_LADDER_MAX_BIN &&
-                                    t > 0 && t <= 1024 && (t & 31) == 0)
-                                    g_blk_lad[b] = t;
-                            }
-                        } else {
-                            for (int b = 8; b <= HASH_LADDER_MAX_BIN; b++) g_blk_lad[b] = 1024;   // 默认(×5 电池已证)
-                        }
-                        g_blk_init = 1;
-                    }
+                        // docs/44 per-bin block 梯(Ocean BLOCK_SIZES 同哲学)+ v37 修正梯(study/06 §7 F2 对拍):
+                    // (spec91 刀E:梯计算上提共用——VG 发射同吃 hblk;旧 hkv 固定 256T 是 8月否决的
+                    //  病因之一:同 bin SMEM 路径 512/1024T,VG 256T = 行车道 2-4× 少 → 行延迟 4-5×)
                     int hblk = g_blk_lad[bi <= HASH_LADDER_MAX_BIN ? bi : HASH_LADDER_MAX_BIN];
                     // read-first 探测已并入 hash_spa_kernel 本体(PROBE_RF 模板参;逃生门 HASH_PROBE_RF=0)
-                    static int g_uo_x = -1;   // HASH_UO_XTRACT=1(口径对齐仪器):MODE=0 无序 extract,对齐彼 ROWCYCLES 口径
-                    if (g_uo_x < 0) { const char *e = getenv("HASH_UO_XTRACT"); g_uo_x = (e && *e && atoi(e) > 0) ? 1 : 0; }
-                    static int g_rt_nox = -1;   // HASH_RT_NOEXTRACT=1(口径A+):行计时不含 extract,对齐 ocean ROWCYCLES 窗
-                    if (g_rt_nox < 0) { const char *e = getenv("HASH_RT_NOEXTRACT"); g_rt_nox = (e && *e && atoi(e) > 0) ? 1 : 0; }
-                    static int g_wm = -1;     // HASH_WM(⑤):warp 同列聚合累加(实验,默认关)
-                    if (g_wm < 0) { const char *e = getenv("HASH_WM"); g_wm = (e && *e && atoi(e) > 0) ? 1 : 0; }
-                    if (probe_rf_on())
-                        hash_spa_kernel<0,1><<<n, hblk, smem_flat, cur_s>>>(
-                            dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
-                            rows_ptr, n, ht, d_off,
-                            d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist, g_rt_nox, g_extract2);
-                    else
-                        hash_spa_kernel<0,0><<<n, hblk, smem_flat, cur_s>>>(
-                            dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
-                            rows_ptr, n, ht, d_off,
-                            d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-                            d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, g_force_logG, g_uo_x, dB16, g_wm, d_phist, g_rt_nox, g_extract2);
+                    // (g_uo_x/g_rt_nox/g_wm/g_force_logG 已上提至 VG 分支前共用,spec91 刀E)
+                    // spec91 ①:仪器态(d_phist≠null)单独实例化 PROBE_HIST_ON=1,生产路径零探测计数指令
+#define SPA_LAUNCH0(PRF_) do { \
+    if (d_phist) hash_spa_kernel<0,(PRF_),1><<<n, hblk, smem_flat, cur_s>>>( \
+        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
+        rows_ptr, n, ht, d_off, \
+        d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
+        d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
+        g_force_logG, g_uo_x, dB16, g_wm, d_phist, g_rt_nox, g_extract2); \
+    else         hash_spa_kernel<0,(PRF_),0><<<n, hblk, smem_flat, cur_s>>>( \
+        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
+        rows_ptr, n, ht, d_off, \
+        d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
+        d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
+        g_force_logG, g_uo_x, dB16, g_wm, d_phist, g_rt_nox, g_extract2); \
+} while (0)
+                    if (probe_rf_on()) SPA_LAUNCH0(1); else SPA_LAUNCH0(0);
+#undef SPA_LAUNCH0
                     CHECK_CUDA(cudaGetLastError());   // 发射即时检查(>48KB 表 opt-in 类问题即抓)
                 }
             }
