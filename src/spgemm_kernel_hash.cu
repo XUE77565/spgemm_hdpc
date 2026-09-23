@@ -5165,14 +5165,17 @@ static void hash_product(
                     } else {
                     static int g_lht = -1;
                     if (g_lht < 0) { const char *e = getenv("HASH_LHT"); g_lht = (e && *e && atoi(e) > 0) ? 1 : 0; }
-                    if (g_lht && bi >= 7 && bi <= 9 && probe_rf_on() && !d_phist && !g_wm) {
+                    if (g_lht && bi >= 4 && bi <= 9 && probe_rf_on() && !d_phist && !g_wm) {
 #define SPA_LAUNCH_LHT(LHT_) hash_spa_kernel<0,1,0,0,(LHT_)><<<n, hblk, smem_flat, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
         rows_ptr, n, ht, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
         g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, 0, nullptr)
-                        if (bi == 7) SPA_LAUNCH_LHT(12);   // ht=32<<7=2^12:LOG_HT 是 log2(ht),非 bin 号!
+                        if (bi == 4) SPA_LAUNCH_LHT(9);     // ht=32<<bi=2^(bi+5):LOG_HT=log2(ht)!
+                        else if (bi == 5) SPA_LAUNCH_LHT(10);
+                        else if (bi == 6) SPA_LAUNCH_LHT(11);  // 夜班#4:bins4-6 扩展(extract2 人口带折叠)
+                        else if (bi == 7) SPA_LAUNCH_LHT(12);
                         else if (bi == 8) SPA_LAUNCH_LHT(13);
                         else SPA_LAUNCH_LHT(14);
 #undef SPA_LAUNCH_LHT
