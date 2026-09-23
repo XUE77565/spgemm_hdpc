@@ -1768,7 +1768,71 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
     int G = 1 << logG;
     int num_groups = blockDim.x / G;
     int my_group = tid / G, my_id = tid % G;
-    if (warp_merge == 2) {
+    if (warp_merge == 4) {
+        // spec95 WM v4(§3.1s 三件套):①原生 q 环索引(消 WM2 走位平方税)②MATCH.ANY 单指令
+        // dup 探针,无伙伴=原路径零附加③G=8 配套(HASH_WM=4+GFORCE=8):warp 跨 4 组×连续 k,
+        // 网格阵 B 行重叠 → 同 j 在 warp 内可见。warp 均匀界=__reduce_max 趟数(免碎片化死锁)。
+        int lane5 = tid & 31;
+        for (int p = rs + my_group; p < re; p += num_groups) {
+            int k = A_col_idx[p];
+            double a_ik = A_val[p];
+            int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
+            int mine = (ke - ks - 1 - my_id) / G + 1; if (mine < 0) mine = 0;   // 本 lane 趟数
+            int wmax = (int)__reduce_max_sync(0xffffffffu, (unsigned)mine);      // warp 均匀界
+            for (int it = 0; it < wmax; it++) {
+                int q = ks + my_id + it * G;
+                bool act = q < ke;
+                int j = -1; double v = 0.0;
+                if (act) {
+                    if (B16) { uint4 e = B16[q]; j = (int)e.x; v = a_ik * __hiloint2double(e.w, e.z); }
+                    else { j = B_col_idx[q]; v = a_ik * B_val[q]; }
+                    if (MODE == 1) v = 0.0;
+                    if (upper_tri && j < i) j = -1;   // 滤后归哨组
+                }
+                unsigned mm = __match_any_sync(0xffffffffu, j);   // 1 指令探针
+                if (j < 0) continue;                              // 哨组零成本
+                if (mm == (1u << lane5)) {                        // 无同 j 伙伴:原路径
+                    unsigned slot = ((unsigned)(j * 2654435761u)) & mask;
+                    int probes = 0;
+                    while (true) {
+                        int entry = sh_col[slot];
+                        if (entry == j) { if (MODE != 1) SPA_VAL_ADD(slot, v); break; }
+                        if (entry == -1) {
+                            int prev = atomicCAS(&sh_col[slot], -1, j);
+                            if (prev == -1 || prev == j) { if (MODE != 1) SPA_VAL_ADD(slot, v); break; }
+                        }
+                        slot = (slot + 1) & mask;
+                        if (++probes >= ht_size) {
+                            atomicExch(overflow_flag, 1);
+                            if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
+                            break;
+                        }
+                    }
+                } else {                                          // 同 j 伙伴:Σv 归约 → leader 单探测
+                    double sv = 0.0;
+                    for (unsigned m2 = mm; m2; m2 &= m2 - 1) sv += __shfl_sync(mm, v, __ffs(m2) - 1);
+                    if (lane5 == (int)(__ffs(mm) - 1)) {
+                        unsigned slot = ((unsigned)(j * 2654435761u)) & mask;
+                        int probes = 0;
+                        while (true) {
+                            int entry = sh_col[slot];
+                            if (entry == j) { if (MODE != 1) SPA_VAL_ADD(slot, sv); break; }
+                            if (entry == -1) {
+                                int prev = atomicCAS(&sh_col[slot], -1, j);
+                                if (prev == -1 || prev == j) { if (MODE != 1) SPA_VAL_ADD(slot, sv); break; }
+                            }
+                            slot = (slot + 1) & mask;
+                            if (++probes >= ht_size) {
+                                atomicExch(overflow_flag, 1);
+                                if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else if (warp_merge == 2) {
         // ⑤ v3 WPM 窗口化乘积合并(inno/80 终局形态):按乘积序号切 32/窗,一 lane 一乘积。
         // uniformity 平凡(每 lane 恒有槽);同 j 乘积(块结构下 k 相邻→乘积序相邻)落同窗 →
         // match 归约 → 热 j 原子 26→1-3 次 = 时间串行窗口化消灭;B 读 = 每 k 段内连续。
