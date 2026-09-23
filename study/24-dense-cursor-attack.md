@@ -506,3 +506,15 @@
 - **下一侦查口**:ncu 源级 stall 归属(我方 83% idle 花在哪条指令);候选嫌疑:
   F64 CAS-spin 重试环占发射位/B16 减半装载伤害 MLP(装载少=重叠素材少)/read-first
   分支链。REGCAP ifdef 保留(默认路径 bit-for-bit)。
+
+### §3.1o ncu 停顿全谱+驻留真相(09-24 02:0x,单发链式#8)
+
+- **遗漏指标补测(nd24k,<0,1,0,0,0,0> 第4发)**:warps_active **39.8%**(!)——我方该发射
+  平均驻留 warp 仅四成;停顿谱:wait 3.55/short 3.45/branch_resolving 3.03/long 2.41/
+  barrier 0.92/not_selected 0.40/selected 1.00。
+- **口径勘误(重要)**:§3.1f/§1.7 的"17% vs 68% SM 利用率"对比**人口混淆**——我方测的是
+  小 bin 少块发射(ramp/tail 占比大→平均驻留低),彼方 68% 测的是 13153 行大发射。
+  机器空转的主因至少部分=无块可调度,非 warp 级病。逐行截距的最终归因须在**等驻留**
+  条件下比(选双方人口相当的 bin 发射重测,或看稳态段)。
+- 修正后剩余真嫌疑:①branch_resolving 3.03/read-first 分支链 ②short_scoreboard 3.45
+  (SMEM 探测链)③wait 3.55(固定延迟依赖)——均在等驻留复核后才可定罪。
