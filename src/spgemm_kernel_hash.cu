@@ -2200,6 +2200,16 @@ __global__ void hash_spa_hkv_kernel(
 }
 
 // compact 原地化守卫:margin[j] = E_off[j] − C_rp[j](≥0 全体成立 → 前缀紧缩安全,docs/21 Fix2)
+// spec92-A:bin 行群 Σa_len 归约(宽窄判据原料;单块,256 线程 atomic 累加)
+__global__ void bin_alen_stat_kernel(const int *A_row_ptr, const int *bucket_rows, int n,
+                                     unsigned long long *sum_alen) {
+    int s = threadIdx.x;
+    unsigned long long acc = 0;
+    for (int r = blockIdx.x * blockDim.x + s; r < n; r += gridDim.x * blockDim.x)
+        acc += (unsigned long long)(A_row_ptr[bucket_rows[r] + 1] - A_row_ptr[bucket_rows[r]]);
+    if (acc) atomicAdd(sum_alen, acc);
+}
+
 __global__ void margin_kernel(const long long *eoff, const int *crp, int n, long long *marg)
 {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -5016,6 +5026,31 @@ static void hash_product(
                     // (spec91 刀E:梯计算上提共用——VG 发射同吃 hblk;旧 hkv 固定 256T 是 8月否决的
                     //  病因之一:同 bin SMEM 路径 512/1024T,VG 256T = 行车道 2-4× 少 → 行延迟 4-5×)
                     int hblk = g_blk_lad[bi <= HASH_LADDER_MAX_BIN ? bi : HASH_LADDER_MAX_BIN];
+                    // spec92-A:行群 a_len 选宽(结构条件禁阵身份)——bins6-7(512T 自然档)行群平均
+                    // a_len ≥ WSEL_ALEN_THR(默认 48=1024T/32 组的裕量)时升 1024T:大 a_len 行
+                    // (crankseg 209)块宽=行并行度;小 a_len 行(in-2004 24<32 组)升宽=空组纯亏。
+                    static int g_wsel = -1, g_wsel_thr = 48;
+                    if (g_wsel < 0) {
+                        const char *e = getenv("HASH_WSEL");
+                        g_wsel = (e && *e && atoi(e) > 0) ? 1 : 0;
+                        const char *t = getenv("WSEL_ALEN_THR");
+                        if (t && *t) g_wsel_thr = atoi(t);
+                    }
+                    if (g_wsel && bi >= 6 && bi <= 7 && hblk < 1024) {
+                        static unsigned long long *d_wsum = nullptr;
+                        if (!d_wsum) { d_wsum = decltype(d_wsum)(dev_alloc(sizeof(unsigned long long)));
+                                       CHECK_CUDA(cudaMemset(d_wsum, 0, sizeof(unsigned long long))); }
+                        CHECK_CUDA(cudaMemsetAsync(d_wsum, 0, sizeof(unsigned long long), cur_s));
+                        bin_alen_stat_kernel<<<(n + 255) / 256, 256, 0, cur_s>>>(dA_rp, rows_ptr, n, d_wsum);
+                        unsigned long long sum_al = 0;
+                        CHECK_CUDA(cudaMemcpyAsync(&sum_al, d_wsum, sizeof(unsigned long long), cudaMemcpyDeviceToHost, cur_s));
+                        CHECK_CUDA(cudaStreamSynchronize(cur_s));
+                        int mean_al = n > 0 ? (int)(sum_al / n) : 0;
+                        if (mean_al >= g_wsel_thr) {
+                            hblk = 1024;
+                            dbg("[%s] WSEL bin %d: mean_a_len=%d ≥ %d → 1024T\n", tag, bi, mean_al, g_wsel_thr);
+                        }
+                    }
                     // read-first 探测已并入 hash_spa_kernel 本体(PROBE_RF 模板参;逃生门 HASH_PROBE_RF=0)
                     // (g_uo_x/g_rt_nox/g_wm/g_force_logG 已上提至 VG 分支前共用,spec91 刀E)
                     // spec91 ①:仪器态(d_phist≠null)单独实例化 PROBE_HIST_ON=1,生产路径零探测计数指令
