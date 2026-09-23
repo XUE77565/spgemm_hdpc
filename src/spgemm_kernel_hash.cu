@@ -1677,15 +1677,15 @@ static inline bool probe_rf_on() {
 // 命中路径零 CAS;空槽才 atomicCAS 占位(占败 = 他人已入他键,前进重探)。该探测模式为领域
 // 公共形态(nsparse kernel_spgemm_hash_s.cu:298-315 / spECK HashMap.cuh 同构先例);散列用
 // 自有 Knuth 乘法常数 2654435761u 全值域映射 + mask 线性探测(pow2 表)。
-template<int MODE, int PROBE_RF = 1, int PROBE_HIST_ON = 0, int VAL_GMEM = 0>
+template<int MODE, int PROBE_RF = 1, int PROBE_HIST_ON = 0, int VAL_GMEM = 0, int LOG_HT = 0>
 // PROBE_HIST_ON(spec91 ①:探测计数编译期化):1=仪器态实例(每探测环退出 atomicAdd 计数),
 // 0=生产实例,热路径计数指令整体消除(此前是逐产品运行时 if(probe_hist) 分支)。
 // 仪器态由 MODE=0 主发射点按 d_phist!=nullptr 分支实例化,其余发射点恒生产态。
-// VAL_GMEM(spec91 刀E:值区几何):1=值区在 gmem 池行切片(vg_off[i] 基址,池 host 预清零,
-// 累加 atomicAdd 返回值弃用 → ptxas 出 RED.E.ADD.F64 原生归约一条/乘积,替代 SMEM F64 的
-// ATOMS.CAST.SPIN.64 模拟 5-6 条+热槽重试;SASS 对拍定谳 inno/91 §1.5);0=SMEM sh_val(默认)。
-// 探测/claim 恒在 SMEM sh_col;extract/清零路径经同一指针自动切换,下游零改动。
-
+// VAL_GMEM(spec91 刀E:值区几何,已判死保留代码):1=值区在 gmem 有界循环池块切片。
+// LOG_HT(spec91 刀F 真形态):>0=表长编译期定死 1<<LOG_HT(ht_size 参数被影子覆盖)——
+// mask/G 梯全部常量折叠(SASS 实证:运行时形态每乘积重算 IADD3 ht_size-1),并为后续
+// 素数紧表(magic-div)与每档独立块几何(spec88 七档化合流)开路;0=运行时 ht_size(默认,
+// bin0-6 甜点带 bit-for-bit 不变)。发射点仅 bins 7-9 实例化新形态(HASH_LHT=1 门)。
 // __launch_bounds__(1024,2)(09-18,hash_spa 占用抬升实验):REG:40 下 1024thr 档只驻 1 块/SM(50%),
 // 512thr 档 3 块(75%,crankseg 主发射 31,770 块实测 74.7%)。压 ≤32 regs → 1024 档 2 块/512 档 4 块。
 // ⚠ 本 kernel 是三阵全胜主力,溢出风险高,须全套守门+电池;对照 = spgemm_lb2t。
@@ -1693,7 +1693,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,   // 内层 j 来源:AA=A,ATT=Aᵀ(CSC)
     int upper_tri,                                                      // 0=自乘;1=ATT 只算 j≥i
-    const int *bucket_rows, int n_in_bucket, int ht_size,
+    const int *bucket_rows, int n_in_bucket, int ht_size_rt,
     const long long *row_off,
     unsigned long long *tmp_key, double *tmp_val,
     int *row_nnz, int *overflow_flag,
@@ -1721,6 +1721,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
     int vg_nbuf = 0,                        // spec91 刀E v2(VAL_GMEM=1):本 bin 循环缓冲数(池 = N_BUF×ht×8B;blockIdx%N_BUF 复用)
     double *vg_val = nullptr)               // spec91 刀E v2(VAL_GMEM=1):本 bin 值池基址;块切片 = vg_val + (blockIdx.x%vg_nbuf)×ht_size,块内自清
 {
+    const int ht_size = (LOG_HT > 0) ? (1 << LOG_HT) : ht_size_rt;   // 刀F:LOG_HT>0 表长编译期(mask/G 常量折叠);=0 运行时(默认,bit-for-bit 旧路径)
     int idx = blockIdx.x;
     if (idx >= n_in_bucket) return;
     int i = bucket_rows[idx];                  // 实际行号
@@ -4295,6 +4296,10 @@ static void hash_product(
         // 共用 <0,*> 主实例(已 opt-in),模板化后成为独立实例漏了这里)
         CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
         CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,0,1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        // spec91 刀F:LOG_HT 实例(bins 7-9 = ht 2^12/2^13/2^14)同需 opt-in
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,12>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,13>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,14>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
     }
     // 2b-priv: warp 私有 SPA 门控(HASH_PRIV=1,HASH_PRIV_W 默认 8);仅 SMEM 可容纳的桶走 priv
     static int g_priv = -1, g_privW = PRIV_W_MAX;
@@ -5028,6 +5033,24 @@ static void hash_product(
         d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
         g_force_logG, g_uo_x, dB16, g_wm, d_phist, g_rt_nox, g_extract2); \
 } while (0)
+                    // spec91 刀F:LOG_HT 编译期定长实例(bins 7-9 = ht 4096/8192/16384 损失带;
+                    // HASH_LHT=1 门,默认 0 走下方运行时形态 bit-for-bit)。仪器(probe_hist)/WM/PRF
+                    // 逃生门开着时回运行时形态。
+                    static int g_lht = -1;
+                    if (g_lht < 0) { const char *e = getenv("HASH_LHT"); g_lht = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                    if (g_lht && bi >= 7 && bi <= 9 && probe_rf_on() && !d_phist && !g_wm) {
+#define SPA_LAUNCH_LHT(LHT_) hash_spa_kernel<0,1,0,0,(LHT_)><<<n, hblk, smem_flat, cur_s>>>( \
+        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
+        rows_ptr, n, ht, d_off, \
+        d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
+        d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
+        g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, 0, nullptr)
+                        if (bi == 7) SPA_LAUNCH_LHT(12);   // ht=32<<7=2^12:LOG_HT 是 log2(ht),非 bin 号!
+                        else if (bi == 8) SPA_LAUNCH_LHT(13);
+                        else SPA_LAUNCH_LHT(14);
+#undef SPA_LAUNCH_LHT
+                        CHECK_CUDA(cudaGetLastError());
+                    } else
                     if (probe_rf_on()) SPA_LAUNCH0(1); else SPA_LAUNCH0(0);
 #undef SPA_LAUNCH0
                     CHECK_CUDA(cudaGetLastError());   // 发射即时检查(>48KB 表 opt-in 类问题即抓)
