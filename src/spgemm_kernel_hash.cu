@@ -1718,8 +1718,8 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
                                             // 对齐 ocean ROWCYCLES 窗(用户钦定口径 A+ 修正)
     int extract2 = 0,                       // HASH_EXTRACT=2(spec 81):ht≥512 小行 extract 的 O(d²) count-sort
                                             // → 两级计数排序 O(d+1024);0 = legacy(默认)
-    long long vg_base = 0,                  // spec91 刀E(VAL_GMEM=1):本 bin 值池切片基址(发射点按 h_cnt 前缀现算)
-    double *vg_val = nullptr)               // spec91 刀E(VAL_GMEM=1):值池基址(d_gv,host memset 0);每调用重置;行切片 = vg_base + blockIdx.x×ht_size
+    int vg_nbuf = 0,                        // spec91 刀E v2(VAL_GMEM=1):本 bin 循环缓冲数(池 = N_BUF×ht×8B;blockIdx%N_BUF 复用)
+    double *vg_val = nullptr)               // spec91 刀E v2(VAL_GMEM=1):本 bin 值池基址;块切片 = vg_val + (blockIdx.x%vg_nbuf)×ht_size,块内自清
 {
     int idx = blockIdx.x;
     if (idx >= n_in_bucket) return;
@@ -1733,11 +1733,16 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
 
     extern __shared__ __align__(8) int smem[];
     int   *sh_col = smem;                      // [ht_size]
-    // spec91 刀E:VAL_GMEM=1 → 值区 = gmem 池块切片(vg_base+blockIdx.x×ht;池 host 预清零,单次使用免核内清)。
+    // spec91 刀E v2:VAL_GMEM=1 → 值区 = 有界循环缓冲池块切片(blockIdx%vg_nbuf 复用;并发块<N_BUF ⇒ 同
+    // 缓冲两用者不共存),块内自清后栅栏(全块全局写可见性)。L2 驻留池 = RED 不落 DRAM(v1 全量池教训)。
     // ⚠ 累加必须双指针 + 编译期 if 特化:三元合一指针会把状态空间搅成 generic,ptxas 出 ATOMG(带返回
     // 阻塞)而非 REDG(fire-and-forget)——刀E 全部收益所在。extract 读走 val_rd(generic 读无妨,窗内无读)。
     double *sh_val = (double*)(smem + ht_size);                                    // SMEM 形态(VG 下仅 clear 分支不触)
-    double *gv_arr = (VAL_GMEM && vg_val) ? vg_val + vg_base + (long long)blockIdx.x * ht_size : nullptr;  // gmem 块切片
+    double *gv_arr = nullptr;                                                      // gmem 块切片(v2 循环缓冲)
+    if (VAL_GMEM && vg_val) {
+        gv_arr = vg_val + (long long)(blockIdx.x % vg_nbuf) * ht_size;
+        for (int s = tid; s < ht_size; s += blockDim.x) gv_arr[s] = 0.0;          // 块内自清(替代 host memset)
+    }
     double *val_rd = VAL_GMEM ? gv_arr : sh_val;                                   // extract/WM 读统一指针
 #define SPA_VAL_ADD(SLOT_, V_) do { if (VAL_GMEM) atomicAdd(&gv_arr[SLOT_], V_); else atomicAdd(&sh_val[SLOT_], V_); } while (0)
     // ↑ spec91 刀E:VAL_GMEM=1 时 atomicAdd 落在可证全局指针上,ptxas 弃返回值 → RED.E.ADD.F64 一条
@@ -4264,32 +4269,15 @@ static void hash_product(
 
     });
 
-    // ---- 全 bin Hybrid Value(spec91 刀E):ht≥4096 大表 bin 的 gmem 值池(keys 留 SMEM)。 ----
-    double *d_gv = nullptr; long long *d_gv_off = nullptr;
-    {
-        static int g_hyb_tier = -1;
-        // 默认 0(2026-08-27 A/B 否决的是 hash_spa_hkv 残缺形态:每乘积必 CAS+无 B16+固定块宽;
-        // spec91 刀E(09-23)重开:gmem 值区 + 主力内核模板实例(REDG 原生 F64 归约),HYB_TIER=1
-        // 即启用值池 + VG 发射;SASS 对拍定谳 inno/91 §1.5。默认仍 0,电池定夺后议翻)
-        if (g_hyb_tier < 0) { const char *e = getenv("HYB_TIER"); g_hyb_tier = (e && *e) ? atoi(e) : 0; }
-        if (g_hyb_tier && !att) {
-            // spec91 刀E:块作用域精确配池 Σ_{VG bin} n_bi×ht_bi(h_cnt 主机可见)。
-            // 旧 ladder_ht 估算梯与 compute_bucket 增益梯可发散 → 切片欠配=越界写,结构性消除;
-            // d_gv_off 淘汰(块址 = bin 基址 + blockIdx.x×ht,发射点按 h_cnt 前缀现算)
-            long long gv_slots = 0;
-            for (int b = 0; b <= HASH_LADDER_MAX_BIN && b < N_BINS; b++)
-                if (h_cnt[b] > 0 && (WARP_SIZE << b) >= TABLE_DOUBLING_THR)
-                    gv_slots += (long long)h_cnt[b] * (WARP_SIZE << b);
-            long long gv_cap = HYB_VAL_POOL_MAX;                // 池上限 8GB(鲸鱼阵 est 巨大,跳过)
-            if (gv_slots > 0 && gv_slots * (long long)sizeof(double) <= gv_cap) {
-                d_gv = decltype(d_gv)(dev_alloc((size_t)gv_slots * sizeof(double)));
-                CHECK_CUDA(cudaMemset(d_gv, 0, (size_t)gv_slots * sizeof(double)));
-                dbg("[%s] hybrid value pool(block-scoped): %.2f GB (%lld slots)\n", tag, gv_slots * 8.0 / (1 << 30), gv_slots);
-            } else {
-                dbg("[%s] hybrid value pool 跳过(%.2f GB 超 cap 或 0)\n", tag, gv_slots * 8.0 / (1 << 30));
-            }
-        }
-    }
+    // ---- 全 bin Hybrid Value(spec91 刀E v2):ht≥4096 大表 bin 的 gmem 值池(keys 留 SMEM)。 ----
+    // v1(块作用域全量池 ~1.1GB)实测 in-2004 accumulate -25.6%/nd24k -2.07×:RED 散射打 DRAM RMW。
+    // v2 = 有界循环缓冲池(ocean 机理):per-bin N_BUF×ht×8B ≤ L2 预算,blockIdx%N_BUF 复用
+    // (并发块 < N_BUF ⇒ 同缓冲两用者不共存),块内自清(免 host memset);池在发射点按 hblk 配额。
+    double *d_gv = nullptr; long long *d_gv_off = nullptr;   // v2: per-bin 池发射点挂 d_gv;d_gv_off 恒 null(旧 free 点共用)
+    double *d_gv_bins[HASH_LADDER_MAX_BIN + 1] = {};          // 刀E v2:每 VG bin 独立循环池(多流并发 bin 不共享),统一 free
+    static int g_hyb_tier = -1;
+    // 默认 0(2026-08-27 A/B 否决的是 hash_spa_hkv 残缺形态;刀E 重开为模板实例,SASS 定谳 inno/91 §1.5)
+    if (g_hyb_tier < 0) { const char *e = getenv("HYB_TIER"); g_hyb_tier = (e && *e) ? atoi(e) : 0; }
 
     // 2b: opt-in max SMEM(read-first 已入本体,RF/CAS 两实例化同待命 >48KB 表)
     {
@@ -4302,6 +4290,11 @@ static void hash_product(
         size_t maxsm_vg = (size_t)HASH_CAP * sizeof(int);
         if (maxsm_vg > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM)
             CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm_vg));
+        // spec91 ①回归修复:仪器实例 <0,*,1> 同样需要 opt-in(ht≥4096 bin 的 48KB+静态 1296B
+        // 超 默认上限 → 发射 invalid argument,probe_hist 仪器路径直接崩;① 前仪器=运行时参数
+        // 共用 <0,*> 主实例(已 opt-in),模板化后成为独立实例漏了这里)
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,0,1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
     }
     // 2b-priv: warp 私有 SPA 门控(HASH_PRIV=1,HASH_PRIV_W 默认 8);仅 SMEM 可容纳的桶走 priv
     static int g_priv = -1, g_privW = PRIV_W_MAX;
@@ -4984,22 +4977,30 @@ static void hash_product(
                     g_blk_init = 1;
                 }
                 int hblk = g_blk_lad[bi <= HASH_LADDER_MAX_BIN ? bi : HASH_LADDER_MAX_BIN];
-                if (d_gv && ht >= TABLE_DOUBLING_THR && probe_rf_on()) {
+                if (g_hyb_tier && !att && ht >= TABLE_DOUBLING_THR && probe_rf_on()) {
                     // spec91 刀E:大表 bin 值区 gmem 池 + 主力内核模板实例(VAL_GMEM=1)。
                     // 取代 hash_spa_hkv_kernel(2026-08-27 否决的残缺形态:无 read-first 每乘积必
                     // CAS/无 B16/固定块宽;刀E 保留探测全套现代机构,仅值区几何换 gmem——累加
                     // atomicAdd 弃返回值 → RED.E.ADD.F64 原生归约一条/乘积,SASS 对拍见 inno/91 §1.5)。
                     // probe_hist 仪器走 SMEM 形态(VG 行不采探测链);PRF 逃生门开着则回 SMEM 路径。
-                    long long vg_base = 0;   // 本 bin 切片基址 = 前 VG bin 的 n×ht 前缀(与池配额同式,免共享态)
-                    for (int b = 0; b < bi; b++)
-                        if (h_cnt[b] > 0 && (WARP_SIZE << b) >= TABLE_DOUBLING_THR && b <= HASH_LADDER_MAX_BIN)
-                            vg_base += (long long)h_cnt[b] * (WARP_SIZE << b);
+                    // v2 有界循环缓冲池:N_BUF ≥ 最大并发块(REG32 占用上限 × SM 数)+20% 裕量,
+                    // 且 N_BUF×ht×8B ≤ L2 预算(48MB)——RED 全程 L2 命中(v1 全量池 1.1GB 落 DRAM 的教训)
+                    static int g_sm_count = -1;
+                    if (g_sm_count < 0) { cudaDeviceProp prop; CHECK_CUDA(cudaGetDeviceProperties(&prop, 0)); g_sm_count = prop.multiProcessorCount; }
+                    int bpsm = max(1, 65536 / (hblk * 32));                       // REG:32 上限(占用恒等式;launch_bounds(1024,2) 一致)
+                    long long nbuf = (long long)g_sm_count * bpsm * 6 / 5;
+                    const long long l2_budget = 48LL << 20;                       // HYB_L2_BUDGET:H100 L2 50MB 内留 2MB
+                    if (nbuf * (long long)ht * 8 > l2_budget) nbuf = l2_budget / ((long long)ht * 8);
+                    if (nbuf < 1) nbuf = 1;
+                    if (!d_gv_bins[bi])
+                        d_gv_bins[bi] = decltype(d_gv)(dev_alloc((size_t)nbuf * ht * sizeof(double)));
+                    dbg("[%s] VG bin %d: ht=%d hblk=%d nbuf=%lld pool=%.1fMB\n", tag, bi, ht, hblk, nbuf, nbuf * ht * 8.0 / (1 << 20));
                     hash_spa_kernel<0,1,0,1><<<n, hblk, (size_t)ht * sizeof(int), cur_s>>>(
                         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                         rows_ptr, n, ht, d_off,
                         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
                         d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr,
-                        g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, vg_base, d_gv);
+                        g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, (int)nbuf, d_gv_bins[bi]);
                     CHECK_CUDA(cudaGetLastError());   // 发射即时检查(opt-in/表大小问题即抓)
                 } else if (!att && g_priv && smem_priv <= (size_t)PRIV_SMEM_MAX) {
                     hash_spa_priv_kernel<<<n, PRIV_W * WARP_SIZE, smem_priv>>>(
@@ -5371,7 +5372,7 @@ static void hash_product(
         dev_free(d_rsb); dev_free(d_rse);
         dev_free(dA); dev_free(d_off); dev_free(d_row_nnz);
         dev_free(d_overflow); dev_free(d_tmp_key); dev_free(d_tmp_val);
-        dev_free(d_bkid); dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos); dev_free(d_sort); dev_free(d_est); dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); dev_free(d_gv); dev_free(d_gv_off);
+        dev_free(d_bkid); dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos); dev_free(d_sort); dev_free(d_est); dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); for (int vb_ = 0; vb_ <= HASH_LADDER_MAX_BIN; vb_++) dev_free(d_gv_bins[vb_]); dev_free(d_gv_off);
         dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val); dev_free(dB16);
         dev_free(d_heavy_ht); dev_free(d_heavy_tab_off); dev_free(d_tab_col); dev_free(d_tab_val);
         dev_free(d_seg_beg); dev_free(d_seg_end); dev_free(d_scr_key); dev_free(d_scr_val); dev_free(d_cub_tmp);
@@ -5416,7 +5417,7 @@ static void hash_product(
         dev_free(d_rsb); dev_free(d_rse);
         dev_free(dA); dev_free(d_off); dev_free(d_row_nnz);
         dev_free(d_overflow); dev_free(d_tmp_key); dev_free(d_tmp_val);
-        dev_free(d_bkid); dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos); dev_free(d_sort); dev_free(d_est); dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); dev_free(d_gv); dev_free(d_gv_off);
+        dev_free(d_bkid); dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos); dev_free(d_sort); dev_free(d_est); dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); for (int vb_ = 0; vb_ <= HASH_LADDER_MAX_BIN; vb_++) dev_free(d_gv_bins[vb_]); dev_free(d_gv_off);
         dev_free(dC_rp);
         dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val); dev_free(dB16);
         dev_free(d_heavy_ht); dev_free(d_heavy_tab_off); dev_free(d_tab_col); dev_free(d_tab_val);
@@ -5697,7 +5698,7 @@ static void hash_product(
             dev_free(d_tmp_key); dev_free(d_tmp_val); dev_free(dC_rp); dev_free(dC);
             dev_free(d_bkid); dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos); dev_free(d_sort);
             dev_free(d_est); dev_free(d_flop); dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl);
-            dev_free(d_gv); dev_free(d_gv_off); dev_free(d_ovf_rows); dev_free(d_ovf_cnt); dev_free(d_row_ovf);
+            for (int vb_ = 0; vb_ <= HASH_LADDER_MAX_BIN; vb_++) dev_free(d_gv_bins[vb_]); dev_free(d_gv_off); dev_free(d_ovf_rows); dev_free(d_ovf_cnt); dev_free(d_row_ovf);
             dev_free(d_heavy_ht); dev_free(d_heavy_tab_off); dev_free(d_tab_col); dev_free(d_tab_val);
             dev_free(d_seg_beg); dev_free(d_seg_end); dev_free(d_scr_key); dev_free(d_scr_val); dev_free(d_cub_tmp);
             dev_free(d_smap); dev_free(d_smap_off); dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val); dev_free(dB16);
@@ -5924,7 +5925,7 @@ static void hash_product(
     // 12 buffer 同区域,不进 hash-prof 计时相位。
     dev_free(d_hybrid_val);   // Fix#6(审查):bin0 hybrid 值池从不释放(n×1KB/调用)
     dev_free(d_bkid); dev_free(d_sort); dev_free(d_est); dev_free(d_flop);
-    dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); dev_free(d_gv); dev_free(d_gv_off);
+    dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); for (int vb_ = 0; vb_ <= HASH_LADDER_MAX_BIN; vb_++) dev_free(d_gv_bins[vb_]); dev_free(d_gv_off);
     dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos);
     dev_free(d_smap); dev_free(d_smap_off);   // Phase B v2 全局 cursor 区
     dev_free(d_hybrid_val);
