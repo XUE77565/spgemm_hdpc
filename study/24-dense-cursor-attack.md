@@ -343,3 +343,16 @@
 - **wb-edu 双崩(两个独立发现)**:①**ocean 在 wb-edu 上 illegal memory access=彼侧 bug**
   (对拍档案:彼非 hash 行崩,非我方问题)②我方 OVERFLOW(distinct>HASH_CAP=16384 某行超帽,
   回退 merge 路径,无逐行数据)——HASH_CAP 上限在超大行上是硬约束
+
+### §3.1e nd24k 1.48 输因三轮排除法(09-23 14:2x,#61)
+
+- 已排除(全部实测 wash):①块宽(1024 已最优,降 512/256 反劣)②G 不匹配(GFORCE 5/7/8 wash
+  ——hash_logG 梯 vs 彼 LLB 自适应,假说否)③LLB 开关(wash)④read-first(已在主环默认开)
+- **存活嫌疑**:nd24k 全部 22K 行 flop>32K(中位 107K)→ 边际 3.2 vs 2.4 cyc/fl=**每乘积 0.8
+  cyc 差在重乘积流上的 B 访存/原子模式细节**(我们的 sh_val atomicAdd 与彼 values atomicAdd
+  同构,但 SMEM 布局不同:我们 col+val 连续 vs 彼 ids+values 分离=bank 冲突谱不同;或彼
+  occupancy 计数路径省了我们某笔)——**需要 ncu 停顿级对拍**(smsp 停顿分解同指标)才能切开
+  最后 0.8 cyc,列 spec91 前置
+- 教训:in-2004 的截距故事(栅栏税)不可直接平移到 nd24k(其 22K 行全在 flop>32K 重区,
+  边际主导)——**两个阵的输因不同**:in-2004 est1-5K=固定截距税;nd24k 重乘积=边际税;
+  spec91 瘦身路径可能只治前者
