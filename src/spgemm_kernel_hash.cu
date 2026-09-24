@@ -249,7 +249,7 @@ __global__ void row_span_only_kernel(
 // spec 81 两级计数排序(HASH_EXTRACT=2):小行 extract 的 O(d²) rank → O(d + 1024)。
 // 门槛 ht≥512:d≤256 档 O(d²) 税轻(≤65K op),且小 bin 表仅 3-6KB,加 12KB hist 会压 occupancy。
 // 寄存器 staging 上限 4 槽/线程(count ≤ 4×blockDim;块梯窄配/异常布局自动回退 legacy,零风险)。
-#define CS2_MIN_HT 512
+#define CS2_MIN_HT 256   /* 日班:512→256 扩覆盖 bin3(64-255 微行带,§3.1aa 判据契合;表 3KB+hist 12KB 不压占用) */
 #define CS2_STAGE 4
 
 // MinHash 概率基数估计:替 flop_ub 定 tmp buffer + hash 表大小
