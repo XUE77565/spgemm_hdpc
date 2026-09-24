@@ -2269,6 +2269,106 @@ __global__ void hash_spa_hkv_kernel(
     }
 }
 
+// spec98 轮1:WMA 重行归并累积器(分列段多 warp 流式归并;一 block 一行,8 warp 各认一个
+// 列子区间;两阶段=count→块内前缀→re-merge 直写 tmp_key 兼容 hash 下游;dup 在归并中合并)。
+// 底版=merge3 v2(warp k-way)×列区间并行 − 单 warp 串行死穴;SMEM=8×num_k×12B 描述符。
+__global__ void __launch_bounds__(1024, 1) wma_kernel(
+    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
+    int A_cols,
+    const int *bucket_rows, int n_in_bucket,
+    const long long *row_off,
+    unsigned long long *tmp_key, double *tmp_val,
+    int *row_nnz, int *overflow_flag)
+{
+    int i = bucket_rows[blockIdx.x];
+    if (i < 0) return;
+    int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    int num_k = re - rs;
+    if (num_k <= 0) { if (tid == 0) row_nnz[i] = 0; return; }
+    const int NW = 32;                                   // warp 数(=列子区间数;1024T)
+    extern __shared__ __align__(8) int smem[];
+    int    *seg_ptr = smem;                              // [NW × num_k] 各 warp 各链当前位
+    int    *seg_end = smem + NW * num_k;                 // [NW × num_k] 各 warp 各链段尾
+    double *weight  = (double*)(smem + 2 * NW * num_k);  // [num_k] a_{i,k}(全 warp 共享,只读)
+    int    *rng_cnt = (int*)(smem + 3 * NW * num_k);     // [NW] 各区间计数(两阶段)
+    // 装载权重+清计数
+    for (int p = tid; p < num_k; p += blockDim.x) weight[p] = A_val[rs + p];
+    for (int w = tid; w < NW; w += blockDim.x) rng_cnt[w] = 0;
+    __syncthreads();
+    // 各 warp:对每条链二分定位本区间 [c_lo, c_hi) 的段界(32 lane 并行扫链)
+    long long c_lo = (long long)A_cols * warp / NW, c_hi = (long long)A_cols * (warp + 1) / NW;
+    int *my_ptr = seg_ptr + (size_t)warp * num_k, *my_end = seg_end + (size_t)warp * num_k;
+    for (int p = lane; p < num_k; p += 32) {
+        int k = A_col_idx[rs + p];
+        int s = A_row_ptr[k], e = A_row_ptr[k + 1];
+        int lo = s, hi = e;                              // lower_bound(c_lo)
+        while (lo < hi) { int mid = (lo + hi) >> 1; if (A_col_idx[mid] < (int)c_lo) lo = mid + 1; else hi = mid; }
+        int l1 = lo; hi = e;                             // lower_bound(c_hi)
+        while (l1 < hi) { int mid = (l1 + hi) >> 1; if (A_col_idx[mid] < (int)c_hi) l1 = mid + 1; else hi = mid; }
+        my_ptr[p] = lo; my_end[p] = lo == l1 ? lo : l1;  // 空段=lo==l1(免后续读)
+    }
+    __syncthreads();
+    // ── 阶段A:归并计数(每 distinct 一迭代;lane 局部 min→warp 归约→match 前进)──
+    // 与 v2 同构,但段界=本区间(跨区间列互不可见 ⇒ 各 warp 独立成立)
+    #define WMA_MERGE(WRITE_)                                                            \
+    {                                                                                    \
+        long long base = row_off[i] + (WRITE_ ? (long long)rng_cnt[warp] : 0);           \
+        int out_idx = 0;                                                                 \
+        while (true) {                                                                   \
+            int mymin = 0x7fffffff;                                                      \
+            for (int p = lane; p < num_k; p += 32) {                                     \
+                int pos = my_ptr[p];                                                     \
+                if (pos < my_end[p]) { int c = A_col_idx[pos]; if (c < mymin) mymin = c; } \
+            }                                                                            \
+            for (int off = 16; off > 0; off >>= 1) {                                    \
+                int v = __shfl_xor_sync(0xffffffffu, mymin, off);                        \
+                if (v < mymin) mymin = v;                                                \
+            }                                                                            \
+            if (mymin == 0x7fffffff) break;                                              \
+            double s = 0.0;                                                              \
+            for (int p = lane; p < num_k; p += 32) {                                     \
+                int pos = my_ptr[p];                                                     \
+                if (pos < my_end[p] && A_col_idx[pos] == mymin) {                        \
+                    s += weight[p] * A_val[pos];                                         \
+                    my_ptr[p] = pos + 1;                                                 \
+                }                                                                        \
+            }                                                                            \
+            for (int off = 16; off > 0; off >>= 1)                                       \
+                s += __shfl_xor_sync(0xffffffffu, s, off);                               \
+            if (WRITE_ && lane == 0) {                                                   \
+                tmp_key[base + out_idx] = ((unsigned long long)i << 32) | (unsigned)mymin; \
+                tmp_val[base + out_idx] = s;                                             \
+            }                                                                            \
+            out_idx++;                                                                   \
+        }                                                                                \
+        if (lane == 0) rng_cnt[warp] = out_idx;                                          \
+    }
+    WMA_MERGE(0)                                          // 阶段A:只数
+    __syncthreads();
+    // 块内前缀 → 各 warp 写起点;阶段B 从头 re-merge(重走一遍,确定性同序)
+    if (tid == 0) {
+        int acc = 0;
+        for (int w = 0; w < NW; w++) { int c = rng_cnt[w]; rng_cnt[w] = acc; acc += c; }
+        row_nnz[i] = acc;
+        if ((long long)acc > row_off[i + 1] - row_off[i]) *overflow_flag = 1;   // 超槽(低估)
+    }
+    __syncthreads();
+    // 重置段界(阶段B 要从头)——重新二分(与装载同码)
+    for (int p = lane; p < num_k; p += 32) {
+        int k = A_col_idx[rs + p];
+        int s = A_row_ptr[k], e = A_row_ptr[k + 1];
+        int lo = s, hi = e;
+        while (lo < hi) { int mid = (lo + hi) >> 1; if (A_col_idx[mid] < (int)c_lo) lo = mid + 1; else hi = mid; }
+        int l1 = lo; hi = e;
+        while (l1 < hi) { int mid = (l1 + hi) >> 1; if (A_col_idx[mid] < (int)c_hi) l1 = mid + 1; else hi = mid; }
+        my_ptr[p] = lo; my_end[p] = lo == l1 ? lo : l1;
+    }
+    __syncthreads();
+    WMA_MERGE(1)                                           // 阶段B:直写(base 已含 rng_cnt[warp] 前缀偏移)
+    #undef WMA_MERGE
+}
+
 // compact 原地化守卫:margin[j] = E_off[j] − C_rp[j](≥0 全体成立 → 前缀紧缩安全,docs/21 Fix2)
 // spec90-候选2 二维梯:tier 行群 Σest 归约(工作量轴原料;与 dense_tier_block 的 span 轴解耦)
 __global__ void tier_est_stat_kernel(const int *est, const int *rows, int n, unsigned long long *sum_est) {
