@@ -2270,6 +2270,14 @@ __global__ void hash_spa_hkv_kernel(
 }
 
 // compact 原地化守卫:margin[j] = E_off[j] − C_rp[j](≥0 全体成立 → 前缀紧缩安全,docs/21 Fix2)
+// spec90-候选2 二维梯:tier 行群 Σest 归约(工作量轴原料;与 dense_tier_block 的 span 轴解耦)
+__global__ void tier_est_stat_kernel(const int *est, const int *rows, int n, unsigned long long *sum_est) {
+    unsigned long long acc = 0;
+    for (int r = blockIdx.x * blockDim.x + threadIdx.x; r < n; r += gridDim.x * blockDim.x)
+        acc += (unsigned long long)est[rows[r]];
+    if (acc) atomicAdd(sum_est, acc);
+}
+
 // spec92-A:bin 行群 Σa_len 归约(宽窄判据原料;单块,256 线程 atomic 累加)
 __global__ void bin_alen_stat_kernel(const int *A_row_ptr, const int *bucket_rows, int n,
                                      unsigned long long *sum_alen) {
@@ -4186,7 +4194,7 @@ static void hash_product(
         if (ph_f) { d_phist = decltype(d_phist)(dev_alloc(33 * sizeof(unsigned))); CHECK_CUDA(cudaMemset(d_phist, 0, 33 * sizeof(unsigned))); }
     }
     int *d_est_save = nullptr;   // est 快照(dense 置零前;rowtime 分析用;0 = 该路径未走 bucketing)
-    if (d_rt) { d_est_save = decltype(d_est_save)(dev_alloc(A_rows * sizeof(int))); CHECK_CUDA(cudaMemset(d_est_save, 0, (size_t)A_rows * sizeof(int))); }
+    if (d_rt || getenv("D2TIER")) { d_est_save = decltype(d_est_save)(dev_alloc(A_rows * sizeof(int))); CHECK_CUDA(cudaMemset(d_est_save, 0, (size_t)A_rows * sizeof(int))); }
     // DD_ROWTIME=path:dense_direct 逐行周期+路径模式(docs/66 §8 cursor/search 判据采数)
     unsigned long long *d_ddrt = nullptr; int *d_ddmode = nullptr;
     FILE *dd_f = nullptr; const char *dd_path = getenv("DD_ROWTIME");
@@ -4291,7 +4299,7 @@ static void hash_product(
                 if (g_fdest < 0) { const char *e = getenv("FORCE_DITER_EST"); g_fdest = (e && *e) ? atoi(e) : 0; }
         compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
             g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff, g_fdest);
-        if (d_rt) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零
+        if (d_est_save) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零(D2TIER 工作量轴也吃)
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
                                thrust::device_ptr<int>(d_offb));
@@ -5726,7 +5734,25 @@ static void hash_product(
                         // 低档不动 —— wb-edu 实测全档缩窗 +4%(占用↑ → 行工作集并发↑ → L2 局部性
                         // 反损,与 §24 排序毁局部性同族),tier-5 缩窗只升不降(≥2/SM)
                         const int uwin = (t == DENSE_TIER_COUNT - 1 && h_tier_w[t] > 0) ? h_tier_w[t] : dense_tier_max(t);
-                        const int tblk = dense_tier_block(t);
+                        int tblk = dense_tier_block(t);
+                        // spec90-候选2 二维梯解耦(D2TIER=1):工作量轴覆写——tier 行群均 est 低
+                        // (轻行,车道需求小)→降块宽换块数;est 高(重行)保持 span 档默认。
+                        static int g_d2tier = -1;
+                        if (g_d2tier < 0) { const char *e = getenv("D2TIER"); g_d2tier = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                        if (g_d2tier) {
+                            static unsigned long long *d_tsum = nullptr;
+                            if (!d_tsum) { d_tsum = decltype(d_tsum)(dev_alloc(sizeof(unsigned long long))); }
+                            CHECK_CUDA(cudaMemsetAsync(d_tsum, 0, sizeof(unsigned long long), (cudaStream_t)0));
+                            tier_est_stat_kernel<<<(nr_t + 255) / 256, 256>>>(d_est_save ? d_est_save : d_est, d_rows_sorted + off, nr_t, d_tsum);
+                            unsigned long long se = 0;
+                            CHECK_CUDA(cudaMemcpy(&se, d_tsum, sizeof(unsigned long long), cudaMemcpyDeviceToHost));
+                            int mean_est = nr_t > 0 ? (int)(se / nr_t) : 0;
+                            int ovl = tblk;
+                            if (mean_est < 1024) ovl = tblk / 4;
+                            else if (mean_est < 4096) ovl = tblk / 2;
+                            if (ovl < 64) ovl = 64;
+                            if (ovl != tblk) { tblk = ovl; dbg("[%s]   D2TIER tier %d: mean_est=%d → 块宽 %d\n", tag, t, mean_est, tblk); }
+                        }
                         size_t nsm = (size_t)uwin * sizeof(double) + (size_t)((uwin + 31) >> 5) * sizeof(unsigned) * 2 + 64;
                         CHECK_CUDA(cudaFuncSetAttribute(
                             (tblk <= 64) ? dense_struct_numeric_kernel<64>
