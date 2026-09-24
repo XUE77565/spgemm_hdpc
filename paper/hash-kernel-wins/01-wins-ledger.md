@@ -103,3 +103,8 @@ F2 8.026≈8.007、crankseg 50.030≈50.012 与 ×5 轮逐位复现。
 ### 下一步(按总纲)
 ①剩余=cursor/dense 载体对齐此标准;③创新线启动(spec90 RH 紧表解锁/双模式融合/
 spec92-B 宽窄双桶);④⑤按纲不动。
+
+### [10:15 补] cursor 第二主场定谳(反转)
+crankseg 8,943 cursor 行 vs 彼 hashNumeric:**中位 2.444/胜率 1.5%**(c-64 赢不迁移);
+强制全 hash 31.0ms vs cursor 路径 41.1ms=**hash 快 25%**。cursor 真生态位=c-64 型独占;
+crankseg 型行改判 hash=④边界(用户 09-22 判向数据证实)。
