@@ -700,3 +700,16 @@
 - **extract2 决策选项更新(叠加 §3.1aa 判据)**:B' = dup 条件 + CS2_MIN_HT=256
   (默认版即含);净效应=pre2 −19.6/c-64 −8.6/msc +7.7(dup 条件可再滤 msc)。
   翻默认文件与判据实现合并交用户。
+
+### §3.1ad 日班#6:cursor 第二主场惨败定谳(09-24 10:1x)
+
+- **对拍(8,943 可比 cursor 行,同窗)**:我方 cursor vs 彼 hashNumeric 同行 = **中位
+  2.444,胜率 1.5%**(p25-p75 全带 2.1-3.0 均匀劣)——c-64 的 cursor 赢**完全不迁移**
+  到 crankseg 型宽 span 行(443K cyc/行 vs 彼 ~180K)。
+- **强制全 hash 对照**:accumulate 31.0ms vs 默认(cursor 承 12.5K 行)22.2+count 5.1+
+  direct 13.8=41.1ms 相位和——**强制 hash 反而更省**(31.0 < 41.1)≈ 这些行走我方
+  hash 比走我方 cursor 快 ~25%!(nnz 对)→ 与 09-22 用户判"crankseg 型属 hash"一致,
+  边界系数(occgate/DITER 门)是④但方向已证。
+- **记分更新**:cursor 载体的真生态位=c-64 型(窄人口)独占;crankseg 型行=我方 hash
+  也输彼 1.5(截距税)但比 cursor 好 25%——**cursor 第二主场不成立,证据补强任务关闭
+  并反转**:不是"cursor 能赢第二阵"而是"cursor 行该改判 hash"。
