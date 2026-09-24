@@ -5172,7 +5172,7 @@ static void hash_product(
                         CHECK_CUDA(cudaGetLastError());
                     } else {
                     static int g_lht = -1;
-                    if (g_lht < 0) { const char *e = getenv("HASH_LHT"); g_lht = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                    if (g_lht < 0) { const char *e = getenv("HASH_LHT"); g_lht = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }   // 09-24 用户授权翻默认:bins4-9 常量折叠(八阵屏 0.878-0.990 全≤1+值门逐位);HASH_LHT=0 逃生门
                     if (g_lht && bi >= 4 && bi <= 9 && probe_rf_on() && !d_phist && !g_wm) {
 #define SPA_LAUNCH_LHT(LHT_) hash_spa_kernel<0,1,0,0,(LHT_)><<<n, hblk, smem_flat, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
