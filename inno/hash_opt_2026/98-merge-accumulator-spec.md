@@ -54,3 +54,22 @@ merge3 前科:nd24k total_flop=11.9B > 3B 工作区帽——物化全部乘积�
 
 轮1:单窗原型(固定 W,块级两两归并树)+nd24k 单带人口功能验(nnz 对);
 轮2:全行多窗+边界携带+fallback 判据;轮3:值门三件套+带对拍;轮4:八阵屏+晋默认评估。
+
+## 附录:机构复用清单(09-24 20:3x desk 读码定稿)
+
+### cursor 侧(hash_dense_direct,src:1053-1104)
+- **smap 游标双形态**:SMEM 区(a_len≤SMAP_SMEM_MAX)/全局区回退——每 k 一槽,跨窗续扫
+  免重搜(docs/35 §3 消每窗 O(a_len) 往返);WMA 直接借作"段游标"(归并树的链头)。
+- **窗口机制**:列轴切窗+窗界数据驱动;WMA 的窗=同一切法,但窗内做归并而非位图。
+
+### merge3 侧(spgemm_merge.cu)
+- **v1 串行 k-way**(53-70):thread0+SMEM seg_cur/seg_end 游标对——**结构可借,单线程
+  形态不可借**(重行死因);v2 并行(279+,warp-per-row+warp-shuffle min/sum 归约)=
+  WMA 块级归并的直接底版,需扩到 1024T 分治树。
+- **SAFETY 帽机制**(1063-1065):MRG3_MAX_ENTRIES 前置检查干净退出——WMA 工作区帽
+  同款护栏(虽然 O(W) 设计理论上免疫,护栏照装)。
+- **弃用**:expand/物化 stage(WMA 流式直读 B 段);串行 dedup(v2 的并行归约替代)。
+
+### 复用结论
+WMA ≈ cursor 的窗+smap 游标 × merge3 v2 的并行 k-way 归并 − 两者的物化/串行病。
+三个成熟机构的重组创新——实现风险可控,轮 1 从 v2 内核改窗化起步。
