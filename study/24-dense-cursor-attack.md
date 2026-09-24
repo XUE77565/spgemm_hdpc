@@ -768,3 +768,14 @@
   架上)+**CNT_FUSE 未翻**(旧测 in-2004 −16.9%=1.56→1.30/c-64 −10%=0.88!候默认板
   头牌,值门 R1 修复后未重跑=下一杠杆)。
 - 解析红线+1:相位和**必排 TOTAL(GPU) 行**(程序自带汇总行,混入=虚高 5×)。
+
+### §3.1aj CNT_FUSE 翻默认评估=暂不可晋(09-24 20:2x-20:3x)
+
+- **值门结果**:F2 PASS(nnz 精确,d5h 阵 CNT_FUSE 路径惰性);**in-2004 FAIL**——
+  rc=124(600s 挂起)+"operation not supported on global/shared address space"@dense tier
+  后 diter_gapped_copy 区(尸检=/tmp/wab/cntfuse_fail_autopsy.log)。
+- **判读**:CNT_FUSE 与新默认态(extract2 全局+CS2_MIN_HT=256+LHT)在 in-2004 的
+  diter×重 bin 组合下**交互失败**——R1 修复治的是 int32 溢出,这是另一病(地址空间)。
+  **暂不可晋,停车**(env 默认关零生产影响);重攻需净上下文+隔离三新默认逐项二分。
+- **②账目影响**:in-2004 −17%/c-64 −10% 的 CNT_FUSE 收益暂不可得;四输阵差距仍归
+  ④路由(不改);scoreboard(§3.1ai)为当前终版。
