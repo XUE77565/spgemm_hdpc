@@ -801,3 +801,19 @@
   基线逐位一致**(WMA 承 bins8-9 全人口)✓;零 CUDA 错误。
 - **③里程碑:新载体首次产出正确输出**。轮2(多窗+fallback 判据)/轮3(性能+带对拍
   1.61→<1.0)/轮4(八阵屏)续。
+
+### §3.1al 对称消融(ocean 松表版)第一夜判负:工程墙(09-24 23:4x-23:5x)
+
+- **尝试**:ocean Common.h 换我方松 pow2 表族(512-16384,12B/槽)+配套重配
+  (CONCURRENT_BLOCKS 逐档精算+SMEM 227KB 档)→ **三重墙**:
+  ①NumericHashmap::init 直接写 ids+values 超出 SHARED_MEM_PER_BLOCK 槽位=越界
+  (illegal access,bin1 即炸:需 6160B > 旧预算 4096B;提预算又引发 DENSE_BIN/
+  USPARSE_UPPER 等六个下游常量连锁重算)②bin6 196624B > 128KB 预算需 228KB 档
+  ③C++ 模板哈希族(SIZE 编译期)全实例化膨胀+make 依赖链(main.o 不感知 .cuh 改动
+  → 假"Nothing to be done"害了一轮假阴性)。
+- **判**:ocean 的表尺寸**不是独立旋钮**——深嵌于并发预算/块宽/dense 档/USPARSE/
+  SMEM 档六层常量网。对称消融需全套一致性重配(≈重设计),非改一行可测。
+  第一夜停(诚实:换形态做对称验证的成本>单侧证据增益)。
+- **方法论红利**:反向确认了"我们松表/ocean 紧表是各自六层常量网的局部最优"——
+  互抄都要整套重配,这是**形态级锁定**的又一实证(两轴占用定律的推论)。
+- ocean 原版已恢复复验(F2 7.49ms,与历史一致);备份 Common.h.bak 在 /tmp/wab。
