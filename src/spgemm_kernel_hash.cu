@@ -2286,6 +2286,7 @@ __global__ void __launch_bounds__(1024, 1) wma_kernel(
     int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
     int num_k = re - rs;
     if (num_k <= 0) { if (tid == 0) row_nnz[i] = 0; return; }
+    if (num_k > 512) { if (tid == 0) { *overflow_flag = 1; row_nnz[i] = 0; } return; }   // 超帽→retry 回退(hash_global 重跑,正确性保底)
     const int NW = 32;                                   // warp 数(=列子区间数;1024T)
     extern __shared__ __align__(8) int smem[];
     int    *seg_ptr = smem;                              // [NW × num_k] 各 warp 各链当前位
@@ -5255,10 +5256,25 @@ static void hash_product(
                     // spec91 刀F:LOG_HT 编译期定长实例(bins 7-9 = ht 4096/8192/16384 损失带;
                     // HASH_LHT=1 门,默认 0 走下方运行时形态 bit-for-bit)。仪器(probe_hist)/WM/PRF
                     // 逃生门开着时回运行时形态。
-                    // 刀F-主刀:素数紧档(bins7-9 → 2719/5449/16253,ocean 同族;LF≤0.76,
-                    // SMEM ÷1.5-3 → 块/SM ↑ → 延迟遮蔽)。env HASH_PHT=1。
-                    static int g_pht = -1;
+                    // spec98 轮1:WMA 归并累积器发射(WMA=1 劫持 bins8-9 重行;est 槽=row_off 间隙,
+                    // 输出 tmp_key 兼容下游;SAFETY:num_k≤2048(a_len 帽)否则回落哈希)
+                    static int g_wma = -1;
+                    if (g_wma < 0) { const char *e = getenv("WMA"); g_wma = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                    static int g_pht = -1;   // (上提:声明不可悬于 else 后)
                     if (g_pht < 0) { const char *e = getenv("HASH_PHT"); g_pht = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                    if (g_wma && bi >= 8 && bi <= 9) {
+                        size_t wsmem = (size_t)3 * 32 * 512 * sizeof(int) + 32 * sizeof(int) + 512 * sizeof(double);   // num_k 帽 512(nd24k max 491;超帽行走 overflow→hash retry 回退)
+                        static bool wma_opt = false;
+                        if (!wma_opt) { CHECK_CUDA(cudaFuncSetAttribute(wma_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)wsmem)); wma_opt = true; }
+                        // 行 a_len 帽检查(host 不可得 a_len per row——kernel 内 num_k>2048 时描述符越界!)
+                        // → 轮1 保守:整 bin 人口最大 a_len 由 A_rows 粗筛不可行,先以 2048 帽+kernel 内
+                        //   越界风险由 wsmem 上界(3*32*2048)兜住:超帽行写出界=值门会抓(轮1 接受,轮2 修)
+                        wma_kernel<<<n, 1024, wsmem, cur_s>>>(
+                            dA_rp, dA_ci, dA_val, A_cols,
+                            rows_ptr, n, d_off,
+                            d_tmp_key, d_tmp_val, d_row_nnz, d_overflow);
+                        CHECK_CUDA(cudaGetLastError());
+                    } else
                     if (g_pht && bi >= 7 && bi <= 9 && probe_rf_on() && !g_wm) {
 #define SPA_LAUNCH_PHT(PHT_, HIST_) hash_spa_kernel<0,1,(HIST_),0,0,(PHT_)><<<n, hblk, (size_t)(((PHT_) + 1 & ~1)) * sizeof(int) + (size_t)(PHT_) * sizeof(double), cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
