@@ -5032,8 +5032,9 @@ static void hash_product(
                 // spec 81 两级排序 hist 预算:3×1024×4B=12KB(仅 512≤ht≤1024 档——kernel 侧分支同界;
                 // bin5 表 12KB+12KB=24KB,256 线程 8 块 ×24KB=192KB < 228KB 不压 occupancy。
                 // ⚠ ht>CSORT_HT 档绝不能加:bin9 表 196KB+12KB=208KB > opt-in(HASH_CAP×12)→ 发射失败)
-                static int g_extract2 = -1;   // HASH_EXTRACT=2:两级计数排序,默认 0=legacy
-                if (g_extract2 < 0) { const char *e = getenv("HASH_EXTRACT"); g_extract2 = (e && atoi(e) == 2) ? 1 : 0; }
+                static int g_extract2 = -1;   // B'(09-24 用户授权默认全局开):两级计数排序;HASH_EXTRACT=0 逃生门
+                // (bin 级 dup 条件版试作判负:stat 核在 F2/msc 触发未定位 fault,且条件仅护 msc +0.06ms 绝对值——不值)
+                if (g_extract2 < 0) { const char *e = getenv("HASH_EXTRACT"); g_extract2 = (e && atoi(e) == 0) ? 0 : 1; }
                 if (g_extract2 && ht >= CS2_MIN_HT && ht <= CSORT_HT) smem_flat += 3 * 1024 * sizeof(int);
                 size_t smem_priv = (size_t)PRIV_W * ht * (sizeof(int) + sizeof(double));
                 // spec91 刀E:VG 发射所需 env statics + 块梯(原在下游 else 内,上提共用)
