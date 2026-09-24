@@ -108,3 +108,25 @@ spec92-B 宽窄双桶);④⑤按纲不动。
 crankseg 8,943 cursor 行 vs 彼 hashNumeric:**中位 2.444/胜率 1.5%**(c-64 赢不迁移);
 强制全 hash 31.0ms vs cursor 路径 41.1ms=**hash 快 25%**。cursor 真生态位=c-64 型独占;
 crankseg 型行改判 hash=④边界(用户 09-22 判向数据证实)。
+
+## §终·终版 09-24 10:5x(全天链式收官,等用户)
+
+### 三决策(不变,证据链均全)
+1. **LOG_HT bins4-9 翻默认**:八阵 accumulate 全≤1(crankseg −12.2/F2 −7.2)+值门逐位双绿
+   +净TOTAL 有利+wb-edu 不崩。执行=一行(g_lht 默认 1)。
+2. **extract2 形态 B'**:dup 条件(flop/est<3)×CS2_MIN_HT 256——pre2 −19.6/c-64 −8.6
+   (256 扩展翻盘)/msc 由条件滤。实现=bin 级 dup 统计+WSEL 同款。
+3. 候默认板(CNT_FUSE/RETRY2/mempool)叠加上两项后排。
+
+### 全天定谳清单(25+ commit)
+- **正**:LOG_HT46(上)/extract2+256(上)/CS2 扩展 c-64 翻盘
+- **反转**:cursor 第二主场不成立(crankseg cursor 行 vs 彼 2.444;强制 hash 快 25%)
+  ——真生态位=c-64 型独占;crankseg 型改判 hash=④方向已证
+- **判负六卷**(全档):软件流水/批2 双链/WM v2-v4 聚合族/双选择/二维梯 v1/F32 拆分
+- **机理资产**:重行=每行固定开张成本(每乘积我方快 2.26vs4.15);等驻留发射差 15 点;
+  分支密度墙;GFORCE 语义勘误;屏方法论两红线
+- **③线**:两候选 v1 判负→回炉(候选 3 新载体需人口普查/或①收官转④前哨)
+
+### 下一步(按总纲,等用户定向)
+①收官=DENSE/COUNT_FUSE 值门收尾+两决策执行;②=系统级多阵;③=新构思;④=occgate
+启用电池(crackseg 改判方向已证)。
