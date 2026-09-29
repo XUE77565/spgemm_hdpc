@@ -144,8 +144,12 @@ int main(int argc, char **argv) {
 
 
     // 预热:各方法空跑数轮,摊掉 thrust/cuSPARSE handle/CUDA allocator 的冷启动开销,测稳态性能
-    printf("===============WARMINGUP (5 rounds)===============");
-    for (int warmup = 0; warmup < 5; warmup++) {
+    // WARMUP_N env 仅作 memcheck 等慢速仪器的预算阀(默认 5=生产语义 bit-for-bit;study/26 §5)
+    int warmup_n = 5;
+    if (const char *we = std::getenv("WARMUP_N")) warmup_n = atoi(we);
+    if (warmup_n < 0) warmup_n = 0;
+    printf("===============WARMINGUP (%d rounds)===============", warmup_n);
+    for (int warmup = 0; warmup < warmup_n; warmup++) {
         void *wc = nullptr; int wr = 0, wcol = 0, wn = 0;
         if (should_run_method("cu"))      { spgemm_self_product(A_buffer, A_rows, A_cols, A_nnz, &wc, &wr, &wcol, &wn); if (wc) pinned_free(wc); wc = nullptr; }
         if (should_run_method("manual"))  { spgemm_self_product_manual(A_buffer, A_rows, A_cols, A_nnz, &wc, &wr, &wcol, &wn); if (wc) pinned_free(wc); wc = nullptr; }

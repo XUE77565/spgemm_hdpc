@@ -77,6 +77,66 @@ dense 最大档 7277,彼判据 range 拦死)——对拍=我方 dense 位图 vs 
    **开工前须用户确认**。
 - ⚠ 基建欠账:/tmp/oc_*.csr 已清,须重建 ocean 侧 CSR(convert 工具定位)。
 
+## §5 GPU 相位第 2 发实录(09-29 11:3x-12:0x,loop 第 2 发)
+
+### 基建与门(全绿)
+
+- **哨兵(前,降级口径)**:journalctl/dmesg//var/log/journal 全被本机 shell 环境路径级封锁
+  (间歇性"claude native binary"包装错的真因)——改用 uptime+ ECC 查询:boot 稳定 4 天
+  (≈09-25 01:00 起,与 #7 wedge 恢复吻合)、双卡 ECC uncorrected volatile+aggregate=0、
+  卡空闲。权威 journalctl 口径欠着,已请用户 `! sudo journalctl -k | grep -i xid` 补。
+- **二进制**:重建两个——`spgemm_test`(普通,被 DBG 版构建前让位删除)+ **`spgemm_ndd`**
+  (make DBG=1;HashProf 相位计时是 #ifdef DBG,**默认构建无相位输出**——本次踩到的坑);
+  源码新增 WARMUP_N env(默认 5=生产语义 bit-for-bit;memcheck 预算阀,study 用)。
+  F2 sanity:RC=0,nnz=39,648,121 精确 ✓。
+- **sanitizer 工具坑**:/usr/bin/compute-sanitizer(Ubuntu nvidia-cuda-toolkit 2023 版)
+  缺注入库 libsanitizer-collection.so(RC=13 哑火,**非 GPU 事件**);正确工具=
+  **/usr/local/cuda/bin/compute-sanitizer**(2025.1.0)。F2 冒烟 0 errors ✓。
+- **memcheck 正门(nd24k 强制 dense 位图,WARMUP_N=0)**:**ERROR SUMMARY: 0 errors**,
+  RC=0,**C_nnz=189,190,604 精确命中历史基准** ✓✓。memcheck 膨胀态相位(供参考):
+  dense_count 6121ms+dense_direct 23821ms 主体,accumulate 仅 40ms=强制路由生效
+  (全员进 diter ✓)。按 F2 标定 ~20× 膨胀估裸跑 TOTAL≈1.5s vs 默认路由 143ms≈10×
+  强制经济学代价(与 pre2 13× 同量级,预期内)。
+
+### 经济屏终版(四臂 ×3 交错 + ocean ×3 同日,净TOTAL=TOTAL−h2d−d2h,±0.1% 复现)
+
+| 臂 | env | 净TOTAL 中位 | dense 和 | accumulate | vs ocean |
+|---|---|---|---|---|---|
+| dense0 全位图 | 强制栈+PB2_CURSOR=0 | 260.4 | 255.5 | 0.6 | **3.26× 输** |
+| cursor2 全游标 | 强制栈+PB2_CURSOR=2 | 161.6 | 156.6 | 0.6 | 2.02× 输 |
+| default 混合 | (无) | 143.5 | 117.2 | 16.4 | 1.79× 输 |
+| **allhash** | DITER_MIN_FLOP=0 DSTRUCT_WIN=0 | **107.4** | 0.0 | **80.2** | **1.34× 输** |
+| ocean | bench.json 10iters | 79.9 | — | — | 1.00 |
+
+- 全部臂 nnz=189,190,604 精确 ×3 ✓;allhash 为 default 之外的补臂(经济屏缺的第三台车)。
+- **测量有效性**:default 143.5 vs 历史史 142.91(09-24)复现 0.4%✓;ocean 79.9 vs 80.93
+  复现 1.3%✓;跨轮 ±0.1%。共租 xuejing(Vperseus_cpu ~10 核,恒定 4.5h)对 GPU 相位
+  零影响——净窗门过+GPU 侧无彼进程+恒定背景被交错配对抵消(用户问"是否被 xuejing 污染"
+  触发本核验,结论=无)。
+- **口径自纠**:汇总 TOTAL 初版含 h2d/d2h(nd24k 输出 2.27GB 回传≈80ms!)——已按红线
+  排传输重算;电池脚本 TOTAL 列含义=原始 TOTAL(GPU),净值得从相位重提。
+
+### 三连定谳(本发核心产出)
+
+1. **dense 位图臂死刑坐实**(§3b 截距框架的实测终结):全位图 255.5ms/72K 行≈3.55µs/行
+   vs 彼全管线 1.11µs/行——每行窗常数 3× 于彼截距,对拍完败;cursor 中间(2.02×)。
+   "dup 62× 对位图免费"的 count 层红利被 numeric 窗扫描+9-10 窗结构税吞没。
+2. **nd24k 认知重构**:我方 default 本就是 dense/cursor 主体(117.2/143.5=82%,hash 仅
+   16.4ms)——**重行系统差距 1.79× 主要住在 dense_direct 91ms 里,不在 hash accumulate**;
+   旧叙事"nd24k=hash 阵输重行"在路由层不成立(逐行层的 22K 可比行输 1.47× 仍真)。
+3. **错配税 25%+残余 1.34×**:allhash 107.4 比 default 143.5 快 25%(crankseg §3.1ad
+   先例在 nd24k 复现)=我方 default 把重行错送 dense/cursor;改判本身=④红线不动,证据
+   入档。剩余 1.34×(107.4 vs 79.9)=**纯 hash 形态差距=截距税正面战场**——spec99 复刻
+   的靶子被锐化:accumulate 80.2ms→需 −25.6% 追平彼全管线。
+
+### 分叉执行
+
+- 位图路判负 → **spec99 复刻立项草案已写**(inno/hash_opt_2026/99,开工停等用户确认)。
+- 第 3 发(下一发)=任务 2 转向:**hash 载体逐行截距分解**——allhash 配置 HASH_ROWTIME
+  vs 彼 ROWCYCLES 同行,intercept/slope 分解定谳(spec99 靶指标),代替已死的 dense 对拍。
+
 ## 状态
 
 - 09-29 11:0x:脚本+全部分析完成,判决=可行;study/26 立卷;memory 四项修正同步。
+- 09-29 12:1x:GPU 相位第 2 发收官——门全绿(memcheck 0 err/nnz 精确)+经济屏四臂定谳
+  (位图死刑/认知重构/错配税 25%+残余 1.34×);spec99 草案立;Xid 后查 ECC 0 ✓。
