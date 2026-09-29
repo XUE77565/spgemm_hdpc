@@ -3903,6 +3903,110 @@ __global__ void hash_check_sorted_kernel(const int *row_ptr, const int *col, int
         if (col[i] >= col[i + 1]) atomicAdd(violations, 1);
 }
 
+// ═════ spec99 刀1:重行同构复刻 kernel(2026-09-29 开工,study/26 §5 蓝图/inno/99)══════
+// 对照形态非创新(用户批准):机理吸收 ocean hashNumeric 五要素,代码自研——
+// ①素数贴合档:HT_P 模板参复用 spec91 资产(magic-div 编译期取模+8B 偶对齐,1746 式)
+// ②占用驱动块几何:launch_bounds 线程×块积=2048/SM(2719↔512T×4 / 5449↔1024T×2)
+// ③组自适应并行:localLoadBalance 机理(avg B 行长定组+双向 2× 容差重平衡,G∈[2,块宽])
+// ④极简栅栏:全程 3 个(init/收尾/仪器),主环零栅栏零分支(对照 hash_spa 18 栅栏)
+// ⑤大行无序写交下游 compact+sort(hash_spa 大行同款;有序化由 compact_sort_kernel 保)
+// 保留我方资产:Knuth×2654435761 探测(雪崩优于彼 id*11,A/B 实验后定去留);溢出走
+// ovf_rows→retry 机具(hash_spa 同款);rowtime[i]=探测环完成处(同彼 ROWCYCLES 窗,不含提取)。
+// SPEC99 env 门(默认关=零生产影响);bins7-8 接管,bin9+ 仍走原路径。
+// 刀2:B16ON 模板参(交织 B 装载,每乘积 1 次 uint4 vs 2 次分离读——hash_spa 同款,编译期消分支)
+template<int LOG_NTHR, int HT_P, int B16ON = 0>
+__global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heavy_kernel(
+    const int *__restrict__ A_rp, const int *__restrict__ A_ci, const double *__restrict__ A_val,
+    const int *__restrict__ B_rp, const int *__restrict__ B_ci, const double *__restrict__ B_val,
+    const uint4 *__restrict__ B16,
+    const int *row_ids, int nrows, const long long *d_off,
+    unsigned long long *tmp_key, double *tmp_val, int *row_nnz,
+    int *overflow_flag, int *ovf_rows, int *ovf_cnt, int *row_ovf,
+    const int *d_flop, const int *d_maxbl, unsigned long long *rowtime)
+{
+    (void)nrows;
+    extern __shared__ int smem_hh[];                        // [HT_P]=sh_col(int);对齐后 sh_val(double)
+    const int tid = threadIdx.x;
+    const unsigned long long rt0 = rowtime ? clock64() : 0;
+    int *sh_col = smem_hh;
+    double *sh_val = (double *)(smem_hh + ((HT_P + 1) & ~1));   // 8B 对齐(素数奇表必需,spec91 修复)
+    for (int s = tid; s < HT_P; s += blockDim.x) { sh_col[s] = -1; sh_val[s] = 0.0; }   // 清表(ids+vals 同遍,彼同构)
+    __syncthreads();                                       // 栅栏 1/3: init
+
+    const int i = row_ids[blockIdx.x];
+    const int rs = A_rp[i], re = A_rp[i + 1];
+    const long long base = d_off[i];
+    if (tid == 0) row_nnz[i] = 0;                          // 溢出行会被 retry 覆盖,与 hash_spa 同语义
+
+    // 组自适应(机理吸收自研):avg B 行长(剔除最长)定初始 lg → 最长 B 行剩余轮次 vs A 迭代数
+    // 双向 2× 容差重平衡 → G∈[2, 2^LOG_NTHR](治我方 G 帽 32 的跨 warp 壁垒,crankseg 型主受益)
+    {
+        const int a_len = re - rs;
+        const long long prods = d_flop[i];
+        const int max_bl = d_maxbl[i] + 1;
+        long long avg = (prods - max_bl) / (a_len > 1 ? a_len - 1 : 1);
+        if (avg < 1) avg = 1;
+        int lg = 31 - __clz((unsigned)avg);
+        if (lg < 2) lg = 2;
+        if (lg > LOG_NTHR) lg = LOG_NTHR;
+        long long max_sub = ((long long)max_bl + (1 << lg) - 1) >> lg;
+        long long iters = (a_len + (1LL << (LOG_NTHR - lg)) - 1) >> (LOG_NTHR - lg);
+        while (max_sub > iters * 2 && lg < LOG_NTHR) {      // 组太小:最长 B 行拖尾
+            lg++; max_sub = ((long long)max_bl + (1 << lg) - 1) >> lg;
+            iters = (a_len + (1LL << (LOG_NTHR - lg)) - 1) >> (LOG_NTHR - lg);
+        }
+        while (iters > max_sub * 2 && lg > 2) {             // 组太大:A 侧并行度浪费
+            lg--; max_sub = ((long long)max_bl + (1 << lg) - 1) >> lg;
+            iters = (a_len + (1LL << (LOG_NTHR - lg)) - 1) >> (LOG_NTHR - lg);
+        }
+        const int group_size = 1 << lg;
+        const int num_groups = blockDim.x >> lg;
+        const int my_group = tid >> lg;
+        const int my_id = tid & (group_size - 1);
+
+        for (int p = rs + my_group; p < re; p += num_groups) {
+            const int k = A_ci[p];
+            const double a_ik = A_val[p];
+            const int ks = B_rp[k], ke = B_rp[k + 1];
+            for (int q = ks + my_id; q < ke; q += group_size) {
+                int j; double bv;
+                if (B16ON) {                       // 交织 B:一次 128b 携带 col+val(hash_spa 同款)
+                    const uint4 e = B16[q];
+                    j = (int)e.x; bv = __hiloint2double(e.w, e.z);
+                } else { j = B_ci[q]; bv = B_val[q]; }
+                const double v = a_ik * bv;
+                unsigned slot = (unsigned)(j * 2654435761u) % (unsigned)HT_P;   // magic-div(编译期常量)
+                int probes = 0;
+                while (true) {
+                    const int entry = sh_col[slot];
+                    if (entry == j) { atomicAdd(&sh_val[slot], v); break; }
+                    if (entry == -1) {
+                        const int prev = atomicCAS(&sh_col[slot], -1, j);
+                        if (prev == -1 || prev == j) { atomicAdd(&sh_val[slot], v); break; }
+                    }
+                    slot = (slot + 1 >= (unsigned)HT_P) ? 0u : slot + 1;
+                    if (++probes >= HT_P) {                 // 满表:retry 机具(hash_spa 同款)
+                        atomicExch(overflow_flag, 1);
+                        if (!atomicExch(&row_ovf[i], 1)) { const int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    __syncthreads();                                       // 栅栏 2/3: 收尾
+    if (rowtime && tid == 0) rowtime[i] = clock64() - rt0; // 同彼窗:探测环完成处,不含提取
+
+    // 提取:无序 compact 写(hash_spa 大行同款;行内有序由下游 compact_sort_kernel 保证)
+    for (int s = tid; s < HT_P; s += blockDim.x) {
+        if (sh_col[s] != -1) {
+            const int pos = atomicAdd(&row_nnz[i], 1);
+            tmp_key[base + pos] = ((unsigned long long)i << 32) | (unsigned int)sh_col[s];
+            tmp_val[base + pos] = sh_val[s];
+        }
+    }
+}
+
 // Host
 
 static void hash_product(
@@ -5262,6 +5366,28 @@ static void hash_product(
                     if (g_wma < 0) { const char *e = getenv("WMA"); g_wma = (e && *e && atoi(e) > 0) ? 1 : 0; }
                     static int g_pht = -1;   // (上提:声明不可悬于 else 后)
                     if (g_pht < 0) { const char *e = getenv("HASH_PHT"); g_pht = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                    // spec99 刀1:重行同构复刻发射(SPEC99=1 门默认关;bins7-8 接管=2719↔512T×4/
+                    // 5449↔1024T×2;占 hash_spa 之外独立 kernel,行计时段同彼窗)
+                    static int g_s99 = -1;
+                    if (g_s99 < 0) { const char *e = getenv("SPEC99"); g_s99 = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                    if (g_s99 && bi >= 7 && bi <= 8 && !g_wm && !g_pht) {
+#define HH_LAUNCH(LNT_, P_) do { \
+    const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
+    static bool hh_opt_##P_ = false; \
+    if (!hh_opt_##P_) { CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); hh_opt_##P_ = true; } \
+    if (dB16) hash_heavy_kernel<(LNT_), (P_), 1><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
+        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, dB16, rows_ptr, n, d_off, \
+        d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
+        d_flop, d_maxbl, d_rt); \
+    else      hash_heavy_kernel<(LNT_), (P_), 0><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
+        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, nullptr, rows_ptr, n, d_off, \
+        d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
+        d_flop, d_maxbl, d_rt); } while (0)
+                        if (bi == 7) HH_LAUNCH(9, 2719);
+                        else         HH_LAUNCH(10, 5449);
+#undef HH_LAUNCH
+                        CHECK_CUDA(cudaGetLastError());
+                    } else
                     if (g_wma && bi >= 8 && bi <= 9) {
                         size_t wsmem = (size_t)3 * 32 * 512 * sizeof(int) + 32 * sizeof(int) + 512 * sizeof(double);   // num_k 帽 512(nd24k max 491;超帽行走 overflow→hash retry 回退)
                         static bool wma_opt = false;
