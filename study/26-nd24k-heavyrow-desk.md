@@ -463,6 +463,19 @@ D. 论文线:①hash 载体收口叙事(三方向表+判负地图=现成素材)�
   **dirty-after-clear 若是未同步写=racecheck 一发定谳**(此前只跑过 memcheck,这是盲区!)。
 - 调试构建已删,夜班终态复验 80.20 ✓,ECC 全净。
 
+### §18 第 20 发(夜):racecheck 清白+单流排除——forensic 四卷封箱(09-29 22:3x-22:4x)
+
+- **racecheck 0 hazards**(SMEM 竞态排除);**单流(HASH_NSTREAMS=0)仍脏**(bin 并发排除);
+  锚点三角验证正常(括号手术排除)。至此排除清单:memcheck/racecheck/单流/warmup/D5H/
+  bitonic/写位/copy 容量/锚点——**代码静态层全部清白,虫在流程编排层**。
+- **剩余唯一假设**:多 pass(est-cont 双 expand)×行重分箱的 row_nnz/tmp 一致性——pass 间
+  行在 bin7-8(我,ordered+row_nnz=d)与 bin≤6(hash_spa,CSORT ordered+count)之间迁移时,
+  某处让 row_nnz 与 tmp[base..] 错位(尾挂 col-0=未初始化 tmp 槽被拷贝=读侧 row_nnz 过大)。
+  **晨班正确打法:通读 est_cont/expand 的 pass 循环,画 pass1/pass2 各自的 binning→accumulate
+  →row_nnz 写点表,找不一致窗口**(不是继续 printf——观测已到极限,需要流程级理解)。
+- 刀13 状态:三次实现尝试+四卷 forensic,判负暂缓(虫可修性未知但假设明确);②收口让位
+  于破案;调试/WM 构建全部删除,夜班终态复验 80.20 ✓。
+
 ## 状态
 
 - 09-29 11:0x:脚本+全部分析完成,判决=可行;study/26 立卷;memory 四项修正同步。
