@@ -3969,7 +3969,16 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
         const int my_group = tid >> lg;
         const int my_id = tid & (group_size - 1);
 
-        for (int p = rs + my_group; p < re; p += num_groups) {
+        // 刀11:k 序旋转错峰(直击 PC 采样的到达压缩:近邻 k 对共享 j 最密,原序下它们恰好同时刻
+        // 在不同 warp 被处理=正面对撞;每 warp 旋转 own k 序列,近邻对的到达时间被拉开。
+        // 每 k ~3 条指令(非每乘积),乘积集合与表操作完全不变=零正确性风险,仅原子到达次序变化)
+        {
+            int cnt = 0;
+            for (int p = rs + my_group; p < re; p += num_groups) cnt++;
+            const int rot = cnt > 0 ? (int)(((unsigned)(tid >> 5) * 2654435761u) % (unsigned)cnt) : 0;   // Knuth 式 warp 旋转(任意 cnt 免退化)
+            for (int s = 0; s < cnt; s++) {
+            const int idx = (s + rot) % cnt;
+            const int p = rs + my_group + idx * num_groups;
             const int k = A_ci[p];
             const double a_ik = A_val[p];
             const int ks = B_rp[k], ke = B_rp[k + 1];
@@ -4002,6 +4011,7 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
                         break;
                     }
                 }
+            }
             }
         }
     }
