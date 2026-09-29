@@ -3914,7 +3914,7 @@ __global__ void hash_check_sorted_kernel(const int *row_ptr, const int *col, int
 // ovf_rows→retry 机具(hash_spa 同款);rowtime[i]=探测环完成处(同彼 ROWCYCLES 窗,不含提取)。
 // SPEC99 env 门(默认关=零生产影响);bins7-8 接管,bin9+ 仍走原路径。
 // 刀2:B16ON 模板参(交织 B 装载,每乘积 1 次 uint4 vs 2 次分离读——hash_spa 同款,编译期消分支)
-template<int LOG_NTHR, int HT_P, int B16ON = 0>
+template<int LOG_NTHR, int HT_P, int B16ON = 0, int OCH = 0>   // OCH=1:彼 id*11 哈希 A/B(刀10:错峰机理直测)
 __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heavy_kernel(
     const int *__restrict__ A_rp, const int *__restrict__ A_ci, const double *__restrict__ A_val,
     const int *__restrict__ B_rp, const int *__restrict__ B_ci, const double *__restrict__ B_val,
@@ -3984,8 +3984,9 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
                 // multiply-shift 高位取槽 87.8(+8.8% vs mask 80.75),Knuth 低位已够混,高位假设证伪
                 constexpr unsigned HH_MSK = (unsigned)(HT_P - 1);
                 constexpr bool HH_P2 = ((HT_P & (int)HH_MSK) == 0);   // HT_P 为 2^n?
-                unsigned slot = HH_P2 ? (((unsigned)(j * 2654435761u)) & HH_MSK)
-                                      : ((unsigned)(j * 2654435761u) % (unsigned)HT_P);
+                // 刀10:OCH=1 换彼 id*11 哈希(混合差→聚类多→链长→dup 到达错峰→自旋少;PC 采样假说直测)
+                unsigned slot = HH_P2 ? (((unsigned)(OCH ? (j * 11u) : (j * 2654435761u))) & HH_MSK)
+                                      : ((unsigned)(OCH ? (j * 11u) : (j * 2654435761u)) % (unsigned)HT_P);
                 int probes = 0;                             // 刀4 判负回滚:start_slot 版抑制 ptxas 跨乘积展开(5层→2层,+12%);计数器版让展开摊销循环控制,更优
                 while (true) {
                     const int entry = sh_col[slot];
@@ -5382,24 +5383,28 @@ static void hash_product(
                     if (g_s99 < 0) { const char *e = getenv("SPEC99"); g_s99 = (e && *e && atoi(e) > 0) ? 1 : 0; }
                     static int g_s99cap = -1;   // 刀3/3b 分裂帽:全线判负(1950/2100/2311=106.1/109.2/116.9 全劣于 100.9)——2719 档红利不付账,默认 0=关;env 留作后续复验
                     if (g_s99cap < 0) { const char *e = getenv("SPEC99_CAP"); g_s99cap = (e && *e) ? atoi(e) : 0; }
+                    static int g_s99och = -1;   // 刀10:id*11 哈希 A/B(错峰机理直测;0=Knuth 默认)
+                    if (g_s99och < 0) { const char *e = getenv("SPEC99_OCH"); g_s99och = (e && *e) ? atoi(e) : 0; }
                     if (g_s99 && bi >= 7 && bi <= 8 && !g_wm && !g_pht) {
-#define HH_LAUNCH(LNT_, P_, LO_, HI_) do { \
+#define HH_LAUNCH2(LNT_, P_, OCH_, LO_, HI_) do { \
     const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
-    static bool hh_opt_##P_ = false; \
-    if (!hh_opt_##P_) { CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); hh_opt_##P_ = true; } \
-    if (dB16) hash_heavy_kernel<(LNT_), (P_), 1><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
+    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1, (OCH_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
+    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 0, (OCH_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
+    if (dB16) hash_heavy_kernel<(LNT_), (P_), 1, (OCH_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, dB16, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_)); \
-    else      hash_heavy_kernel<(LNT_), (P_), 0><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
+    else      hash_heavy_kernel<(LNT_), (P_), 0, (OCH_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, nullptr, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_)); } while (0)
+#define HH_LAUNCH(LNT_, P_) do { if (g_s99och) HH_LAUNCH2((LNT_), (P_), 1, 0, 0); else HH_LAUNCH2((LNT_), (P_), 0, 0, 0); } while (0)
                         // 刀6:pow2 档终极 A/B(4096/8192=hash_spa 同表经济,mask 1 条 vs magic-div 6 条)——
                         // 隔离 3 栅栏结构 vs 18 栅栏的净价值;刀5 素数版(4111/8209)留 git 史
-                        if (bi == 7)      HH_LAUNCH(9, 4096, 0, 0);
-                        else              HH_LAUNCH(10, 8192, 0, 0);
+                        if (bi == 7)      HH_LAUNCH(9, 4096);
+                        else              HH_LAUNCH(10, 8192);
 #undef HH_LAUNCH
+#undef HH_LAUNCH2
                         CHECK_CUDA(cudaGetLastError());
                     } else
                     if (g_wma && bi >= 8 && bi <= 9) {
