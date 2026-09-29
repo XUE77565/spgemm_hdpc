@@ -5390,12 +5390,11 @@ static void hash_product(
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, nullptr, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_)); } while (0)
-                        if (bi == 7) HH_LAUNCH(9, 2719, 0, 0);
-                        else if (g_s99cap > 0) {   // 刀3b:帽校准版分裂(默认 1950=人口对齐;2311 版判负在案 §7)
-                            HH_LAUNCH(9, 2719, 1, g_s99cap);
-                            HH_LAUNCH(10, 5449, g_s99cap + 1, 100000000);
-                        }
-                        else         HH_LAUNCH(10, 5449, 0, 0);   // SPEC99_CAP=0=刀2 行为(无过滤)
+                        // 刀5:按生产线 sizing 律重配档(target=2×true_est=1.111×est_file,LF≤0.5)——
+                        // 三方向表定谳:复刻 issue 63.4 已逼近彼 67.7(栅栏修复有效),败在 5449 表配小致
+                        // LF 0.75 探测链税(+1.23 inst/乘积);4111/8209 均素数,SMEM 197KB 恰装 4×512T/2×1024T
+                        if (bi == 7)      HH_LAUNCH(9, 4111, 0, 0);
+                        else              HH_LAUNCH(10, 8209, 0, 0);
 #undef HH_LAUNCH
                         CHECK_CUDA(cudaGetLastError());
                     } else
