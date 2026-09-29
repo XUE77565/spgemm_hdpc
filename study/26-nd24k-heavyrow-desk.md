@@ -522,6 +522,20 @@ D. 论文线:①hash 载体收口叙事(三方向表+判负地图=现成素材)�
   使 col 翻倍破预算;piggyback-clear 依赖 SMEM 跨块残留=UB 不可用;可试"只清 est 域"半刀)
   ②317K 非可比行的载体归属诊断(默认路由 DUMP_ROUTING 画像)——下发。
 
+### §22b pre2 清表半刀 desk 判死+载体画像定谳(09-30 00:5x,第 25 发)
+
+- **清表域半刀零收益**:sizing 律表=next_pow2(1.1×est_file) → C=2×est_file 恒≥表,清表域=全表;
+  浪费真源=**estimator 在 pre2 超估 1.53×**(est_file 2000 vs 真 d 1310)。判死,零成本。
+- **DUMP_ROUTING 画像(二进制格式:A_rows,BIN_DITER 头+est/span/flop/bkid 四数组)**:
+  **pre2 = 纯 hash 阵**(bin5/6/7 = 38.5 万行吃 **93.2% flop**;diter 仅 4 行;无 cursor);
+  est 中位 662-1282,**span 中位 1700(span/est≈1.3 = span 内近满密!)**,dup≈1.0。
+- **系统 1.75× 的真源定谳**:彼把这些人送 **denseNumeric**(span 1700×9B=15KB 单窗,
+  dup 1 无争用);我方被 v4 结构门(§2.3b 考古)拦死送 hash——**而我们的 dense_struct 梯
+  同档 1.3-2× 快于彼(§4d 已证)**。= **④路由弹药 pre2 卷定稿**:开门(diter 门放宽)
+  预期 26.6→~15-18ms,一步关掉 1.75× 的大头。
+- **③ 对 pre2 的结论**:kernel 侧无需新载体(dense_struct 现成且赢),病在路由门=④;
+  与 nd24k(形态边界)/crankseg(改判 hash)合成三卷④弹药。
+
 ## 状态
 
 - 09-29 11:0x:脚本+全部分析完成,判决=可行;study/26 立卷;memory 四项修正同步。
