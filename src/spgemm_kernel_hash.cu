@@ -3980,8 +3980,8 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
                     j = (int)e.x; bv = __hiloint2double(e.w, e.z);
                 } else { j = B_ci[q]; bv = B_val[q]; }
                 const double v = a_ik * bv;
-                // 刀6:编译期 pow2 分派(pow2 表→mask 1 条;素数表→magic-div 6 条)——终极 A/B 隔离
-                // "3 栅栏结构 vs hash_spa 18 栅栏"的净价值(表经济对齐 hash_spa 同款)
+                // 刀6:编译期 pow2 分派(pow2 表→mask 低位 1 条;素数表→magic-div)——刀8 判负回滚:
+                // multiply-shift 高位取槽 87.8(+8.8% vs mask 80.75),Knuth 低位已够混,高位假设证伪
                 constexpr unsigned HH_MSK = (unsigned)(HT_P - 1);
                 constexpr bool HH_P2 = ((HT_P & (int)HH_MSK) == 0);   // HT_P 为 2^n?
                 unsigned slot = HH_P2 ? (((unsigned)(j * 2654435761u)) & HH_MSK)
