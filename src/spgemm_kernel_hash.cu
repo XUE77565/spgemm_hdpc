@@ -3981,7 +3981,7 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
                 } else { j = B_ci[q]; bv = B_val[q]; }
                 const double v = a_ik * bv;
                 unsigned slot = (unsigned)(j * 2654435761u) % (unsigned)HT_P;   // magic-div(编译期常量)
-                int probes = 0;
+                int probes = 0;                             // 刀4 判负回滚:start_slot 版抑制 ptxas 跨乘积展开(5层→2层,+12%);计数器版让展开摊销循环控制,更优
                 while (true) {
                     const int entry = sh_col[slot];
                     if (entry == j) { atomicAdd(&sh_val[slot], v); break; }
@@ -5375,6 +5375,8 @@ static void hash_product(
                     // 5449↔1024T×2;占 hash_spa 之外独立 kernel,行计时段同彼窗)
                     static int g_s99 = -1;
                     if (g_s99 < 0) { const char *e = getenv("SPEC99"); g_s99 = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                    static int g_s99cap = -1;   // 刀3/3b 分裂帽:全线判负(1950/2100/2311=106.1/109.2/116.9 全劣于 100.9)——2719 档红利不付账,默认 0=关;env 留作后续复验
+                    if (g_s99cap < 0) { const char *e = getenv("SPEC99_CAP"); g_s99cap = (e && *e) ? atoi(e) : 0; }
                     if (g_s99 && bi >= 7 && bi <= 8 && !g_wm && !g_pht) {
 #define HH_LAUNCH(LNT_, P_, LO_, HI_) do { \
     const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
@@ -5389,7 +5391,11 @@ static void hash_product(
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_)); } while (0)
                         if (bi == 7) HH_LAUNCH(9, 2719, 0, 0);
-                        else         HH_LAUNCH(10, 5449, 0, 0);   // 刀3 分裂判负(2311 帽→LF 0.85 探测链反噬 +16%);过滤管道保留,帽校准=彼 2719 人口 13153 行(q18.3≈1950),下轮扫 {1900,2100} 复验
+                        else if (g_s99cap > 0) {   // 刀3b:帽校准版分裂(默认 1950=人口对齐;2311 版判负在案 §7)
+                            HH_LAUNCH(9, 2719, 1, g_s99cap);
+                            HH_LAUNCH(10, 5449, g_s99cap + 1, 100000000);
+                        }
+                        else         HH_LAUNCH(10, 5449, 0, 0);   // SPEC99_CAP=0=刀2 行为(无过滤)
 #undef HH_LAUNCH
                         CHECK_CUDA(cudaGetLastError());
                     } else
