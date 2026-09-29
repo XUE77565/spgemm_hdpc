@@ -3922,7 +3922,8 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     const int *row_ids, int nrows, const long long *d_off,
     unsigned long long *tmp_key, double *tmp_val, int *row_nnz,
     int *overflow_flag, int *ovf_rows, int *ovf_cnt, int *row_ovf,
-    const int *d_flop, const int *d_maxbl, unsigned long long *rowtime)
+    const int *d_flop, const int *d_maxbl, unsigned long long *rowtime,
+    const int *d_est, int est_lo, int est_hi)   // 刀3:分档校正过滤(raw=d_est/1.8 还原;域外行早退,est_hi<=0=无过滤)
 {
     (void)nrows;
     extern __shared__ int smem_hh[];                        // [HT_P]=sh_col(int);对齐后 sh_val(double)
@@ -3934,6 +3935,10 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     __syncthreads();                                       // 栅栏 1/3: init
 
     const int i = row_ids[blockIdx.x];
+    if (est_hi > 0) {                       // 刀3:raw est 域过滤(还 d_est 的 1.8× 膨胀;ncu 实证彼 2719 档 issue 77%)
+        const int raw_est = (int)(((long long)d_est[i] * 5) / 9);
+        if (raw_est < est_lo || raw_est > est_hi) return;
+    }
     const int rs = A_rp[i], re = A_rp[i + 1];
     const long long base = d_off[i];
     if (tid == 0) row_nnz[i] = 0;                          // 溢出行会被 retry 覆盖,与 hash_spa 同语义
@@ -5371,20 +5376,20 @@ static void hash_product(
                     static int g_s99 = -1;
                     if (g_s99 < 0) { const char *e = getenv("SPEC99"); g_s99 = (e && *e && atoi(e) > 0) ? 1 : 0; }
                     if (g_s99 && bi >= 7 && bi <= 8 && !g_wm && !g_pht) {
-#define HH_LAUNCH(LNT_, P_) do { \
+#define HH_LAUNCH(LNT_, P_, LO_, HI_) do { \
     const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
     static bool hh_opt_##P_ = false; \
     if (!hh_opt_##P_) { CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); hh_opt_##P_ = true; } \
     if (dB16) hash_heavy_kernel<(LNT_), (P_), 1><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, dB16, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
-        d_flop, d_maxbl, d_rt); \
+        d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_)); \
     else      hash_heavy_kernel<(LNT_), (P_), 0><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, nullptr, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
-        d_flop, d_maxbl, d_rt); } while (0)
-                        if (bi == 7) HH_LAUNCH(9, 2719);
-                        else         HH_LAUNCH(10, 5449);
+        d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_)); } while (0)
+                        if (bi == 7) HH_LAUNCH(9, 2719, 0, 0);
+                        else         HH_LAUNCH(10, 5449, 0, 0);   // 刀3 分裂判负(2311 帽→LF 0.85 探测链反噬 +16%);过滤管道保留,帽校准=彼 2719 人口 13153 行(q18.3≈1950),下轮扫 {1900,2100} 复验
 #undef HH_LAUNCH
                         CHECK_CUDA(cudaGetLastError());
                     } else
