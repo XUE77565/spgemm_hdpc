@@ -3923,7 +3923,7 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     unsigned long long *tmp_key, double *tmp_val, int *row_nnz,
     int *overflow_flag, int *ovf_rows, int *ovf_cnt, int *row_ovf,
     const int *d_flop, const int *d_maxbl, unsigned long long *rowtime,
-    const int *d_est, int est_lo, int est_hi)   // 刀3:分档校正过滤(raw=d_est/1.8 还原;域外行早退,est_hi<=0=无过滤)
+    const int *d_est, int est_lo, int est_hi, const int rot_on)   // 刀3过滤+刀11旋转总闸(SPEC99_ROT,host 读入)
 {
     (void)nrows;
     extern __shared__ int smem_hh[];                        // [HT_P]=sh_col(int);对齐后 sh_val(double)
@@ -3975,7 +3975,12 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
         {
             int cnt = 0;
             for (int p = rs + my_group; p < re; p += num_groups) cnt++;
-            const int rot = cnt > 0 ? (int)(((unsigned)(tid >> 5) * 2654435761u) % (unsigned)cnt) : 0;   // Knuth 式 warp 旋转(任意 cnt 免退化)
+            // 行几何门 v2:cnt≥10 且 B 行短(maxbl≤1024)才旋转——错峰收益在短 B 行 nd24k 型
+            // (maxbl≈520);长 B 行 crankseg 型(≈2000+)错峰无用反赔 k 序 L2 局部性(×3 实证)
+            // 刀11 门 v3(dup 判据,原理性):旋转收益∝dup 浓度(到达压缩源),伤害∝k 序局部性;
+            // dup=flop/est≥20 才开——nd24k(62×)吃收益,crankseg bin7-8 型(低 dup)免疫(maxbl 门实证拦不住)
+            const bool rot_ok = rot_on && (cnt >= 10) && ((long long)d_flop[i] >= 20LL * d_est[i]);
+            const int rot = rot_ok ? (int)(((unsigned)(tid >> 5) * 2654435761u) % (unsigned)cnt) : 0;
             for (int s = 0; s < cnt; s++) {
             const int idx = (s + rot) % cnt;
             const int p = rs + my_group + idx * num_groups;
@@ -5395,20 +5400,22 @@ static void hash_product(
                     if (g_s99cap < 0) { const char *e = getenv("SPEC99_CAP"); g_s99cap = (e && *e) ? atoi(e) : 0; }
                     static int g_s99och = -1;   // 刀10:id*11 哈希 A/B(错峰机理直测;0=Knuth 默认)
                     if (g_s99och < 0) { const char *e = getenv("SPEC99_OCH"); g_s99och = (e && *e) ? atoi(e) : 0; }
+                    static int g_s99rot = -1;   // 刀11 旋转总闸:默认 0 关(nd24k −1.7%但 crankseg +1.7%,三行级门(cnt/maxbl/dup)均无区分力=人口整体行为;SPEC99_ROT=1 开)
+                    if (g_s99rot < 0) { const char *e = getenv("SPEC99_ROT"); g_s99rot = (e && *e) ? atoi(e) : 0; }
                     if (g_s99 && bi >= 7 && bi <= 8 && !g_wm && !g_pht) {
-#define HH_LAUNCH2(LNT_, P_, OCH_, LO_, HI_) do { \
+#define HH_LAUNCH2(LNT_, P_, OCH_, LO_, HI_, ROT_) do { \
     const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
     CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1, (OCH_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
     CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 0, (OCH_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
     if (dB16) hash_heavy_kernel<(LNT_), (P_), 1, (OCH_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, dB16, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
-        d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_)); \
+        d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_), (ROT_)); \
     else      hash_heavy_kernel<(LNT_), (P_), 0, (OCH_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, nullptr, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
-        d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_)); } while (0)
-#define HH_LAUNCH(LNT_, P_) do { if (g_s99och) HH_LAUNCH2((LNT_), (P_), 1, 0, 0); else HH_LAUNCH2((LNT_), (P_), 0, 0, 0); } while (0)
+        d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_), (ROT_)); } while (0)
+#define HH_LAUNCH(LNT_, P_) do { if (g_s99och) HH_LAUNCH2((LNT_), (P_), 1, 0, 0, g_s99rot); else HH_LAUNCH2((LNT_), (P_), 0, 0, 0, g_s99rot); } while (0)
                         // 刀6:pow2 档终极 A/B(4096/8192=hash_spa 同表经济,mask 1 条 vs magic-div 6 条)——
                         // 隔离 3 栅栏结构 vs 18 栅栏的净价值;刀5 素数版(4111/8209)留 git 史
                         if (bi == 7)      HH_LAUNCH(9, 4096);
