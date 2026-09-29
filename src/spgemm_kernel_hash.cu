@@ -3980,7 +3980,12 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
                     j = (int)e.x; bv = __hiloint2double(e.w, e.z);
                 } else { j = B_ci[q]; bv = B_val[q]; }
                 const double v = a_ik * bv;
-                unsigned slot = (unsigned)(j * 2654435761u) % (unsigned)HT_P;   // magic-div(编译期常量)
+                // 刀6:编译期 pow2 分派(pow2 表→mask 1 条;素数表→magic-div 6 条)——终极 A/B 隔离
+                // "3 栅栏结构 vs hash_spa 18 栅栏"的净价值(表经济对齐 hash_spa 同款)
+                constexpr unsigned HH_MSK = (unsigned)(HT_P - 1);
+                constexpr bool HH_P2 = ((HT_P & (int)HH_MSK) == 0);   // HT_P 为 2^n?
+                unsigned slot = HH_P2 ? (((unsigned)(j * 2654435761u)) & HH_MSK)
+                                      : ((unsigned)(j * 2654435761u) % (unsigned)HT_P);
                 int probes = 0;                             // 刀4 判负回滚:start_slot 版抑制 ptxas 跨乘积展开(5层→2层,+12%);计数器版让展开摊销循环控制,更优
                 while (true) {
                     const int entry = sh_col[slot];
@@ -3989,7 +3994,7 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
                         const int prev = atomicCAS(&sh_col[slot], -1, j);
                         if (prev == -1 || prev == j) { atomicAdd(&sh_val[slot], v); break; }
                     }
-                    slot = (slot + 1 >= (unsigned)HT_P) ? 0u : slot + 1;
+                    slot = HH_P2 ? ((slot + 1) & HH_MSK) : ((slot + 1 >= (unsigned)HT_P) ? 0u : slot + 1);
                     if (++probes >= HT_P) {                 // 满表:retry 机具(hash_spa 同款)
                         atomicExch(overflow_flag, 1);
                         if (!atomicExch(&row_ovf[i], 1)) { const int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
@@ -5390,11 +5395,10 @@ static void hash_product(
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, nullptr, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_)); } while (0)
-                        // 刀5:按生产线 sizing 律重配档(target=2×true_est=1.111×est_file,LF≤0.5)——
-                        // 三方向表定谳:复刻 issue 63.4 已逼近彼 67.7(栅栏修复有效),败在 5449 表配小致
-                        // LF 0.75 探测链税(+1.23 inst/乘积);4111/8209 均素数,SMEM 197KB 恰装 4×512T/2×1024T
-                        if (bi == 7)      HH_LAUNCH(9, 4111, 0, 0);
-                        else              HH_LAUNCH(10, 8209, 0, 0);
+                        // 刀6:pow2 档终极 A/B(4096/8192=hash_spa 同表经济,mask 1 条 vs magic-div 6 条)——
+                        // 隔离 3 栅栏结构 vs 18 栅栏的净价值;刀5 素数版(4111/8209)留 git 史
+                        if (bi == 7)      HH_LAUNCH(9, 4096, 0, 0);
+                        else              HH_LAUNCH(10, 8192, 0, 0);
 #undef HH_LAUNCH
                         CHECK_CUDA(cudaGetLastError());
                     } else

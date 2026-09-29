@@ -236,6 +236,19 @@ q18.3 ≈ **1950**(LF≈0.72)。已回滚分裂(过滤管道保留,est_hi=0=刀2
 - 剩余 12.6ms 嫌疑:magic-div(+~0.3-0.5 inst/乘积 vs mask)/我 extract 的 gmem atomicAdd
   (2762 次/行)/清表同尺寸。下发 ncu 复测定刀6 靶点。
 
+### 第 9 发:刀6 pow2 分派追平基线(09-29 13:5x-14:0x)
+
+- **刀5 态 ncu**:bin8 3.13 inst/乘积 @issue 56.9(LF 税已收但 magic-div 税+大表 issue 回吐)——
+  剩余差距=+0.55 inst/乘积 vs hash_spa(2.58@55.9),主嫌 magic-div(6 条 vs mask 1 条)。
+- **刀6(编译期 pow2 分派:constexpr HH_P2 →mask/magic-div 双形态;档位 4096/8192=hash_spa
+  同表经济)**:F2 门绿 → **accumulate 92.9→80.75(−13.1%)=追平 hash_spa 基线 80.3**;
+  轨迹 101.8→100.9→92.9→**80.75**;nnz 精确 ×2;nd24k memcheck 补跑中。
+- **定位更新**:复刻现与 hash_spa 同墙钟——与 hash_spa 的差只剩 3 栅栏(墙钟≈0 贡献)/
+  组自适应(nd24k 同 G)/无序提取(两方 bin8 都无序,同付 compact+sort 22.9ms)。
+  **下一步杠杆=有序提取扩展**(extract2 式计数排序覆盖 bin8 档=4-8K 表,杀 compact+sort
+  22.9ms 的行份额)——即 spec99 的"一遍制创新叠加"阶段;彼方 issue 67.7 的剩余秘密
+  归 symbolic/numeric 分离或人口组织层(复刻未触及)。
+
 ## 状态
 
 - 09-29 11:0x:脚本+全部分析完成,判决=可行;study/26 立卷;memory 四项修正同步。
