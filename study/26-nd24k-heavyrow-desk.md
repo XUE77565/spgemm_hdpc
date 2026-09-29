@@ -409,6 +409,20 @@ D. 论文线:①hash 载体收口叙事(三方向表+判负地图=现成素材)�
 远贵于自旋指令浪费;退避救活锁,不救延迟遮蔽已充足的争用。** 自旋轴全部 12 种手段
 (形态 6+聚合 5+退避 1)试尽,nd24k 型行 1.46 形态边界终版封棺。
 
+### §14 第 16 发(夜):刀13 有序提取——未破案回滚,证据存档(09-29 21:2x)
+
+- **实现**:kernel 尾提取改有序(count d→width 内空槽填 INT_MAX→就地 bitonic→顺序写
+  tmp+row_nnz=d);下游 bin7-8 compact 改道现成 hash_compact_copy_warp_kernel(免排序)。
+- **门与抓虫**:memcheck 双阵 0 err+nnz 精确——但**有序检查抓到严重坏**:nd24k 71,783 行
+  (=我全部人口)/F2 9,282 行,模式=**行尾挂 stale 垃圾(存 0 列)×~5 条**(row_nnz 似被
+  抬高);单发(WARMUP_N=0)复现同数=**确定性、非多 pass 残留**。
+- **已排除**:bitonic 网络正确性(三查+教科书式)/copy kernel 容量(无界 warp 循环)/
+  warmup 交叉/我的 kernel 内同步序。
+- **未破嫌疑**:est_cont 多轮估计-重分箱流程与提取的交互(count 轮 hash_spa MODE=1 只写
+  row_nnz 不写 tmp;expand 轮 est 变化改变 base/重 bin——某处时序让 row_nnz 与 tmp 错位)。
+  需专发读 est_cont/expand 全流程定谳。
+- **回滚复验 80.06 ✓**;有序检查进协议(本次立功:memcheck+nnz 全绿下的逻辑虫只有它抓得住)。
+
 ## 状态
 
 - 09-29 11:0x:脚本+全部分析完成,判决=可行;study/26 立卷;memory 四项修正同步。
