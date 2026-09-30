@@ -6085,8 +6085,22 @@ static void hash_product(
                         // §26:只缩【最大档】窗(tier-5 固定 131KB 把刚过 7277 的行压到 1 block/SM);
                         // 低档不动 —— wb-edu 实测全档缩窗 +4%(占用↑ → 行工作集并发↑ → L2 局部性
                         // 反损,与 §24 排序毁局部性同族),tier-5 缩窗只升不降(≥2/SM)
-                        const int uwin = (t == DENSE_TIER_COUNT - 1 && h_tier_w[t] > 0) ? h_tier_w[t] : dense_tier_max(t);
+                        const int uwin = (t == DENSE_TIER_COUNT - 1 && h_tier_w[t] > 0) ? h_tier_w[t] : dense_tier_max(t);   // D1v2 全档收窗=中性(×3 wash)已回退;tier5 收窗保留(§26 原逻辑)
                         int tblk = dense_tier_block(t);
+                        // 刀D1(09-30 审计):同行集实测彼 512T 在 span3636-7277 带赢我 1024T 15-19%,
+                        // 256T 在 1818-3636 带赢 1.67×;§22c"块宽无差"定谳系矩阵级噪声口径,作废。
+                        // tier3→256/tier4→512(巨鲸 tier5 保 1024 = 我方唯一占优带);env D1TIER。
+                        static int g_d1tier = -1;
+                        if (g_d1tier < 0) { const char *e = getenv("D1TIER"); g_d1tier = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                        if (g_d1tier) {
+                            size_t sm_b = (size_t)uwin * 9 + 256;   // ≈SMEM/块(val8+bitmap1+杂)
+                            int fit = (int)((SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM) / sm_b); if (fit < 1) fit = 1;
+                            if (fit > 2048 / 64) fit = 2048 / 64;
+                            int want = 2048 / fit;                  // 满占用的块宽
+                            if (want > 1024) want = 1024;
+                            if (want < 128) want = 128;
+                            if (want < tblk) tblk = want;           // 只降不升(巨鲸 1024 保)
+                        }
                         // spec90-候选2 二维梯解耦(D2TIER=1):工作量轴覆写——tier 行群均 est 低
                         // (轻行,车道需求小)→降块宽换块数;est 高(重行)保持 span 档默认。
                         static int g_d2tier = -1;
