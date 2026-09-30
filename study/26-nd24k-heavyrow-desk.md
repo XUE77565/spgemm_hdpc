@@ -582,6 +582,67 @@ D. 论文线:①hash 载体收口叙事(三方向表+判负地图=现成素材)�
 - **③ 对 pre2 的结论**:kernel 侧无需新载体(dense_struct 现成且赢),病在路由门=④;
   与 nd24k(形态边界)/crankseg(改判 hash)合成三卷④弹药。
 
+## §24 刀15 立项:SMEM-key + global-val 解耦累积(09-30 09:0x,用户"试架构级突破")
+
+### 核心洞察
+
+**F64 atomicAdd 的两种物理现实**:
+- SMEM:CAST.SPIN 模拟 = 5-6 条/次 × 3.5 重试 = ~21 条指令/乘积(我们当前)
+- **Global:原生 red.global.add.f64 = 1 条指令,fire-and-forget,无自旋**
+
+### 架构设计
+
+```
+现行(刀6 态):
+  SMEM 哈希表[ht](key+val 同居) → 每乘积:探测 + SMEM F64 CAS 自旋
+  SMEM/块 = ht × 12B
+
+刀15(解耦):
+  SMEM 哈希表[ht](仅 key,col)  → 每乘积:探测(SMEM) + global F64 atomicAdd(原生)
+  Global val[base+slot]         → 提取时从 global 读回
+  SMEM/块 = ht × 4B(减 3×!)
+```
+
+### 预期收益定量
+
+| 项 | 现行 | 刀15 | 依据 |
+|---|---|---|---|
+| 每乘积 SMEM 指令 | ~24(探测+自旋) | ~4(探测+1 global 发射) | 自旋 21→0 |
+| SMEM/块 | 96KB(bin8) | **32KB** | val 移出 |
+| accumulate | 80ms | **~30-40ms(估)** | 指令减 6×,global 原子 ~0.24ms 吞吐 |
+| nd24k 系统 | 93ms(1.12×) | **~50-55ms(0.6-0.66×)** | accumulate 大降 |
+
+### 正确性论证
+
+1. 加法交换律:global F64 atomicAdd 的顺序无关 ✓
+2. 精度:非确定性顺序与现行 SMEM 原子相同(值门用容差 1e-9) ✓
+3. 地址:base+slot,slot<HT_P,base=行偏移,互不干扰 ✓
+4. 清零:accumulate 前 cudaMemset(d_gval, 0, total_bytes) ✓
+
+### 创新性定位(③)
+
+这不是参数调优——是**解耦 key-value 存储**的新架构模式:
+- key 在 SMEM(快探测、小脚印)
+- value 在 global(原生原子、零自旋)
+- 提取时一次 global 读回(per distinct 列,非 per 乘积)
+
+### §24b 刀15 硬件级判死:H100 所有 64-bit SMEM 原子都走 CAS 自旋(09-30 09:1x)
+
+- **SASS 实测**(/tmp/test_i64_atom.cu):F64 / int64 / u64 的 SMEM atomicAdd 全部生成
+  `ATOMS.CAST.SPIN.64`(CAS 自旋)——**不是 F64 独有,是所有 64-bit 类型的硬件限制**。
+- **定点数方案(int64 fixed-point)零收益**:同样的 CAS 自旋,只是换了编码。
+- **已穷尽的架构替代(累计全谱)**:
+  | 方案 | 死因 |
+  |---|---|
+  | SMEM key + global val | L2 原子吞吐瓶颈(刀E 2× 判死) |
+  | int64/u64 定点 SMEM | 同 CAS 自旋(本发 SASS 实锤) |
+  | F32 单精度 | 精度门 4e-6 >> 1e-9 |
+  | WM warp 聚合 ×5 | dup 跨 warp 散布(2.2/warp) |
+  | RH / 条带 / 分片 / 退避 | SMEM 账 / 读放大 / 占用 / 发射丢 |
+  | warp 排序聚合 | 32 元素排序找 0.36 dup = 净亏 |
+- **终定谳:accumulate 6.5ms 差距(nd24k 1.095×)= H100 硬件边界**(除非下一代
+  SMEM 原生 64-bit 原子)。
+
 ## 状态
 
 - 09-29 11:0x:脚本+全部分析完成,判决=可行;study/26 立卷;memory 四项修正同步。
