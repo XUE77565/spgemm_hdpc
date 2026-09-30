@@ -6304,6 +6304,10 @@ static void hash_product(
                 if (g_k14cs2 && bi == 8) {
                     launch_csort_counting<512, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
                     CHECK_CUDA(cudaGetLastError());
+                } else if (g_k14cs2 && bi == 9) {
+                    // 刀14 扩展:bin9 也在用老 radix<256,64>(ncu 实锤 6.98ms/32%)——counting sort 替
+                    launch_csort_counting<512, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);   // CAP 16384 SMEM 超限(error 701),8192 覆盖绝大多数行
+                    CHECK_CUDA(cudaGetLastError());
                 } else
                 if (bi >= 7 && g_segrts) {
                     launch_bin_segrts(n, rows_ptr, d_off, d_row_nnz, dC_rp, dC_ci, d_val,
