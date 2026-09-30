@@ -3191,7 +3191,7 @@ __global__ void compute_bucket_kernel(
     if (had_l1) {
         // 刀1(nd24k): 高 dup × 高 est → 强制 hash(DUP_HEAVY=64 重域条款太宽松;
         //   四臂实测 allhash 107 vs default 143 = hash 快 25%)
-        if (fl64 >= HASH_CAP && fl64 >= 20LL * e && e >= 2048) dup_ok = false;
+        if (fl64 >= HASH_CAP && fl64 >= 30LL * e && e >= 2048) dup_ok = false;   // 30=完美分离:nd24k dup≥29.9 全捕,in-2004 仅1行
         // 刀2(pre2): 近满密行(span/est<1.5 ∧ est≥256)→ 松 flop 地板走 dense_struct
         //   (DITER_FLOP_TIER=2048 拦死 pre2 型行[flop中位 698];dense_struct 同档 1.3-2× 快)
         // (实施在 v4 门段,此处标记)
