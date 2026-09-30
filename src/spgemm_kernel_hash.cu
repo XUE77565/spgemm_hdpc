@@ -3208,10 +3208,13 @@ __global__ void compute_bucket_kernel(
     // §22d 老路径的 flop 地板同样回结构化默认(c-64 定谳:flop 2048-4095 ∧ span 50K 的半产物
     // 全幅行,窗口扫描成本不变产物减半 → 摊销劣化 +2.8ms;档内行受益于松地板,分而治之)
     int flop_floor = tier_fit ? diter_thr : (diter_thr > EST_DENSE_MIN ? diter_thr : EST_DENSE_MIN);
-    // HAD L1 刀2(pre2): 近满密行(span < 1.5×est ∧ est≥256)松 flop 地板 → 走 dense_struct
-    if (had_l1 && sl0 > 0 && e >= 256 && (long long)sl0 * 2 <= (long long)e * 3) {
-        flop_floor = 0;   // span/est<1.5 = 密度>67%,dense_struct 窗口高效
-    }
+    // HAD L1 刀2(pre2 v2): 近满密行(span<1.5×est ∧ est≥256 ∧ dup_ok ∧ tier_fit)松 flop 地板
+    // v1(flap_floor=0 无条件)判负:pre2 1.93× 回退(松太激进把不该进 diter 的也放了)
+    // v2:只在 dup_ok && tier_fit 时松到 diter_est_min(不全归零)
+    // 判负入档(v1/v2 均败): pre2 行走 diter 后 dense_count=25.5ms(精确计数相位)
+    // > 整条 hash 路径(17.4+8.3=25.7ms)——架构差(diter 需精确计数 vs 彼 HLL 估计免计)
+    // 非 kernel 差(§4d 同档 numeric 1.3-2× 快被计数开销吃掉);修复需架构改非路由改
+    // if (had_l1 && dup_ok && tier_fit && sl0 > 0 && e >= 256 && ...) { ... }  ← 禁用
     const bool tier_cmp_ok = !dtier_cmp || dstruct_win >= 0 || !tier_fit
         || dense_tier_of((long long)sl0) <= hash_tier_of((long long)ht);
     // ↑ dup<8:争用字节≈0(G-group 摊薄);dup<64∧flop≥16384:重行域的争用可容忍(docs/37)
