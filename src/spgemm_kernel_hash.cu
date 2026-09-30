@@ -3842,9 +3842,8 @@ static void launch_cs8192_part(int n, const int *rows_ptr, const long long *d_of
                                const int *dC_rp, const unsigned long long *k, const double *v,
                                int *dC_ci, double *dC_val, int *scratch2, int thr) {
     static int g_cs16b = -1;
-    if (g_cs16b < 0) { const char *e = getenv("CS16B"); g_cs16b = (e && *e && atoi(e) > 0) ? 1 : 0; }
-    if (!g_cs16b) { launch_cs8192(n, rows_ptr, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val); return; }
-    (void)0;
+    if (g_cs16b < 0) { const char *e = getenv("CS16B"); g_cs16b = (e && *e && atoi(e) == 0) ? 0 : 1; }   // 刀16 翻默认 ON
+    if (!g_cs16b || n < 8192) { launch_cs8192(n, rows_ptr, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val); return; }   // 规模门:小 bin8 人口免劈分(host 同步固定开销>F2 +3.6% 相位代价源)
     int *cnt_lo = scratch2, *cnt_hi = scratch2 + 1;
     int *list_lo = scratch2 + 2, *list_hi = scratch2 + 2 + n;
     CHECK_CUDA(cudaMemsetAsync(scratch2, 0, 2 * sizeof(int)));
@@ -3853,7 +3852,7 @@ static void launch_cs8192_part(int n, const int *rows_ptr, const long long *d_of
     CHECK_CUDA(cudaMemcpyAsync(h2, scratch2, 2 * sizeof(int), cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaDeviceSynchronize());
     static int g_cs16c = -1;
-    if (g_cs16c < 0) { const char *e2 = getenv("CS16C"); g_cs16c = (e2 && *e2 && atoi(e2) > 0) ? 1 : 0; }
+    if (g_cs16c < 0) { const char *e2 = getenv("CS16C"); g_cs16c = (e2 && *e2 && atoi(e2) == 0) ? 0 : 1; }   // 刀16 翻默认 ON
     if (h2[0] > 0) { if (g_cs16c) launch_csort_counting<512, 4096, 2048>(h2[0], list_lo, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);   // NB=2048
                      else         launch_csort_counting<512, 4096>(h2[0], list_lo, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val); }
     if (h2[1] > 0) { if (g_cs16c) launch_csort_counting<512, 8192, 4096>(h2[1], list_hi, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);   // NB=4096
@@ -6368,7 +6367,7 @@ static void hash_product(
                         int h9[2];
                         CHECK_CUDA(cudaMemcpyAsync(h9, s9, 2 * sizeof(int), cudaMemcpyDeviceToHost));
                         CHECK_CUDA(cudaDeviceSynchronize());
-                        static int g_c9 = -1; if (g_c9 < 0) { const char *e3 = getenv("CS16C"); g_c9 = (e3 && *e3 && atoi(e3) > 0) ? 1 : 0; }
+                        static int g_c9 = -1; if (g_c9 < 0) { const char *e3 = getenv("CS16C"); g_c9 = (e3 && *e3 && atoi(e3) == 0) ? 0 : 1; }   // 刀16 翻默认 ON
                         if (h9[0] > 0) { if (g_c9) launch_csort_counting<512, 8192, 4096>(h9[0], s9 + 2, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);   // 刀16c:NB=4096
                                          else      launch_cs8192(h9[0], s9 + 2, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val); }
                         if (h9[1] > 0) {   // P0:d>8192 行走 CAP 16384 老路径(排序覆盖,免截断)
