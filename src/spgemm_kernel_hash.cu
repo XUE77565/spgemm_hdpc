@@ -42,7 +42,8 @@ extern __global__ void dense_struct_numeric_kernel(
     int upper_tri, int A_rows,
     const int *bucket_rows, const int *span_lo, const int *span_len,
     int win_cols,
-    const int *exact_rp, int *out_col, double *out_val, int *row_nnz);
+    const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
+    const int *row_flop);   // 刀D2a:精确 avg_B(G 分配用)
 
 // 二分:返回 [lo,hi) 内第一个 arr[idx] >= val 的下标(与 spgemm_merge.cu 同款,跨 TU 内联用本地拷贝)
 __device__ __forceinline__ int dev_lower_bound(const int *arr, int lo, int hi, int val) {
@@ -3191,7 +3192,7 @@ __global__ void compute_bucket_kernel(
     if (had_l1) {
         // 刀1(nd24k): 高 dup × 高 est → 强制 hash(DUP_HEAVY=64 重域条款太宽松;
         //   四臂实测 allhash 107 vs default 143 = hash 快 25%)
-        if (fl64 >= HASH_CAP && fl64 >= 30LL * e && e >= 2048) dup_ok = false;   // 30=完美分离:nd24k dup≥29.9 全捕,in-2004 仅1行
+        if (fl64 >= HASH_CAP && fl64 >= (long long)had_l1 * e && e >= 2048) dup_ok = false;   // 阈值=HAD_L1 env 值(1=旧30 兼容;09-30 判别式:c-64 q75=6.2/in-2004=1.0 全保护,crankseg 中位16/nd24k 34.8 进网→8 为候选)
         // 刀2(pre2): 近满密行(span/est<1.5 ∧ est≥256)→ 松 flop 地板走 dense_struct
         //   (DITER_FLOP_TIER=2048 拦死 pre2 型行[flop中位 698];dense_struct 同档 1.3-2× 快)
         // (实施在 v4 门段,此处标记)
@@ -4599,8 +4600,8 @@ static void hash_product(
         if (g_occ_coeff < 0) { const char *e = getenv("OCCGATE_COEFF"); g_occ_coeff = (e && *e) ? atoi(e) : SPANF_COEFF; }   // 停靠:OCC_GATE_COEFF=10 待③阶段翻默认
                 static int g_fdest = -1;   // 决赛 v2 真强制:FORCE_DITER_EST=8 类(env;0=关)
                 if (g_fdest < 0) { const char *e = getenv("FORCE_DITER_EST"); g_fdest = (e && *e) ? atoi(e) : 0; }
-        static int g_had_l1 = -1;   // HAD L1 路由修正(④;env HAD_L1=1 开,默认关)
-        if (g_had_l1 < 0) { const char *e = getenv("HAD_L1"); g_had_l1 = (e && *e && atoi(e) > 0) ? 1 : 0; }
+        static int g_had_l1 = -1;   // HAD L1 路由修正(④;env HAD_L1=阈值:1=旧30 兼容,8=09-30 判别式;默认关)
+        if (g_had_l1 < 0) { const char *e = getenv("HAD_L1"); g_had_l1 = (e && *e) ? atoi(e) : 0; if (g_had_l1 == 1) g_had_l1 = 30; }
         compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
             g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff, g_fdest, g_had_l1);
         if (d_est_save) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零(D2TIER 工作量轴也吃)
@@ -6074,7 +6075,7 @@ static void hash_product(
                         const int tblk = dense_tier_block(t);
                         size_t nsm = (size_t)uwin * sizeof(double) + (size_t)((uwin + 31) >> 5) * sizeof(unsigned) * 2 + 64;
                         CHECK_CUDA(cudaFuncSetAttribute(dense_struct_numeric_kernel<1024>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)nsm));
-                        dense_struct_numeric_kernel<1024><<<big_off, 1024, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
+                        dense_struct_numeric_kernel<1024><<<big_off, 1024, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
                         dbg("[%s]   §22c 单档:%d 行(窗 %d 块宽 %d)\n", tag, big_off, uwin, tblk);
                     }
                 } else {
@@ -6127,11 +6128,11 @@ static void hash_product(
                             : (tblk <= 512) ? dense_struct_numeric_kernel<512>
                                             : dense_struct_numeric_kernel<1024>,
                             cudaFuncAttributeMaxDynamicSharedMemorySize, (int)nsm));
-                        if (tblk <= 64)        dense_struct_numeric_kernel<64><<<nr_t, 64, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
-                        else if (tblk <= 128) dense_struct_numeric_kernel<128><<<nr_t, 128, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
-                        else if (tblk <= 256) dense_struct_numeric_kernel<256><<<nr_t, 256, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
-                        else if (tblk <= 512) dense_struct_numeric_kernel<512><<<nr_t, 512, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
-                        else                   dense_struct_numeric_kernel<1024><<<nr_t, 1024, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz);
+                        if (tblk <= 64)        dense_struct_numeric_kernel<64><<<nr_t, 64, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
+                        else if (tblk <= 128) dense_struct_numeric_kernel<128><<<nr_t, 128, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
+                        else if (tblk <= 256) dense_struct_numeric_kernel<256><<<nr_t, 256, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
+                        else if (tblk <= 512) dense_struct_numeric_kernel<512><<<nr_t, 512, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
+                        else                   dense_struct_numeric_kernel<1024><<<nr_t, 1024, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
                         dbg("[%s]   tier %d:%d 行(窗 %d 块宽 %d smem %zuKB)\n", tag, t, nr_t, uwin, tblk, nsm / 1024);
                     }
                     off = tier_end_p[t];

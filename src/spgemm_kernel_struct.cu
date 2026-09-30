@@ -98,7 +98,8 @@ __global__ void dense_struct_numeric_kernel(
     int upper_tri, int A_rows,
     const int *bucket_rows, const int *span_lo, const int *span_len,
     int win_cols,
-    const int *exact_rp, int *out_col, double *out_val, int *row_nnz)
+    const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
+    const int *row_flop = nullptr)   // 刀D2a:精确 avg_B(旧=span/32 粗估,虚高~2×→G 过大→组数<a_len→元素串行)
 {
     int i = bucket_rows[blockIdx.x];
     if (i >= A_rows) return;
@@ -113,15 +114,19 @@ __global__ void dense_struct_numeric_kernel(
     //        num_groups = blockDim/G(每 k 链一组;G 大 → 组少 → 并行 k 链少但每链快)
     int G = WARP_SIZE;  // 默认 = 1 warp(争用最低的并行单元;≤ warp 免跨 warp 同步)
     {
-        // 从 span/flop/a_len 推导 avg_B(免 row_flop 依赖)
-        int est_flop = span > 0 ? a_len * (span / 32 > 0 ? span / 32 : 1) : a_len;
-        int avg_B = a_len > 0 ? est_flop / a_len : 1;
+        // 刀D2a(09-30 同行集审计):①avg_B 用精确 flop(row_flop 传入;旧 span/32 粗估虚高~2×)
+        // ②组数对齐 a_len——num_groups ≥ a_len 使每 a 元素独占一组(彼 localLoadBalance 机理;
+        // 旧形态组数<a_len 时每组分得多元素串行,a_len 32-128 带 2.07× 差的主嫌)
+        long long fl = (row_flop && a_len > 0) ? row_flop[i] : 0;
+        int avg_B = (fl > 0) ? (int)(fl / a_len) : (span > 0 ? (span / 32 > 0 ? span / 32 : 1) : 1);
         if (avg_B > 1) {
             int logG = 31 - __clz((unsigned)avg_B);
             if (logG < 1) logG = 1;
-            if (logG > ilog2c(WARP_SIZE)) logG = ilog2c(WARP_SIZE);   // 上限 = log2(WARP_SIZE)(硬件:G-group ≤ warp 才免跨 warp 同步)
+            if (logG > ilog2c(WARP_SIZE)) logG = ilog2c(WARP_SIZE);
             G = 1 << logG;
         }
+        // 刀D2a 的 G≤blockDim/a_len 帽已撤:同行集 5.2× 灾难判负——G 大=每链多线程遮蔽 F64
+        // 原子延迟(正确方向);彼方 G=2 仍赢 ⇒ 彼优势不在 G 轴(嫌疑转占用/发射/指令经济)
     }
     int num_groups = blockDim.x / G;
     int my_group = tid / G;
@@ -195,11 +200,11 @@ __global__ void dense_struct_numeric_kernel(
 }
 
 // §22 档位梯显式实例(跨编译单元模板链接所需;档宽 = dense_tier_block)
-template __global__ void dense_struct_numeric_kernel<64>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
-template __global__ void dense_struct_numeric_kernel<128>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
-template __global__ void dense_struct_numeric_kernel<256>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
-template __global__ void dense_struct_numeric_kernel<512>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
-template __global__ void dense_struct_numeric_kernel<1024>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*);
+template __global__ void dense_struct_numeric_kernel<64>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*, const int*);
+template __global__ void dense_struct_numeric_kernel<128>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*, const int*);
+template __global__ void dense_struct_numeric_kernel<256>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*, const int*);
+template __global__ void dense_struct_numeric_kernel<512>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*, const int*);
+template __global__ void dense_struct_numeric_kernel<1024>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*, const int*);
 
 // §26 采数:host 侧装/卸逐行周期指针(device symbol 跨 TU 不可见 → 本 TU 内代理)
 void dsn_rt_attach(unsigned long long *p) { cudaMemcpyToSymbol(g_dsn_rt, &p, sizeof(void*)); }
