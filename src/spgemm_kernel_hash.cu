@@ -3703,7 +3703,7 @@ static void launch_csort_fused(int n, const int *rows_ptr, const long long *d_of
 // 差异:无需 valid_bits/A_cols 约束(无融合键位打包)。
 #define CSC_TPB 256
 #define CSC_CAP 2048
-template<int TPB, int CAP>
+template<int TPB, int CAP, int NB = 1024>   // 刀16c:NB=桶数上限(旧 1024;Pass4 Σb² 随 d² 增长 → 大 d 行升桶打平)
 __global__ void csort_counting_kernel(
     const int *rows, const long long *d_off, const int *d_row_nnz, const int *dC_rp,
     const unsigned long long *tmp_key, const double *tmp_val,
@@ -3720,9 +3720,9 @@ __global__ void csort_counting_kernel(
     extern __shared__ __align__(8) int ccsm[];
     int *sc = ccsm;                        // [CAP] 列键
     double *sv = (double*)(ccsm + CAP);    // [CAP] 值(CAP 偶 → 8B 对齐;占 2×CAP int 槽)
-    int *h_cnt2  = ccsm + 3 * CAP;         // [1024] 桶计数(⚠ 3×CAP = sc+sv 字节界,2×CAP 会砸 sv)
-    int *h_start = h_cnt2 + 1024;          // [1024] 排他桶起点
-    int *h_fill  = h_start + 1024;         // [1024] 落位游标
+    int *h_cnt2  = ccsm + 3 * CAP;         // [NB] 桶计数(⚠ 3×CAP = sc+sv 字节界,2×CAP 会砸 sv)
+    int *h_start = h_cnt2 + NB;            // [NB] 排他桶起点
+    int *h_fill  = h_start + NB;           // [NB] 落位游标
     __shared__ int csc_seg[64];            // min/max 对 + 段扫 scratch(≤32 warp)
     for (int k = tid; k < m; k += TPB) {
         sc[k] = (int)(tmp_key[s + k] & 0xffffffffu);
@@ -3747,10 +3747,11 @@ __global__ void csort_counting_kernel(
     }
     __syncthreads();
     int lo = csc_seg[0], hi = csc_seg[1];
-    // Pass1:直方图(桶 (c-lo)>>SH,SH 逐行自适应 → 桶数 ≤1024;聚簇行不退化)
+    // Pass1:直方图(桶 (c-lo)>>SH,SH 逐行自适应 → 桶数 ≤NB;聚簇行不退化)
+    constexpr int LOGB = 31 - __builtin_clz(NB);   // NB 为 2 的幂
     unsigned span = (unsigned)(hi - lo + 1);
     int sbits = 32 - __clz(span - 1);      // ceil_log2(span);span=1 → 0(__clz(0)=32)
-    int SH = sbits > 10 ? sbits - 10 : 0;
+    int SH = sbits > LOGB ? sbits - LOGB : 0;
     int nbins = (int)((span - 1) >> SH) + 1;
     for (int b = tid; b < nbins; b += TPB) { h_cnt2[b] = 0; h_fill[b] = 0; }
     __syncthreads();
@@ -3803,16 +3804,60 @@ __global__ void csort_counting_kernel(
         dC_val[out + s0 + wr] = sv[k];
     }
 }
-template<int TPB, int CAP>
+template<int TPB, int CAP, int NB = 1024>
 static void launch_csort_counting(int n, const int *rows_ptr, const long long *d_off, const int *d_row_nnz,
                                   const int *dC_rp, const unsigned long long *k, const double *v,
                                   int *dC_ci, double *dC_val) {
-    size_t smem = (size_t)CAP * (sizeof(int) + sizeof(double)) + 3 * 1024 * sizeof(int);
+    size_t smem = (size_t)CAP * (sizeof(int) + sizeof(double)) + 3 * (size_t)NB * sizeof(int);
     if (smem > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM)
-        CHECK_CUDA(cudaFuncSetAttribute((const void*)csort_counting_kernel<TPB, CAP>,
+        CHECK_CUDA(cudaFuncSetAttribute((const void*)csort_counting_kernel<TPB, CAP, NB>,
                                         cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
-    csort_counting_kernel<TPB, CAP><<<n, TPB, smem>>>(rows_ptr, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);
+    csort_counting_kernel<TPB, CAP, NB><<<n, TPB, smem>>>(rows_ptr, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);
     CHECK_CUDA(cudaGetLastError());
+}
+
+// 刀16a:CAP 8192 档的 TPB 分派(env CS1024;ncu 实锤 <512,8192> SMEM 108KB→1块/SM=25%占用,
+// barrier 全 SM 干等;<1024,8192> 同 SMEM 1块/SM=1024线程=50%占用,STG 16→8 减寄存器)
+static void launch_cs8192(int n, const int *rows_ptr, const long long *d_off, const int *d_row_nnz,
+                          const int *dC_rp, const unsigned long long *k, const double *v,
+                          int *dC_ci, double *dC_val) {
+    static int g_cs1024 = -1;
+    if (g_cs1024 < 0) { const char *e = getenv("CS1024"); g_cs1024 = (e && *e && atoi(e) > 0) ? 1 : 0; }
+    if (g_cs1024) launch_csort_counting<1024, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);
+    else          launch_csort_counting<512, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);
+}
+
+// 刀16b:bin8 按真 d 劈双 CAP(d_row_nnz 排序时已知)——d≤4096 走 <512,4096>(60KB→3块/SM=75%占用,
+// bin7 健康几何;ncu:现 <512,8192> 1块/SM=25%)。劈分 kernel:两计数器原子分桶(18K 行,µs 级)。
+__global__ void cs_part_kernel(const int *rows, int n, const int *d_row_nnz, int thr,
+                               int *cnt_lo, int *cnt_hi, int *list_lo, int *list_hi) {
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= n) return;
+    int r = rows[j];
+    if (d_row_nnz[r] <= thr) list_lo[atomicAdd(cnt_lo, 1)] = r;
+    else                     list_hi[atomicAdd(cnt_hi, 1)] = r;
+}
+// env CS16B(默认关):=1 开 bin8 双 CAP 劈分
+static void launch_cs8192_part(int n, const int *rows_ptr, const long long *d_off, const int *d_row_nnz,
+                               const int *dC_rp, const unsigned long long *k, const double *v,
+                               int *dC_ci, double *dC_val, int *scratch2, int thr) {
+    static int g_cs16b = -1;
+    if (g_cs16b < 0) { const char *e = getenv("CS16B"); g_cs16b = (e && *e && atoi(e) > 0) ? 1 : 0; }
+    if (!g_cs16b) { launch_cs8192(n, rows_ptr, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val); return; }
+    (void)0;
+    int *cnt_lo = scratch2, *cnt_hi = scratch2 + 1;
+    int *list_lo = scratch2 + 2, *list_hi = scratch2 + 2 + n;
+    CHECK_CUDA(cudaMemsetAsync(scratch2, 0, 2 * sizeof(int)));
+    cs_part_kernel<<<(n + 255) / 256, 256>>>(rows_ptr, n, d_row_nnz, thr, cnt_lo, cnt_hi, list_lo, list_hi);
+    int h2[2];
+    CHECK_CUDA(cudaMemcpyAsync(h2, scratch2, 2 * sizeof(int), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaDeviceSynchronize());
+    static int g_cs16c = -1;
+    if (g_cs16c < 0) { const char *e2 = getenv("CS16C"); g_cs16c = (e2 && *e2 && atoi(e2) > 0) ? 1 : 0; }
+    if (h2[0] > 0) { if (g_cs16c) launch_csort_counting<512, 4096, 2048>(h2[0], list_lo, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);   // NB=2048
+                     else         launch_csort_counting<512, 4096>(h2[0], list_lo, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val); }
+    if (h2[1] > 0) { if (g_cs16c) launch_csort_counting<512, 8192, 4096>(h2[1], list_hi, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);   // NB=4096
+                     else         launch_cs8192(h2[1], list_hi, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val); }
 }
 
 // v31-①'(docs/76 §10 靶纸,SEGRTS=1):bin≥7 大行 csort O(n²/block) 排序税换 cub 分段基数排序。
@@ -4043,7 +4088,9 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
         }
     }
     __syncthreads();                                       // 栅栏 2/3: 收尾
-    if (rowtime && tid == 0) rowtime[i] = clock64() - rt0; // 同彼窗:探测环完成处,不含提取
+    // 公平口径修正:rowtime 移到提取后(= 完整 kernel 时间,含 extraction)
+    // 之前在探测环后测 = 不含提取,跟彼方 ROWCYCLES(含提取)不同窗 → 偏向我们
+    // 现在两边都是"从 kernel 开始到 kernel 结束"的完整时间
 
     // 提取:无序 compact 写(hash_spa 大行同款;行内有序由下游 compact_sort_kernel 保证)
     for (int s = tid; s < HT_P; s += blockDim.x) {
@@ -4053,6 +4100,9 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
             tmp_val[base + pos] = sh_val[s];
         }
     }
+    // 公平口径:完整 kernel 时间(含提取),对齐彼方 ROWCYCLES 窗
+    __syncthreads();
+    if (rowtime && tid == 0) rowtime[i] = clock64() - rt0;
 }
 
 // Host
@@ -6302,11 +6352,33 @@ static void hash_product(
                 static int g_k14cs2 = -1;
                 if (g_k14cs2 < 0) { const char *e = getenv("K14CS"); g_k14cs2 = (e && *e && atoi(e) == 0) ? 0 : 1; }
                 if (g_k14cs2 && bi == 8) {
-                    launch_csort_counting<512, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
+                    // 刀16b:真 d 劈双 CAP(实验 env CS16B;scratch=2 计数器+2×n 行表)
+                    int *cs_scr = decltype(cs_scr)(dev_alloc((size_t)(2 + 2 * n) * sizeof(int)));
+                    launch_cs8192_part(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, cs_scr, 4096);
+                    dev_free(cs_scr);
                     CHECK_CUDA(cudaGetLastError());
                 } else if (g_k14cs2 && bi == 9) {
-                    // 刀14 扩展:bin9 也在用老 radix<256,64>(ncu 实锤 6.98ms/32%)——counting sort 替
-                    launch_csort_counting<512, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);   // CAP 16384 SMEM 超限(error 701),8192 覆盖绝大多数行
+                    // 刀14 扩展 + P0 修复(09-30):bin9 counting CAP 8192 对 d>8192 行截断写废
+                    // (in-2004 431 行实锤:非 ovf→retry 不接管→行尾 stale 垃圾+无序;off-vs-off 自对拍定位)。
+                    // 劈分:d≤8192 → counting;d>8192 → csort_fused<256,64>(CAP 16384 覆盖全人群)。
+                    {
+                        int *s9 = decltype(s9)(dev_alloc((size_t)(2 + 2 * n) * sizeof(int)));
+                        CHECK_CUDA(cudaMemsetAsync(s9, 0, 2 * sizeof(int)));
+                        cs_part_kernel<<<(n + 255) / 256, 256>>>(rows_ptr, n, d_row_nnz, 8192, s9, s9 + 1, s9 + 2, s9 + 2 + n);
+                        int h9[2];
+                        CHECK_CUDA(cudaMemcpyAsync(h9, s9, 2 * sizeof(int), cudaMemcpyDeviceToHost));
+                        CHECK_CUDA(cudaDeviceSynchronize());
+                        static int g_c9 = -1; if (g_c9 < 0) { const char *e3 = getenv("CS16C"); g_c9 = (e3 && *e3 && atoi(e3) > 0) ? 1 : 0; }
+                        if (h9[0] > 0) { if (g_c9) launch_csort_counting<512, 8192, 4096>(h9[0], s9 + 2, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);   // 刀16c:NB=4096
+                                         else      launch_cs8192(h9[0], s9 + 2, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val); }
+                        if (h9[1] > 0) {   // P0:d>8192 行走 CAP 16384 老路径(排序覆盖,免截断)
+                            if (A_cols < csort_fused_max_cols(CSORT_TPB_B, CSORT_IPT_B) && !getenv("NOCSF"))
+                                launch_csort_fused<CSORT_TPB_B, CSORT_IPT_B>(h9[1], s9 + 2 + n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
+                            else
+                                launch_csort<CSORT_TPB_B, CSORT_IPT_B>(h9[1], s9 + 2 + n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                        }
+                        dev_free(s9);
+                    }
                     CHECK_CUDA(cudaGetLastError());
                 } else
                 if (bi >= 7 && g_segrts) {
@@ -6325,7 +6397,7 @@ static void hash_product(
                     // 根因:radix 排 CAP 槽含 ~66% padding → 3.2× 浪费 ≈ 系统排序差距 3.4×;counting O(nnz+CAP) 无此税
                     static int g_k14cs = -1;
                     if (g_k14cs < 0) { const char *e = getenv("K14CS"); g_k14cs = (e && *e && atoi(e) == 0) ? 0 : 1; }
-                    if (g_k14cs && bi == 8) launch_csort_counting<512, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
+                    if (g_k14cs && bi == 8) launch_cs8192(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
                     else                   launch_csort<CSORT_TPB_B, CSORT_IPT_B>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 }
                 CHECK_CUDA(cudaGetLastError());
@@ -6393,8 +6465,12 @@ static void hash_product(
         CHECK_CUDA(cudaMemcpy(h_sp.data(), d_span_len, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpy(h_ov.data(), d_row_ovf, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToHost));
         const int *h_rp = (const int*)A_buffer;
+        std::vector<int> h_crp(A_rows + 1);   // 行级口径定谳(09-30):第8列=C行nnz=真distinct d
+        CHECK_CUDA(cudaMemcpy(h_crp.data(), dC_rp, (size_t)(A_rows + 1) * sizeof(int), cudaMemcpyDeviceToHost));
+        std::vector<int> h_bk(A_rows);        // 第9列=bin id:窗分类用真bin(kid≤5=ht≤1024=kernel内排序),免律重建
+        CHECK_CUDA(cudaMemcpy(h_bk.data(), d_bkid, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToHost));
         for (int r = 0; r < A_rows; r++)
-            fprintf(hrt_f, "%d %d %d %d %d %d %llu\n", r, h_rp[r + 1] - h_rp[r], h_fl[r], h_es[r], h_sp[r], h_ov[r], h_rt[r]);
+            fprintf(hrt_f, "%d %d %d %d %d %d %llu %d %d\n", r, h_rp[r + 1] - h_rp[r], h_fl[r], h_es[r], h_sp[r], h_ov[r], h_rt[r], h_crp[r + 1] - h_crp[r], h_bk[r]);
         fclose(hrt_f); hrt_f = nullptr;
         dbg("[%s] rowtime(%d 行)→ %s\n", tag, A_rows, hrt_path);
         dev_free(d_est_save);
