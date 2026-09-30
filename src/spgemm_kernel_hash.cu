@@ -3111,7 +3111,8 @@ __global__ void compute_bucket_kernel(
     int tbl_elo = 0, int tbl_ehi = 0,             // 默认锚 glo=1.8(=eref 恒等)/ghi=1.4/elo=ehi=4096
     double tbl_eref = 1.8,                        // eref = 实际 est_expand(E = e/eref)
     int occ_coeff = SPANF_COEFF,
-    int force_est_min = 0)   // 决赛 v2 真强制:est≥此值终判 BIN_DITER(覆盖全门;0=关)                  // OCCGATE 系数(默认 16;OCC_GATE_COEFF=10 已验证但停靠③阶段启用;env OCCGATE_COEFF —— REXP
+    int force_est_min = 0,   // 决赛 v2 真强制
+    int had_l1 = 0)          // HAD L1 路由修正(env HAD_L1,host 读取传入:est≥此值终判 BIN_DITER(覆盖全门;0=关)                  // OCCGATE 系数(默认 16;OCC_GATE_COEFF=10 已验证但停靠③阶段启用;env OCCGATE_COEFF —— REXP
                                                   // 轮盘教训:crankseg −8.5 实为本门 est×16<span 边界
                                                   // 迁移,直接调门替代 est 侧信道;变小=更多重行留 hash)
                           //   1.63× → 表≈真需求 3.3× vs Ocean 1.75×;env HASH_TGT_ALPHA(200=legacy)
@@ -3185,7 +3186,18 @@ __global__ void compute_bucket_kernel(
     //             flop<8est ⟺ B_cont<24B(dup<8 时争用可忽略,G-group 摊薄)
     //             flop≥16384 ∧ <64est ⟺ B_cont<24B×est/(flop−est) 的重行域(docs/37 实证)
     const long long fl64 = (long long)flop[i];
-    const bool dup_ok = (fl64 < DUP_LIGHT * e) || (fl64 >= HASH_CAP && fl64 < DUP_HEAVY * e);  // 争用 vs compact 推导
+    bool dup_ok = (fl64 < DUP_LIGHT * e) || (fl64 >= HASH_CAP && fl64 < DUP_HEAVY * e);  // 争用 vs compact 推导
+    // ── HAD L1 三刀(④路由;had_l1 参数从 host 传入,默认 0)──
+    if (had_l1) {
+        // 刀1(nd24k): 高 dup × 高 est → 强制 hash(DUP_HEAVY=64 重域条款太宽松;
+        //   四臂实测 allhash 107 vs default 143 = hash 快 25%)
+        if (fl64 >= HASH_CAP && fl64 >= 20LL * e && e >= 2048) dup_ok = false;
+        // 刀2(pre2): 近满密行(span/est<1.5 ∧ est≥256)→ 松 flop 地板走 dense_struct
+        //   (DITER_FLOP_TIER=2048 拦死 pre2 型行[flop中位 698];dense_struct 同档 1.3-2× 快)
+        // (实施在 v4 门段,此处标记)
+        // 刀3(crankseg): 低 a_len × 长B行 → 不进 cursor(hash 快 25%)
+        // ( crankseg 行被 DITER 的宽span路径捕获,但 hash 更优;由刀1的高dup覆盖大部分)
+    }
     // §22d Ocean 双维档位比较:只作用于【档内】行(span ≤ DENSE_TIER_SPAN_MAX);
     // 超档行走老窗口 cursor 内核(多窗数据驱动,经济学已由 v28-v32 全库验证 —— est 地板
     // 维持结构化默认 EST_DENSE_MIN/2;档内行地板可松到 diter_est_min,§22 电池验证)。
@@ -3195,7 +3207,11 @@ __global__ void compute_bucket_kernel(
     const int est_floor = tier_fit ? diter_est_min : (EST_DENSE_MIN / 2);
     // §22d 老路径的 flop 地板同样回结构化默认(c-64 定谳:flop 2048-4095 ∧ span 50K 的半产物
     // 全幅行,窗口扫描成本不变产物减半 → 摊销劣化 +2.8ms;档内行受益于松地板,分而治之)
-    const int flop_floor = tier_fit ? diter_thr : (diter_thr > EST_DENSE_MIN ? diter_thr : EST_DENSE_MIN);
+    int flop_floor = tier_fit ? diter_thr : (diter_thr > EST_DENSE_MIN ? diter_thr : EST_DENSE_MIN);
+    // HAD L1 刀2(pre2): 近满密行(span < 1.5×est ∧ est≥256)松 flop 地板 → 走 dense_struct
+    if (had_l1 && sl0 > 0 && e >= 256 && (long long)sl0 * 2 <= (long long)e * 3) {
+        flop_floor = 0;   // span/est<1.5 = 密度>67%,dense_struct 窗口高效
+    }
     const bool tier_cmp_ok = !dtier_cmp || dstruct_win >= 0 || !tier_fit
         || dense_tier_of((long long)sl0) <= hash_tier_of((long long)ht);
     // ↑ dup<8:争用字节≈0(G-group 摊薄);dup<64∧flop≥16384:重行域的争用可容忍(docs/37)
@@ -4531,8 +4547,10 @@ static void hash_product(
         if (g_occ_coeff < 0) { const char *e = getenv("OCCGATE_COEFF"); g_occ_coeff = (e && *e) ? atoi(e) : SPANF_COEFF; }   // 停靠:OCC_GATE_COEFF=10 待③阶段翻默认
                 static int g_fdest = -1;   // 决赛 v2 真强制:FORCE_DITER_EST=8 类(env;0=关)
                 if (g_fdest < 0) { const char *e = getenv("FORCE_DITER_EST"); g_fdest = (e && *e) ? atoi(e) : 0; }
+        static int g_had_l1 = -1;   // HAD L1 路由修正(④;env HAD_L1=1 开,默认关)
+        if (g_had_l1 < 0) { const char *e = getenv("HAD_L1"); g_had_l1 = (e && *e && atoi(e) > 0) ? 1 : 0; }
         compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
-            g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff, g_fdest);
+            g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff, g_fdest, g_had_l1);
         if (d_est_save) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零(D2TIER 工作量轴也吃)
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
