@@ -3025,7 +3025,7 @@ __global__ void split_key_kernel(const unsigned long long *key, int *col, int n)
 
 // per-row compact+sort:每 block 一行,BlockRadixSort 行内按 col 排→直接写 CSR;一次替掉 compact+全局 sort+split_key
 template<int TPB, int IPT>
-__global__ void hash_compact_sort_kernel(
+__global__ __launch_bounds__(TPB, 2048 / (TPB * 2)) void hash_compact_sort_kernel(   // 刀14c:强制限寄存器(ocean sortOutput 同款 launch_bounds;ncu 实锤 255 regs → 1块/SM=12.5%占用)
     const int *rows, int n_rows,
     const long long *row_off, const int *row_nnz, const int *row_ptr,
     const unsigned long long *tmp_key, const double *tmp_val,
@@ -3573,8 +3573,10 @@ __global__ void hash_compact_copy_warp_kernel(
 
 // D5H 原地行排序(MODE=2 大行:无序直写 dC 后,行内 BlockRadixSort col/val in==out)
 template<int TPB, int IPT>
-__global__ void csort_inplace_kernel(const int *rows, const int *rp, int *col, double *val) {
+__global__ void csort_inplace_kernel(const int *rows, const int *rp, int *col, double *val,
+                                    const int *skip = nullptr) {
     int r = rows[blockIdx.x];
+    if (skip && skip[r]) return;   // 刀14:溢出行数据在 retry 区,跳过
     int s = rp[r], n = rp[r + 1] - rp[r];
     if (n <= 1) return;
     using BRS = cub::BlockRadixSort<unsigned, TPB, IPT, double>;
@@ -3597,13 +3599,14 @@ __global__ void csort_inplace_kernel(const int *rows, const int *rp, int *col, d
     }
 }
 template<int TPB, int IPT>
-static void launch_csort_ip(int n, const int *rows_ptr, const int *d_rp, int *d_col, double *d_val) {
+static void launch_csort_ip(int n, const int *rows_ptr, const int *d_rp, int *d_col, double *d_val,
+                            const int *d_skip = nullptr) {
     using BRS = cub::BlockRadixSort<unsigned, TPB, IPT, double>;
     size_t smem = sizeof(typename BRS::TempStorage);
     if (smem > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM)
         CHECK_CUDA(cudaFuncSetAttribute((const void*)csort_inplace_kernel<TPB, IPT>,
                                         cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
-    csort_inplace_kernel<TPB, IPT><<<n, TPB, smem>>>(rows_ptr, d_rp, d_col, d_val);
+    csort_inplace_kernel<TPB, IPT><<<n, TPB, smem>>>(rows_ptr, d_rp, d_col, d_val, d_skip);
     CHECK_CUDA(cudaGetLastError());
 }
 
@@ -6273,6 +6276,14 @@ static void hash_product(
             } else if (bi <= 9) {
                 static int g_segrts = -1;   // v31-①':bin≥7 csort O(n²) → cub 分段基数排序(靶纸:pre2 排序税 26ms=57%)
                 if (g_segrts < 0) { const char *e = getenv("SEGRTS"); g_segrts = (e && *e) ? atoi(e) : 0; }
+                // 刀14 终版:bin8 counting sort 前置(fused <256,64> 占 98% 排序时间——ncu 实锤;
+                // radix 排 8192 槽含 66% padding=3.2×浪费;counting O(nnz+CAP) 免此税)
+                static int g_k14cs2 = -1;
+                if (g_k14cs2 < 0) { const char *e = getenv("K14CS"); g_k14cs2 = (e && *e && atoi(e) == 0) ? 0 : 1; }
+                if (g_k14cs2 && bi == 8) {
+                    launch_csort_counting<512, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
+                    CHECK_CUDA(cudaGetLastError());
+                } else
                 if (bi >= 7 && g_segrts) {
                     launch_bin_segrts(n, rows_ptr, d_off, d_row_nnz, dC_rp, dC_ci, d_val,
                                       d_tmp_key, d_tmp_val, d_row_ovf);
@@ -6282,7 +6293,15 @@ static void hash_product(
                     // (ptxas 定罪);旧 <256,64> 229×256=58624 贴线可跑,且 bin8-9 行稀无证据
                     launch_csort_fused<CSORT_TPB_B, CSORT_IPT_B>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
                 } else {
-                    launch_csort<CSORT_TPB_B, CSORT_IPT_B>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                    // 刀14b:bin8 的 <256,64> 寄存器爆(IPT=64 → 192+ regs → 1块/SM=12.5%占用)
+                    // → <512,16>(CAP 同 8192,regs/thread 48+overhead → 2块/SM) ;
+                    // K14B=0 逃生门回旧配置
+                    // 刀14:bin8 从 cub radix(<256,64> 或 <512,16>)改 counting sort(同 bin7 spec84 转正)
+                    // 根因:radix 排 CAP 槽含 ~66% padding → 3.2× 浪费 ≈ 系统排序差距 3.4×;counting O(nnz+CAP) 无此税
+                    static int g_k14cs = -1;
+                    if (g_k14cs < 0) { const char *e = getenv("K14CS"); g_k14cs = (e && *e && atoi(e) == 0) ? 0 : 1; }
+                    if (g_k14cs && bi == 8) launch_csort_counting<512, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
+                    else                   launch_csort<CSORT_TPB_B, CSORT_IPT_B>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 }
                 CHECK_CUDA(cudaGetLastError());
             } else if (bi == BIN_HEAVY) {
