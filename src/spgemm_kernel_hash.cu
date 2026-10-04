@@ -4761,6 +4761,7 @@ static void hash_product(
     int *d_d3_rows = nullptr; int d_d3_n = 0; int h_d3_n = 0;   // D3(T7c):merge 核行单/计数
     int h_t3_w[DENSE_TIER_COUNT*2] = {0};                  // T3:子档窗=子档内实际最大 span
     auto dstr_split = [&]() {                              // §22d 分流体(dense_rows 就绪后调用)
+        { static int n_call = 0; n_call++; if (n_call <= 12) dbg("[%s] dstr_split 调用#%d(dense_nr=%d)\n", tag, n_call, dense_nr); }
         // 单次 D2H(融合 span+行号+est 三元组)+ 异步 H2D:同步点 3→1(nsys 定谳:prof 内同步
         // memcpy = 流水线停顿,in-2004 每迭代 ~1.5ms 空泡)
         int *d_sp = decltype(d_sp)(dev_alloc(4 * (size_t)dense_nr * sizeof(int)));
@@ -5991,6 +5992,15 @@ static void hash_product(
             d_d3_rows, d_span_lo, d_span_len, 16384, d_row_nnz);
         CHECK_CUDA(cudaGetLastError());
         dbg("[%s] D3 count v2:%d 行\n", tag, h_d3_n);
+        {   // T7c 取证:count 后即刻 Σ(分"count 值错"vs"prefix/流程错")
+            std::vector<int> rn(A_rows);
+            CHECK_CUDA(cudaMemcpy(rn.data(), d_row_nnz, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToHost));
+            std::vector<int> rr2(h_d3_n);
+            CHECK_CUDA(cudaMemcpy(rr2.data(), d_d3_rows, h_d3_n * sizeof(int), cudaMemcpyDeviceToHost));
+            long long sum = 0;
+            for (int z = 0; z < h_d3_n; z++) sum += rn[rr2[z]];
+            dbg("[%s] D3 count 后 Σ=%lld(对比 numeric Σ=110.3M)\n", tag, sum);
+        }
     }
     prof("cnnz_scan", [&]{
         CHECK_CUDA(cudaMemset(dC_rp, 0, sizeof(int)));
