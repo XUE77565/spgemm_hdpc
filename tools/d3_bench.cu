@@ -107,7 +107,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[d3bench] n=%d 行单 %zu\n", n, rows.size());
     int NR = rows.size();
     // device
-    int *d_rp, *d_ci; double *d_val, *d_oval; int *d_rows, *d_rownnz, *d_ex, *d_ocol; unsigned long long *d_rt;
+    int *d_rp, *d_ci; double *d_val, *d_oval; int *d_rows, *d_rownnz, *d_ex; unsigned long long *d_rt;
     CK(cudaMalloc(&d_rp, (n+1)*4)); CK(cudaMalloc(&d_ci, A.ci.size()*4)); CK(cudaMalloc(&d_val, A.val.size()*8));
     CK(cudaMalloc(&d_rows, NR*4)); CK(cudaMalloc(&d_rownnz, n*4)); CK(cudaMalloc(&d_ex, (NR+1)*4));
     CK(cudaMalloc(&d_rt, n*8));
@@ -116,6 +116,30 @@ int main(int argc, char **argv) {
     CK(cudaMemcpy(d_val, A.val.data(), A.val.size()*8, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(d_rows, rows.data(), NR*4, cudaMemcpyHostToDevice));
     // 预热 + count pass
+    // 单行 CPU 参照(argv[5]=row id;破 warp 语义谜)
+    if (argc > 5) {
+        int ri = atoi(argv[5]);
+        // 行单中找
+        int pos = -1; for (int z = 0; z < NR; z++) if (rows[z] == ri) { pos = z; break; }
+        if (pos < 0) { fprintf(stderr, "row %d 不在行单\n", ri); return 0; }
+        std::vector<int> all;
+        for (int q2 = A.rp[ri]; q2 < A.rp[ri+1]; q2++) {
+            int k = A.ci[q2];
+            for (int w2 = A.rp[k]; w2 < A.rp[k+1]; w2++) all.push_back(A.ci[w2]);
+        }
+        std::sort(all.begin(), all.end());
+        int dist = (int)(std::unique(all.begin(), all.end()) - all.begin());
+        fprintf(stderr, "[chk] row %d: a_len=%d flop=%d CPU_distinct=%d\n", ri, A.rp[ri+1]-A.rp[ri], (int)all.size(), dist);
+        // kernel count for this row
+        std::vector<int> rn(n, -1);
+        { int g2 = (NR + 7) / 8;
+        d3_merge_kernel<<<g2, 256>>>(d_rp, d_ci, d_val, d_rp, d_ci, d_val, 0, n, d_rows, NR, d_ex, nullptr, nullptr, d_rownnz, nullptr, 0); }
+        CK(cudaDeviceSynchronize());
+        CK(cudaMemcpy(rn.data(), d_rownnz, n*4, cudaMemcpyDeviceToHost));
+        fprintf(stderr, "[chk] row %d: kernel_cnt=%d\n", ri, rn[ri]);
+        return 0;
+    }
+
     int wpb = 256 >> 5; int g = (NR + wpb - 1) / wpb;
     d3_merge_kernel<<<g, 256>>>(d_rp, d_ci, d_val, d_rp, d_ci, d_val, 0, n, d_rows, NR, d_ex, nullptr, nullptr, d_rownnz, nullptr, 0);
     CK(cudaDeviceSynchronize());
@@ -125,11 +149,10 @@ int main(int argc, char **argv) {
       fprintf(stderr, "[d3bench] Σnnz(count)=%lld\n", tot);
       // 前缀(行单局部)
       std::vector<int> ex(NR + 1, 0); for (int z = 0; z < NR; z++) ex[z+1] = ex[z] + hcnt[z];
-      CK(cudaMemcpy(d_ex, ex.data(), (NR+1)*4, cudaMemcpyHostToDevice));
-      CK(cudaMalloc(&d_ocol, ex[NR]*4)); CK(cudaMalloc(&d_oval, ex[NR]*8)); }
+      CK(cudaMemcpy(d_ex, ex.data(), (NR+1)*4, cudaMemcpyHostToDevice)); }
     // 计时 rep 发(warm)
     for (int r = 0; r < rep + 1; r++) {
-        d3_merge_kernel<<<g, 256>>>(d_rp, d_ci, d_val, d_rp, d_ci, d_val, 0, n, d_rows, NR, d_ex, d_ocol, d_oval, d_rownnz, d_rt, 1);
+        d3_merge_kernel<<<g, 256>>>(d_rp, d_ci, d_val, d_rp, d_ci, d_val, 0, n, d_rows, NR, d_ex, nullptr, nullptr, d_rownnz, d_rt, 0);
         CK(cudaDeviceSynchronize());
     }
     FILE *fo = fopen(argv[3], "w");
