@@ -4994,15 +4994,7 @@ static void hash_product(
                             CHECK_CUDA(cudaGetLastError());
                         });
                     }
-                    if (h_d3_n > 0 && d_d3_rows) {   // D3 行 count(exact_rp 链完整性;T7c 修复:抽取行需计数)
-                        // D3 行 span≤16384 ≤ 梯子最大窗,用 count kernel 窗=16384 保守档
-                        size_t d3sm = (size_t)16384 * 9 + 256;
-                        CHECK_CUDA(cudaFuncSetAttribute(dense_struct_count_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)d3sm));
-                        dense_struct_count_kernel<<<h_d3_n, HASH_BLOCK_STRUCT, d3sm>>>(
-                            dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows,
-                            d_d3_rows, d_span_lo, d_span_len, 16384, d_row_nnz);
-                        CHECK_CUDA(cudaGetLastError());
-                    }
+
                     if (!g_cnf && split_cnt && h_big_off < dense_nr) {   // 超档段:老窗式 count(#4' CNT_FUSE=1 跳过=免计数)
                         int old_nr = dense_nr - h_big_off;
                         hash_dense_count_kernel<<<old_nr, DENSE_BLK, csm>>>(
@@ -5991,6 +5983,15 @@ static void hash_product(
     // Stage 3: scan row_nnz → C_row_ptr + C_nnz(精确)
     int *dC_rp; dC_rp = decltype(dC_rp)(dev_alloc((A_rows + 1) * sizeof(int)));
     int C_nnz_result;
+    if (h_d3_n > 0 && d_d3_rows) {   // D3 count(T7c 修复v2:必须先于 cnnz_scan,原位置嵌在不执行分支=prefix 漏 D3 行根因)
+        size_t d3sm = (size_t)16384 * 9 + 256;
+        CHECK_CUDA(cudaFuncSetAttribute(dense_struct_count_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)d3sm));
+        dense_struct_count_kernel<<<h_d3_n, HASH_BLOCK_STRUCT, d3sm>>>(
+            dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows,
+            d_d3_rows, d_span_lo, d_span_len, 16384, d_row_nnz);
+        CHECK_CUDA(cudaGetLastError());
+        dbg("[%s] D3 count v2:%d 行\n", tag, h_d3_n);
+    }
     prof("cnnz_scan", [&]{
         CHECK_CUDA(cudaMemset(dC_rp, 0, sizeof(int)));
         if (A_rows <= MAX_BLOCK_THREADS) {
@@ -6167,6 +6168,14 @@ static void hash_product(
                         d_d3_rows, h_d3_n, dC_rp, dC_ci, d_val, d_row_nnz, d_rt);
                     CHECK_CUDA(cudaGetLastError());
                     dbg("[%s] D3 merge 核:%d 行(warp/行)\n", tag, h_d3_n);
+                    if (getenv("D3CHK")) {   // T7c 取证:实际 row_nnz dump
+                        std::vector<int> rn(A_rows), rr(h_d3_n);
+                        CHECK_CUDA(cudaMemcpy(rr.data(), d_d3_rows, h_d3_n * sizeof(int), cudaMemcpyDeviceToHost));
+                        CHECK_CUDA(cudaMemcpy(rn.data(), d_row_nnz, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToHost));
+                        FILE *f = fopen(getenv("D3CHK"), "w");
+                        for (int z = 0; z < h_d3_n; z++) fprintf(f, "%d %d\n", rr[z], rn[rr[z]]);
+                        fclose(f);
+                    }
                 }
                 if (g_dtier_single) {   // §22c:档内行全部单发最大档(窗 7277/块宽 1024;§22 数值形态)
                     if (big_off > 0) {
