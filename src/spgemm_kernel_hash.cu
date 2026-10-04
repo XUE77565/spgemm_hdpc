@@ -5469,7 +5469,7 @@ static void hash_product(
                     // spec99 刀1:重行同构复刻发射(SPEC99=1 门默认关;bins7-8 接管=2719↔512T×4/
                     // 5449↔1024T×2;占 hash_spa 之外独立 kernel,行计时段同彼窗)
                     static int g_s99 = -1;
-                    if (g_s99 < 0) { const char *e = getenv("SPEC99"); g_s99 = (e && *e && atoi(e) > 0) ? 1 : 0; }
+                    if (g_s99 < 0) { const char *e = getenv("SPEC99"); g_s99 = (e && *e && atoi(e) == 0) ? 0 : 1; }   // T1 翻默认 ON(10-04:行级 0.726/100%/n53万);=0 逃生门
                     static int g_s99cap = -1;   // 刀3/3b 分裂帽:全线判负(1950/2100/2311=106.1/109.2/116.9 全劣于 100.9)——2719 档红利不付账,默认 0=关;env 留作后续复验
                     if (g_s99cap < 0) { const char *e = getenv("SPEC99_CAP"); g_s99cap = (e && *e) ? atoi(e) : 0; }
                     static int g_s99och = -1;   // 刀10:id*11 哈希 A/B(错峰机理直测;0=Knuth 默认)
