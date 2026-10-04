@@ -1082,6 +1082,12 @@ __device__ int g_dflag_probe_row = -1;   // DFLAG_PROBE 探针行(diter 雷判�
 // 65536/(1024×50)=1 块/SM = 50% warps(ncu 实测 49.97);ocean denseNumericIter REG:32 → 2 块 = 99.67%。
 // c-64 头对头:我指令 4.01G(瘦 14%)仍慢 31% = 纯占用差。强制 2 块/SM → 编译器压 ≤32 regs
 // (溢出换 2× 占用的交易,电池裁决)。
+// K1 首写免原子(study/31):认领制——首写者普通写+fence,重复者才 atomicAdd(原子占比 100%→dup 比)
+#define K1_ACC(dval_, j_, flag_, v_) do { \
+    if (atomicExch(&(flag_)[j_], 1) == 0) { \
+        unsigned long long exp_ = 0ULL; \
+        atomicCAS((unsigned long long*)&(dval_)[j_], exp_, __double_as_longlong(v_)); } \
+    else atomicAdd(&(dval_)[j_], (v_)); } while (0)
 __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
@@ -1092,7 +1098,7 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
     const int *span_lo /*nullable*/,
     const int *row_flop = nullptr, const int *row_maxbl = nullptr,
     int *smap_base = nullptr, const int *smap_off = nullptr, int smir_bias = 0,
-    int use_cursor = 1,
+    int use_cursor = 1, int k1fw = 0,
     unsigned long long *rowtime = nullptr,   // DD_ROWTIME:逐行执行周期(docs/66 采数)
     int *rowmode = nullptr,                  // 0=search 路径 / 1=cursor 路径(同数组落盘)
     int avgB_thr_param = 0,                  // PB2_AVGB 复审门(docs/66 §8;0 = 默认 64)
@@ -1109,8 +1115,8 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
     unsigned long long rt0 = rowtime ? clock64() : 0;
     extern __shared__ __align__(8) unsigned char wsmem[];
     double *dval = (double*)wsmem;
-    unsigned char *dflag = wsmem + (size_t)PB2_W * sizeof(double);
-    int *dpref = (int*)(wsmem + (((size_t)PB2_W * 9) + 3) / 4 * 4);
+    unsigned int *dflag = (unsigned int*)(wsmem + (size_t)PB2_W * sizeof(double));   // K1:int 升格(atomicExch 认领)
+    int *dpref = (int*)(wsmem + (((size_t)PB2_W * 12) + 3) / 4 * 4);
     int *smap_g = smap_base + smap_off[i];                  // 全局游标(大 a_len 回退)
     int *smir_g = smap_base + smir_bias + smap_off[i];
     int *smap_s = dpref + PB2_W;                            // SMEM 游标区(与 dpref 分立)
@@ -1168,8 +1174,8 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
                     if (B16p) { uint4 e = B16p[q]; j = (int)e.x - c0; bv = __hiloint2double(e.w, e.z); }
                     else { j = B_col_idx[q] - c0; bv = B_val[q]; }
                     if (upper_tri && (c0 + j) < i) continue;
-                    atomicAdd(&dval[j], a * bv);
-                    dflag[j] = 1;
+                    if (k1fw) K1_ACC(dval, j, dflag, a * bv);
+                    else { atomicAdd(&dval[j], a * bv); dflag[j] = 1; }
                 }
             }
             __syncthreads();
@@ -1240,12 +1246,12 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
                         int j = jcol - win_lo;
                         if (j >= w) { atomicMin(&smap[p - rs], q); if (jcol < my_next) my_next = jcol; break; }
                         int col = win_lo + j;
-                        if (!(upper_tri && col < i)) { atomicAdd(&dval[j], a * bv); dflag[j] = 1; }
+                        if (!(upper_tri && col < i)) { if (k1fw) K1_ACC(dval, j, dflag, a * bv); else { atomicAdd(&dval[j], a * bv); dflag[j] = 1; } }
                         if (jcol2 >= 0) {
                             int j2 = jcol2 - win_lo;
                             if (j2 >= w) { atomicMin(&smap[p - rs], q + G); if (jcol2 < my_next) my_next = jcol2; break; }
                             int col2 = win_lo + j2;
-                            if (!(upper_tri && col2 < i)) { atomicAdd(&dval[j2], a * bv2); dflag[j2] = 1; }
+                            if (!(upper_tri && col2 < i)) { if (k1fw) K1_ACC(dval, j2, dflag, a * bv2); else { atomicAdd(&dval[j2], a * bv2); dflag[j2] = 1; } }
                         }
                     }
                 } else
@@ -1261,8 +1267,8 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
                     }
                     int col = win_lo + j;
                     if (upper_tri && col < i) continue;
-                    atomicAdd(&dval[j], a * bv);
-                    dflag[j] = 1;
+                    if (k1fw) K1_ACC(dval, j, dflag, a * bv);
+                    else { atomicAdd(&dval[j], a * bv); dflag[j] = 1; }
                 }
             }
             if (my_next < n) atomicMin(&s_next_lo, my_next);
@@ -6156,7 +6162,7 @@ static void hash_product(
                 CHECK_CUDA(cudaMemcpy(&sm_tot, d_smap_off + A_rows, sizeof(int), cudaMemcpyDeviceToHost));
                 d_smap = decltype(d_smap)(dev_alloc((size_t)(sm_tot > 0 ? 2 * sm_tot : 1) * sizeof(int)));   // 2×:活动游标 + 本窗镜像
                 dev_free(d_alen);
-                size_t wsm = ((size_t)PB2_W * 9 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
+                size_t wsm = ((size_t)PB2_W * 12 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
                            + 2 * (size_t)SMAP_SMEM_MAX * sizeof(int);
                 CHECK_CUDA(cudaFuncSetAttribute(hash_dense_direct_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)wsm));
                 static int g_pb2cur = -1;
@@ -6293,7 +6299,7 @@ static void hash_product(
             }
             // ---- 老窗口 cursor 内核(大 span 段;或 DSTRUCT<2 的全体 dense 行)----
             if (old_nr > 0) {
-                size_t wsm = ((size_t)PB2_W * 9 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
+                size_t wsm = ((size_t)PB2_W * 12 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
                            + 2 * (size_t)SMAP_SMEM_MAX * sizeof(int);
                 if (const char *dp2 = getenv("DFLAG_PROBE")) { int pr = atoi(dp2); cudaMemcpyToSymbol(g_dflag_probe_row, &pr, sizeof(int)); }
                 static int g_cb16 = -1;   // spec86-A:CURSOR_B16=1 门(默认关;hash_spa 的 B16 分裂人格前科,系统电池裁决)
@@ -6304,10 +6310,12 @@ static void hash_product(
                 // (g_cnf 已提前解析)
                 /* d_dtmp alloc moved to function scope */
                 if (g_cpf < 0) { const char *e4 = getenv("CURSOR_PF"); g_cpf = (e4 && *e4) ? 1 : 0; }
+                static int g_k1fwHost = -1;   // K1 首写免原子(env K1FW;默认关)
+                if (g_k1fwHost < 0) { const char *e = getenv("K1FW"); g_k1fwHost = (e && *e && atoi(e) > 0) ? 1 : 0; }
                 hash_dense_direct_kernel<<<old_nr, MAX_BLOCK_THREADS, wsm>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, A_cols,
                     dC_rp, dC_ci, d_val, d_row_nnz, old_rows, old_rows ? d_span_lo : nullptr,
-                    d_flop, d_maxbl, d_smap, d_smap_off, sm_tot, uc, d_ddrt, d_ddmode, g_pb2avgb,
+                    d_flop, d_maxbl, d_smap, d_smap_off, sm_tot, uc, g_k1fwHost, d_ddrt, d_ddmode, g_pb2avgb,
                     (g_cb16 && dB16) ? dB16 : nullptr, g_cpf, g_cbat,
                     (g_cnf && d_dtmp_col) ? d_dtmp_col : nullptr,
                     (g_cnf && d_dtmp_col) ? d_dtmp_val : nullptr,
