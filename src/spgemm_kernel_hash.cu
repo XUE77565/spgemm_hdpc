@@ -4071,8 +4071,11 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
             // dup=flop/est≥20 才开——nd24k(62×)吃收益,crankseg bin7-8 型(低 dup)免疫(maxbl 门实证拦不住)
             const bool rot_ok = rot_on && (cnt >= 10) && ((long long)d_flop[i] >= 20LL * d_est[i]);
             const int rot = rot_ok ? (int)(((unsigned)(tid >> 5) * 2654435761u) % (unsigned)cnt) : 0;
+            // K3A(study/31 错峰族):affine 置换 idx=(s*stride+rot)%cnt——stride=warp 素数(7/11/13...)
+            // 比刀11 纯旋转(相邻 k 仍相邻,只整体平移)错峰更彻底:近邻 k 对到达时间差 ∝ stride
+            const int stride = rot_ok ? (7 + 4 * (int)((tid >> 5) & 3)) : 1;
             for (int s = 0; s < cnt; s++) {
-            const int idx = (s + rot) % cnt;
+            const int idx = (s * stride + rot) % cnt;
             const int p = rs + my_group + idx * num_groups;
             const int k = A_ci[p];
             const double a_ik = A_val[p];
