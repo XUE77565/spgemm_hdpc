@@ -335,8 +335,7 @@ __global__ void d3_merge_kernel(
     int upper_tri, int A_rows,
     const int *rows, int n_rows,
     const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
-    unsigned long long *rowtime = nullptr,   // 逐行周期(同行集对拍仪器)
-    int mode = 1)                            // 0=count-only(独立台两遍制);1=全
+    unsigned long long *rowtime = nullptr)   // 逐行周期(同行集对拍仪器)
 {
     int wid = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
     if (wid >= n_rows) return;
@@ -366,13 +365,13 @@ __global__ void d3_merge_kernel(
         int pw = __shfl_sync(FULL, p, w);
         double prod = av * B_val[pw];
         if (col != prev_col) {
-            if (prev_col >= 0) { if (mode) { out_col[base + cnt] = prev_col; out_val[base + cnt] = sum; } cnt++; }
+            if (prev_col >= 0) { out_col[base + cnt] = prev_col; out_val[base + cnt] = sum; cnt++; }
             prev_col = col; sum = 0.0;
         }
         sum += prod;
         // 步进该胜者链(仅胜者 lane;同列其余链下一轮自然胜出)
         if (my == col && p < e && lane == w) p++;
     }
-    if (prev_col >= 0) { if (mode) { out_col[base + cnt] = prev_col; out_val[base + cnt] = sum; } cnt++; }
+    if (prev_col >= 0) { out_col[base + cnt] = prev_col; out_val[base + cnt] = sum; cnt++; }
     if (lane == 0) { row_nnz[i] = cnt; if (rowtime) rowtime[i] = clock64() - rt0; }
 }
