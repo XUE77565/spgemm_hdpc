@@ -44,6 +44,15 @@ extern __global__ void dense_struct_numeric_kernel(
     int win_cols,
     const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
     const int *row_flop);   // 刀D2a:精确 avg_B(G 分配用)
+// T3(10-04):两行共块变体(命名屏障+SMEM 半分区;env T3EXP)——模板声明(实例子段在 struct.cu)
+template<int TPB> __global__ void dense_struct_numeric_2r_kernel(
+    const int *A_rp, const int *A_ci, const double *A_val,
+    const int *B_rp, const int *B_ci, const double *B_val,
+    int upper_tri, int A_rows,
+    const int *bucket_rows, int nr_bucket, const int *span_lo, const int *span_len,
+    int win_cols,
+    const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
+    const int *row_flop);
 
 // 二分:返回 [lo,hi) 内第一个 arr[idx] >= val 的下标(与 spgemm_merge.cu 同款,跨 TU 内联用本地拷贝)
 __device__ __forceinline__ int dev_lower_bound(const int *arr, int lo, int hi, int val) {
@@ -4740,6 +4749,8 @@ static void hash_product(
     int h_big_off = 0;                                     // 超档段起点 = 老内核人群
     int h_tier_hmax = 0;                                   // 档内段最大 span(结构 count 窗)
     int h_tier_w[DENSE_TIER_COUNT] = {0};                  // §26:每档段内实际最大 span(per-tier 窗宽自适应)
+    int h_t3_end[DENSE_TIER_COUNT*2] = {0};                // T3:子分档终点(每档 2 子档,span 升序)
+    int h_t3_w[DENSE_TIER_COUNT*2] = {0};                  // T3:子档窗=子档内实际最大 span
     auto dstr_split = [&]() {                              // §22d 分流体(dense_rows 就绪后调用)
         // 单次 D2H(融合 span+行号+est 三元组)+ 异步 H2D:同步点 3→1(nsys 定谳:prof 内同步
         // memcpy = 流水线停顿,in-2004 每迭代 ~1.5ms 空泡)
@@ -4790,6 +4801,32 @@ static void hash_product(
             if (g_ds28 < 0) { const char *e = getenv("DS_MED_OFF"); g_ds28 = (e && *e) ? 1 : 0; }
             if (med < 0.5 && !g_ds28) { h_big_off = 0; h_tier_end[0] = h_tier_end[1] = h_tier_end[2] = h_tier_end[3] = h_tier_end[4] = h_tier_end[5] = 0; }
             dbg("[%s] §28 矩阵级判据:档内中位密度 %.2f → %s\n", tag, med, med < 0.5 ? "老内核" : "结构内核");
+        }
+        // T3 子分档(env T3EXP;默认关):档内行 span 升序 + 对半 → 子档窗=子档实际 max span
+        // (低子档窗 ~50KB → 2r 块(两行)SMEM ~100KB → 2块×2行=4行/SM,=彼方水平)
+        static int g_t3exp0 = -1;
+        if (g_t3exp0 < 0) { const char *e = getenv("T3EXP"); g_t3exp0 = (e && *e && atoi(e) > 0) ? 1 : 0; }
+        if (g_t3exp0) {
+            int b = 0;
+            for (int t = 0; t < DENSE_TIER_COUNT; t++) {
+                int e = h_tier_end[t];
+                if (e - b >= 128) {
+                    std::stable_sort(idx.begin() + b, idx.begin() + e,
+                                     [&](int x, int y){ return h_sp[x] < h_sp[y]; });
+                    int mid = b + (e - b) / 2;
+                    int w0 = 0, w1 = 0;
+                    for (int k = b; k < mid; k++) w0 = w0 > h_sp[idx[k]] ? w0 : h_sp[idx[k]];
+                    for (int k = mid; k < e; k++) w1 = w1 > h_sp[idx[k]] ? w1 : h_sp[idx[k]];
+                    h_t3_end[t*2] = mid;   h_t3_w[t*2] = w0;
+                    h_t3_end[t*2+1] = e;   h_t3_w[t*2+1] = w1;
+                } else if (e > b) {
+                    int w0 = 0;
+                    for (int k = b; k < e; k++) w0 = w0 > h_sp[idx[k]] ? w0 : h_sp[idx[k]];
+                    h_t3_end[t*2] = e; h_t3_w[t*2] = w0;   // 单子档(不劈)
+                }
+                b = e;
+            }
+            dbg("[%s] T3 子分档 armed\n", tag);
         }
         h_tier_hmax = 0;                       // 档内段最大 span(档内非 span 序,取段内 max)
         for (int k = 0; k < off; k++) h_tier_hmax = h_tier_hmax > h_sp[idx[k]] ? h_tier_hmax : h_sp[idx[k]];
@@ -6078,6 +6115,27 @@ static void hash_product(
                         dense_struct_numeric_kernel<1024><<<big_off, 1024, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
                         dbg("[%s]   §22c 单档:%d 行(窗 %d 块宽 %d)\n", tag, big_off, uwin, tblk);
                     }
+                } else if (getenv("T3EXP") && atoi(getenv("T3EXP")) > 0) {
+                    // T3:两行共块 + 子分档(每子档一发射;grid=(n+1)/2;SMEM=2×半区)
+                    int off = 0;
+                    for (int t = 0; t < DENSE_TIER_COUNT * 2; t++) {
+                        int nr_t = h_t3_end[t] - off;
+                        if (nr_t > 0) {
+                            int tier = t >> 1;
+                            int uwin = h_t3_w[t] > 0 ? h_t3_w[t] : dense_tier_max(tier);
+                            int tblk = dense_tier_block(tier);
+                            size_t half_bytes = (size_t)uwin * 8 + (((size_t)uwin + 31) >> 5) * 4 * 2;
+                            size_t nsm = half_bytes * 2;
+                            auto k2r = (tblk <= 256) ? dense_struct_numeric_2r_kernel<256>
+                                    : (tblk <= 512) ? dense_struct_numeric_2r_kernel<512>
+                                                    : dense_struct_numeric_2r_kernel<1024>;
+                            CHECK_CUDA(cudaFuncSetAttribute(k2r, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)nsm));
+                            k2r<<<(nr_t + 1) / 2, tblk, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, nr_t, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
+                            CHECK_CUDA(cudaGetLastError());
+                            dbg("[%s]   T3 子档%d:%d 行(窗 %d 块宽 %d smem %zuKB 2r)\n", tag, t, nr_t, uwin, tblk, nsm / 1024);
+                        }
+                        off = h_t3_end[t];
+                    }
                 } else {
                 int off = 0;
                 for (int t = 0; t < DENSE_TIER_COUNT; t++) {
@@ -6521,7 +6579,6 @@ static void hash_product(
     dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); for (int vb_ = 0; vb_ <= HASH_LADDER_MAX_BIN; vb_++) dev_free(d_gv_bins[vb_]); dev_free(d_gv_off);
     dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos);
     dev_free(d_smap); dev_free(d_smap_off);   // Phase B v2 全局 cursor 区
-    dev_free(d_hybrid_val);
     { cudaError_t pe = cudaGetLastError(); if (pe != cudaSuccess) fprintf(stderr, "[probe] frees 后: %s\n", cudaGetErrorString(pe)); }                    // Fix#6(审查)
 }
 
