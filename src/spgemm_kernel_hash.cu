@@ -44,6 +44,14 @@ extern __global__ void dense_struct_numeric_kernel(
     int win_cols,
     const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
     const int *row_flop);   // 刀D2a:精确 avg_B(G 分配用)
+// D3(T7c):低 dup 短 a_len merge 核(pre2 型;env D3EXP)
+extern __global__ void d3_merge_kernel(
+    const int *A_rp, const int *A_ci, const double *A_val,
+    const int *B_rp, const int *B_ci, const double *B_val,
+    int upper_tri, int A_rows,
+    const int *rows, int n_rows,
+    const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
+    unsigned long long *rowtime);
 // T3(10-04):两行共块变体(命名屏障+SMEM 半分区;env T3EXP)——模板声明(实例子段在 struct.cu)
 template<int TPB> __global__ void dense_struct_numeric_2r_kernel(
     const int *A_rp, const int *A_ci, const double *A_val,
@@ -4750,6 +4758,7 @@ static void hash_product(
     int h_tier_hmax = 0;                                   // 档内段最大 span(结构 count 窗)
     int h_tier_w[DENSE_TIER_COUNT] = {0};                  // §26:每档段内实际最大 span(per-tier 窗宽自适应)
     int h_t3_end[DENSE_TIER_COUNT*2] = {0};                // T3:子分档终点(每档 2 子档,span 升序)
+    int *d_d3_rows = nullptr; int d_d3_n = 0; int h_d3_n = 0;   // D3(T7c):merge 核行单/计数
     int h_t3_w[DENSE_TIER_COUNT*2] = {0};                  // T3:子档窗=子档内实际最大 span
     auto dstr_split = [&]() {                              // §22d 分流体(dense_rows 就绪后调用)
         // 单次 D2H(融合 span+行号+est 三元组)+ 异步 H2D:同步点 3→1(nsys 定谳:prof 内同步
@@ -4782,6 +4791,38 @@ static void hash_product(
             if (g_ddens && t < DENSE_TIER_COUNT && 2 * (long long)h_est[k_row] < (long long)s) t = DENSE_TIER_COUNT;   // (§25 密度门,默认关)
             return t;
         };
+        // D3(T7c,env D3EXP 默认关):低 dup 短 a_len merge 核人口抽取(pre2 型载体;
+        // 谓词=a_len∈[1,32]∧est∈[256,4096]∧span≤16384——pre2 est 662-1282 全入,
+        // c-64 型(est 16K)/in-2004 中带(est 4.4K)排除)
+        static int g_d3exp = -1;
+        if (g_d3exp < 0) { const char *e = getenv("D3EXP"); g_d3exp = (e && *e && atoi(e) > 0) ? 1 : 0; }
+        if (g_d3exp) {
+            std::vector<int> d3list;
+            for (int q2 = 0; q2 < dense_nr; q2++) {
+                int r2 = h_dense[q2];
+                int al2 = h_alen[r2];
+                if (al2 >= 1 && al2 <= 32 && h_est[r2] >= 256 && h_est[r2] <= 4096 && h_sp[r2] <= 16384)
+                    d3list.push_back(r2);
+            }
+            if (!d3list.empty()) {
+                // 重排 h_dense:非 D3 在前(保序)
+                std::vector<int> keep;
+                for (int q2 = 0; q2 < dense_nr; q2++) {
+                    int r2 = h_dense[q2];
+                    int al2 = h_alen[r2];
+                    bool d3 = (al2 >= 1 && al2 <= 32 && h_est[r2] >= 256 && h_est[r2] <= 4096 && h_sp[r2] <= 16384);
+                    if (!d3) keep.push_back(r2);
+                }
+                int w = (int)keep.size();
+                for (int q2 = 0; q2 < w; q2++) h_both[dense_nr + q2] = keep[q2];   // h_dense=h_both+n 段,写母数组
+                dense_nr = w;
+                d_d3_rows = decltype(d_d3_rows)(dev_alloc(d3list.size() * sizeof(int)));
+                CHECK_CUDA(cudaMemcpyAsync(d_d3_rows, d3list.data(), d3list.size() * sizeof(int), cudaMemcpyHostToDevice, (cudaStream_t)0));
+                d_d3_n = (int)d3list.size();
+                h_d3_n = d_d3_n;
+                dbg("[%s] D3EXP:merge 核人口 %d 行(梯子/direct 余 %d)\n", tag, d_d3_n, w);
+            }
+        }
         std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) { return tier_key(a) < tier_key(b); });
         int off = 0;
         for (int t = 0; t < DENSE_TIER_COUNT; t++) {
@@ -4952,6 +4993,15 @@ static void hash_product(
                                 cnt_rows, d_span_lo, d_span_len, use_cols, d_row_nnz);
                             CHECK_CUDA(cudaGetLastError());
                         });
+                    }
+                    if (h_d3_n > 0 && d_d3_rows) {   // D3 行 count(exact_rp 链完整性;T7c 修复:抽取行需计数)
+                        // D3 行 span≤16384 ≤ 梯子最大窗,用 count kernel 窗=16384 保守档
+                        size_t d3sm = (size_t)16384 * 9 + 256;
+                        CHECK_CUDA(cudaFuncSetAttribute(dense_struct_count_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)d3sm));
+                        dense_struct_count_kernel<<<h_d3_n, HASH_BLOCK_STRUCT, d3sm>>>(
+                            dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows,
+                            d_d3_rows, d_span_lo, d_span_len, 16384, d_row_nnz);
+                        CHECK_CUDA(cudaGetLastError());
                     }
                     if (!g_cnf && split_cnt && h_big_off < dense_nr) {   // 超档段:老窗式 count(#4' CNT_FUSE=1 跳过=免计数)
                         int old_nr = dense_nr - h_big_off;
@@ -5295,7 +5345,7 @@ static void hash_product(
                 // dense-iter(docs/22 Phase A):重行列窗口累积,直接寻址免探测;
                 // 窗口升序 → 行内天然有序 → compact 走 copy。输出仍写 tmp(est-gapped)+ ovf 行照旧 retry。
                 // 方案5(DIRECT5):count pass 已出精确 row_nnz,数值 pass 在 cnnz_scan 后直写 → 此 bin 跳过
-                if (dense_nr == 0) {
+                if (dense_nr == 0 && h_d3_n == 0) {   // D3 抽空≠兜底(D3EXP 语义)
                     size_t wsm = ((size_t)DENSE_MAX_N * 9 + 3) / 4 * 4 + (size_t)DENSE_MAX_N * sizeof(int);
                     CHECK_CUDA(cudaFuncSetAttribute(hash_dense_window_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)wsm));
                     hash_dense_window_kernel<<<n, DENSE_BLK, wsm, cur_s>>>(
@@ -6016,7 +6066,7 @@ static void hash_product(
         static int g_fix2 = -1;
         if (g_fix2 < 0) { const char *e = getenv("FIX2"); g_fix2 = (e && *e) ? atoi(e) : 0; }
         in_place = (min_marg >= 0) && g_fix2 && ((long long)C_nnz_result > INPLACE_MIN_CNNZ)
-                   && (dense_nr == 0) && !g_d5h_on;   // 方案5/D5H 互斥:direct 写终态与 tmp 前缀紧缩重叠,且 est 已置 0 致 margin 失义
+                   && (dense_nr == 0) && (h_d3_n == 0) && !g_d5h_on;   // 方案5/D5H 互斥:direct 写终态与 tmp 前缀紧缩重叠,且 est 已置 0 致 margin 失义
         dev_free(d_eoff); dev_free(d_marg);
         dbg("[%s] compact in_place=%d (min_margin=%lld)\n", tag, (int)in_place, min_marg);
     }
@@ -6110,6 +6160,14 @@ static void hash_product(
             }
             // ---- 档位梯 per-tier 发射(窗 = 档上限,块宽 = 档块宽;1:1 落 5 个显式实例)----
             if (dstr2_on) {
+                if (h_d3_n > 0 && d_d3_rows) {   // D3:merge 核(pre2 型;count 已出 exact_rp)
+                    int wpb = 256 >> 5;
+                    d3_merge_kernel<<<(h_d3_n + wpb - 1) / wpb, 256>>>(
+                        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows,
+                        d_d3_rows, h_d3_n, dC_rp, dC_ci, d_val, d_row_nnz, d_rt);
+                    CHECK_CUDA(cudaGetLastError());
+                    dbg("[%s] D3 merge 核:%d 行(warp/行)\n", tag, h_d3_n);
+                }
                 if (g_dtier_single) {   // §22c:档内行全部单发最大档(窗 7277/块宽 1024;§22 数值形态)
                     if (big_off > 0) {
                         const int t = DENSE_TIER_COUNT - 1;
@@ -6498,7 +6556,7 @@ static void hash_product(
                 CHECK_CUDA(cudaGetLastError());
             } else if (bi == BIN_DITER) {
                 // dense-iter:窗口升序 = 行内天然有序,只 copy。方案5:direct 已直写 → 跳过
-                if (dense_nr == 0)
+                if (dense_nr == 0 && h_d3_n == 0)   // D3 直写免 tmp copy(抽空≠兜底)
                     hash_compact_copy_kernel<<<n, 256>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());
             } else {

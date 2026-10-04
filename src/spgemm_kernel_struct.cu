@@ -322,3 +322,56 @@ template __global__ void dense_struct_numeric_kernel<1024>(const int*, const int
 
 // §26 采数:host 侧装/卸逐行周期指针(device symbol 跨 TU 不可见 → 本 TU 内代理)
 void dsn_rt_attach(unsigned long long *p) { cudaMemcpyToSymbol(g_dsn_rt, &p, sizeof(void*)); }
+
+// ── D3(10-04,T7b 账付立项):低 dup 短 a_len merge 核(pre2 型载体)──────────────
+// 机理:CSR 的 B 行天然有序 → k=a_len 路归并输出天然列有序;真 dup~1.2 → 重复列
+// 在归并流中天然相邻,寄存器顺次求和。免原子/免位图/免清零/免发射扫描(对照 dense
+// 现价 = span 清零+每乘积 CAS+位图+前缀+发射,T7b 账:L1 省 53%)。
+// 形态:1 warp/行,lane l 持第 l 条链;sm90 redux.sync.min 取全局最小列头;
+// 胜者 lane 发射 (col, a_val·B_val) 并步进;col 变更时写出累加和。env D3EXP。
+__global__ void d3_merge_kernel(
+    const int *A_rp, const int *A_ci, const double *A_val,
+    const int *B_rp, const int *B_ci, const double *B_val,
+    int upper_tri, int A_rows,
+    const int *rows, int n_rows,
+    const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
+    unsigned long long *rowtime = nullptr)   // 逐行周期(同行集对拍仪器)
+{
+    int wid = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    if (wid >= n_rows) return;
+    int lane = threadIdx.x & 31;
+    int i = rows[wid];
+    unsigned long long rt0 = rowtime ? clock64() : 0;
+    int rs = A_rp[i], re = A_rp[i + 1];
+    int k = re - rs;                       // 链数 = a_len(调用侧保证 ≤32)
+    int p = B_rp[A_ci[rs + lane]], e = B_rp[A_ci[rs + lane] + 1];
+    double a = (lane < k) ? A_val[rs + lane] : 0.0;
+    int base = exact_rp[i];
+    int prev_col = -1; double sum = 0.0; int cnt = 0;
+    const unsigned FULL = 0xffffffffu;
+    while (true) {
+        int my = (lane < k && p < e) ? B_ci[p] : 0x7fffffff;
+        unsigned m = __reduce_min_sync(FULL, (unsigned)my);
+        if (m == 0x7fffffff) break;
+        int col = (int)m;
+        if (upper_tri && col < i) {        // 镜像半跳过(同列全链一起跳,免逐链 redux)
+            if (my == col) p++;
+            continue;
+        }
+        unsigned winners = __ballot_sync(FULL, my == col);
+        int w = __ffs(winners) - 1;        // 最低胜者 lane(同列多链:逐个步进)
+        // 胜者的乘积值:胜者链的 a × B_val[其指针]
+        double av = __shfl_sync(FULL, a, w);
+        int pw = __shfl_sync(FULL, p, w);
+        double prod = av * B_val[pw];
+        if (col != prev_col) {
+            if (prev_col >= 0) { out_col[base + cnt] = prev_col; out_val[base + cnt] = sum; cnt++; }
+            prev_col = col; sum = 0.0;
+        }
+        sum += prod;
+        // 步进该胜者链(仅胜者 lane;同列其余链下一轮自然胜出)
+        if (my == col && p < e && lane == w) p++;
+    }
+    if (prev_col >= 0) { out_col[base + cnt] = prev_col; out_val[base + cnt] = sum; cnt++; }
+    if (lane == 0) { row_nnz[i] = cnt; if (rowtime) rowtime[i] = clock64() - rt0; }
+}
