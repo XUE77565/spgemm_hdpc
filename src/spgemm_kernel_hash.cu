@@ -4819,10 +4819,15 @@ static void hash_product(
                     for (int k = mid; k < e; k++) w1 = w1 > h_sp[idx[k]] ? w1 : h_sp[idx[k]];
                     h_t3_end[t*2] = mid;   h_t3_w[t*2] = w0;
                     h_t3_end[t*2+1] = e;   h_t3_w[t*2+1] = w1;
-                } else if (e > b) {
-                    int w0 = 0;
-                    for (int k = b; k < e; k++) w0 = w0 > h_sp[idx[k]] ? w0 : h_sp[idx[k]];
-                    h_t3_end[t*2] = e; h_t3_w[t*2] = w0;   // 单子档(不劈)
+                } else {
+                    // 空档或小段:终点必须=当前基址 b(留 0 会把发射侧 off 重置回 0 →
+                    // 后续子档从行表头重复处理错误行=T3 首轮 18.65M 错位真凶)
+                    h_t3_end[t*2] = e; h_t3_end[t*2+1] = e;
+                    if (e > b) {
+                        int w0 = 0;
+                        for (int k = b; k < e; k++) w0 = w0 > h_sp[idx[k]] ? w0 : h_sp[idx[k]];
+                        h_t3_w[t*2] = w0;
+                    }
                 }
                 b = e;
             }
@@ -6120,10 +6125,21 @@ static void hash_product(
                     int off = 0;
                     for (int t = 0; t < DENSE_TIER_COUNT * 2; t++) {
                         int nr_t = h_t3_end[t] - off;
+                        int tier = t >> 1;
+                        int tblk0 = dense_tier_block(tier);
+                        if (nr_t > 0 && tblk0 < 256) {
+                            // T3 修复#1:小档(tblk<256)不走 2r(块宽<模板 TPB → half1 行被丢)
+                            // → 单行原 kernel 兜底(人口小:in-2004 共 ~200 行)
+                            int uwin0 = h_t3_w[t] > 0 ? h_t3_w[t] : dense_tier_max(tier);
+                            size_t nsm0 = (size_t)uwin0 * 8 + (((size_t)uwin0 + 31) >> 5) * 4 * 2;
+                            if (tblk0 <= 64) dense_struct_numeric_kernel<64><<<nr_t, 64, nsm0>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin0, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
+                            else dense_struct_numeric_kernel<128><<<nr_t, 128, nsm0>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin0, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
+                            CHECK_CUDA(cudaGetLastError());
+                            off = h_t3_end[t]; continue;
+                        }
                         if (nr_t > 0) {
-                            int tier = t >> 1;
                             int uwin = h_t3_w[t] > 0 ? h_t3_w[t] : dense_tier_max(tier);
-                            int tblk = dense_tier_block(tier);
+                            int tblk = tblk0;
                             size_t half_bytes = (size_t)uwin * 8 + (((size_t)uwin + 31) >> 5) * 4 * 2;
                             size_t nsm = half_bytes * 2;
                             auto k2r = (tblk <= 256) ? dense_struct_numeric_2r_kernel<256>

@@ -199,6 +199,120 @@ __global__ void dense_struct_numeric_kernel(
     if (tid == 0) { row_nnz[i] = out; if (g_dsn_rt) g_dsn_rt[i] = clock64() - rt0; }   // §26 逐行周期
 }
 
+
+// ── T3 实验(10-04,study/30 战报区设计):两行共块变体 ─────────────────────────
+// 1024T 块 = 两行各 512T,SMEM 半分区,命名屏障(bar.sync 1/2)替 __syncthreads;
+// 配 host span 子分档缩窗 → 2块×2行=4行/SM(=彼方 512T×4)。验证"行间交错"假设。
+// env T3EXP 门控(hash.cu 侧),默认关;窗/发射/G 逻辑与原 kernel 逐行同构。
+SP_HD __forceinline__ void t3_half_sync(int bar_id, int nthr) {
+    asm volatile("bar.sync %0, %1;" :: "r"(bar_id), "r"(nthr) : "memory");
+}
+template<int TPB>
+__global__ void dense_struct_numeric_2r_kernel(
+    const int *A_rp, const int *A_ci, const double *A_val,
+    const int *B_rp, const int *B_ci, const double *B_val,
+    int upper_tri, int A_rows,
+    const int *bucket_rows, int nr_bucket, const int *span_lo, const int *span_len,
+    int win_cols,
+    const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
+    const int *row_flop)
+{
+    constexpr int H = TPB / 2;
+    const int half = threadIdx.x >= H;
+    const int tid = threadIdx.x - half * H;
+    const int rid = blockIdx.x * 2 + half;
+    const bool valid = (rid < nr_bucket);
+    const int i = valid ? bucket_rows[rid] : A_rows;   // 越界哨兵(奇数行末块 half=1)
+    unsigned long long rt0 = g_dsn_rt ? clock64() : 0;   // §26 采数(同窗)
+    int warp = tid >> 5;
+    int lo0 = valid ? span_lo[i] : 0, span = valid ? span_len[i] : 0;
+    int rs = valid ? A_rp[i] : 0, re = valid ? A_rp[i + 1] : 0;   // T3 真凶:re 误写 =rs(a_len 恒0→零乘积→col1 垃圾);三读漏网
+    int a_len = re - rs;
+    int G = WARP_SIZE;
+    {
+        long long fl = (valid && row_flop && a_len > 0) ? row_flop[i] : 0;
+        int avg_B = (fl > 0) ? (int)(fl / a_len) : (span > 0 ? (span / 32 > 0 ? span / 32 : 1) : 1);
+        if (avg_B > 1) {
+            int logG = 31 - __clz((unsigned)avg_B);
+            if (logG < 1) logG = 1;
+            if (logG > ilog2c(WARP_SIZE)) logG = ilog2c(WARP_SIZE);
+            G = 1 << logG;
+        }
+    }
+    int num_groups = H / G;
+    int my_group = tid / G;
+    int my_id = tid % G;
+
+    extern __shared__ __align__(8) unsigned char smem[];
+    const size_t half_bytes = (size_t)win_cols * 8 + (((size_t)win_cols + 31) >> 5) * 4 * 2;
+    unsigned char *mys = smem + (size_t)half * half_bytes;
+    double *dval = (double *)mys;
+    unsigned int *bmp = (unsigned int *)(mys + (size_t)win_cols * 8);
+    unsigned int *pref = bmp + ((win_cols + 31) >> 5);
+    int base = valid ? exact_rp[i] : 0;
+    int out = 0;
+    int nw_win = (span + win_cols - 1) / win_cols;
+    for (int wi = 0; wi < nw_win; wi++) {
+        int c0 = lo0 + wi * win_cols;
+        int c1 = min(c0 + win_cols, lo0 + span);
+        int w = c1 - c0;
+        int words = (w + 31) >> 5;
+        for (int j = tid; j < w; j += H) { dval[j] = 0.0; }
+        for (int j4 = tid; j4 < words; j4 += H) bmp[j4] = 0;
+        t3_half_sync(half + 1, H);
+        for (int p = rs + my_group; p < re; p += num_groups) {
+            int k = A_ci[p];
+            double a = A_val[p];
+            int ks = B_rp[k], ke = B_rp[k + 1];
+            int from = (nw_win == 1) ? ks : st_lower_bound(B_ci, ks, ke, c0);
+            int to   = (nw_win == 1) ? ke : st_lower_bound(B_ci, from, ke, c1);
+            for (int q = from + my_id; q < to; q += G) {
+                int col = B_ci[q];
+                if (upper_tri && col < i) continue;
+                int j = col - c0;
+                atomicAdd(&dval[j], a * B_val[q]);
+                unsigned m = 1u << (j & 31);
+                int wo = j >> 5;
+                if ((bmp[wo] & m) == 0) atomicOr(&bmp[wo], m);
+            }
+        }
+        t3_half_sync(half + 1, H);
+        if (warp == 0) {
+            int seglen = (words + 31) / 32;
+            int lo = (tid & 31) * seglen, hi = min(lo + seglen, words);
+            int run = 0;
+            for (int j = lo; j < hi; j++) { pref[j] = run; run += __popc(bmp[j]); }
+            int excl = run;
+            for (int off = 1; off < 32; off <<= 1) {
+                int v = __shfl_up_sync(0xffffffffu, excl, off);
+                if ((tid & 31) >= off) excl += v;
+            }
+            for (int j = lo; j < hi; j++) pref[j] += excl - run;
+        }
+        t3_half_sync(half + 1, H);
+        for (int wo = warp; wo < words; wo += (int)(H >> 5)) {
+            unsigned bm = bmp[wo];
+            while (bm) {
+                int b = __ffs(bm) - 1;
+                bm &= bm - 1;
+                int j = (wo << 5) + b;
+                int col = c0 + j;
+                if (upper_tri && col < i) continue;
+                int pos = base + pref[wo] + __popc(bmp[wo] & ((1u << b) - 1));
+                out_col[pos] = col;
+                out_val[pos] = dval[j];
+            }
+        }
+        t3_half_sync(half + 1, H);
+        out += (words > 0) ? pref[words - 1] + __popc(bmp[words - 1]) : 0;
+    }
+    if (valid && tid == 0) { row_nnz[i] = out; if (g_dsn_rt) g_dsn_rt[i] = clock64() - rt0; }
+}
+// T3 显式实例(跨编译单元;TPB=总块宽,每行 TPB/2)
+template __global__ void dense_struct_numeric_2r_kernel<256>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, int, const int*, const int*, int, const int*, int*, double*, int*, const int*);
+template __global__ void dense_struct_numeric_2r_kernel<512>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, int, const int*, const int*, int, const int*, int*, double*, int*, const int*);
+template __global__ void dense_struct_numeric_2r_kernel<1024>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, int, const int*, const int*, int, const int*, int*, double*, int*, const int*);
+
 // §22 档位梯显式实例(跨编译单元模板链接所需;档宽 = dense_tier_block)
 template __global__ void dense_struct_numeric_kernel<64>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*, const int*);
 template __global__ void dense_struct_numeric_kernel<128>(const int*, const int*, const double*, const int*, const int*, const double*, int, int, const int*, const int*, const int*, int, const int*, int*, double*, int*, const int*);
