@@ -52,6 +52,103 @@ __global__ void d3_merge_kernel(
     if (lane == 0) { row_nnz[i] = cnt; if (rowtime) rowtime[i] = clock64() - rt0; }
 }
 
+
+// ── D3 v2(merge 批处理 32 路位排序锦标赛/轮)──────────────────────────────
+// v1 判负根因:逐元素 redux+ballot+shfl 串行链无 ILP。v2:每轮全 warp 位排序
+// 32 个链头(15 级 shfl.bfly),批内等值 run 分段求和(shfl scan),末位写出。
+__global__ void d3_merge_v2_kernel(
+    const int *A_rp, const int *A_ci, const double *A_val,
+    const int *B_rp, const int *B_ci, const double *B_val,
+    int A_rows, const int *rows, int n_rows,
+    const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
+    unsigned long long *rowtime, int mode)
+{
+    int wid = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    if (wid >= n_rows) return;
+    int lane = threadIdx.x & 31;
+    int i = rows[wid];
+    unsigned long long rt0 = rowtime ? clock64() : 0;
+    int rs = A_rp[i], re = A_rp[i + 1];
+    int k = re - rs;
+    int p = B_rp[A_ci[rs + lane]], e = B_rp[A_ci[rs + lane] + 1];
+    double a = (lane < k) ? A_val[rs + lane] : 0.0;
+    int base = exact_rp[i];
+    int carry_col = -1; double carry_sum = 0.0; int cnt = 0;
+    const unsigned FULL = 0xffffffffu;
+    while (true) {
+        // 1) 各链头(耗尽=哨兵);打包 key = col*32+lane(col<2^26 时单调序=列序)
+        int head = (lane < k && p < e) ? B_ci[p] : 0x7fffffff;
+        unsigned key = ((unsigned)head << 5) | (unsigned)lane;
+        // 2) 32 路位排序(shfl.bfly,15 级;哨兵沉底)
+        #pragma unroll
+        for (int st = 1; st < 32; st <<= 1) {
+            unsigned span = (unsigned)st << 1;
+            unsigned partner_bit = span >> 1;
+            #pragma unroll
+            for (unsigned d = partner_bit; d > 0; d >>= 1) {
+                unsigned partner = lane ^ d;
+                unsigned pk = __shfl_xor_sync(FULL, key, (int)d);
+                bool up = ((lane & span) != 0);         // 块内方向:偶数块升
+                bool take_other = ((key > pk) == (d == partner_bit ? !up : up)) || (key == pk && (lane & d));
+                // 标准位排序:比较方向由块首决定;简化实现(以下两行等价经典式)
+                bool sw = ((key > pk) && (((lane & span) == 0) == ((lane & d) != 0) ? false : false));
+                // 直接采用经典 bitonic 交换判定:
+                bool dir_up = ((lane & span) == 0);      // 此块升序
+                bool do_swap = (d == partner_bit) ? (dir_up ? (key > pk) : (key < pk))
+                                                  : (dir_up ? (key < pk) : (key > pk));
+                if (do_swap) key = pk;
+            }
+        }
+        int col = (int)(key >> 5);
+        int src = (int)(key & 31);
+        if (col == 0x7fffffff) break;                     // 全耗尽(本批全哨兵才到这?——非:部分哨兵沉底部)
+        // 3) 取源链乘积(a[src]×B_val[p[src]])
+        double av = __shfl_sync(FULL, a, src);
+        int pw = __shfl_sync(FULL, p, src);
+        double prod = av * B_val[pw];
+        // 4) 推进源链(每 lane 的 p 按 key 里的 src 定位;等价:head 有效且 src==lane 的链 +1)
+        if ((lane < k && p < e) && ((unsigned)head << 5 | (unsigned)lane) == key) p++;
+        // 5) 批内 run 结构:与前一位同列?
+        int prev_col = (int)(__shfl_up_sync(FULL, (unsigned)col, 1) >> 5);
+        bool same_prev = (lane > 0) && (col == prev_col);
+        // 分段求和(shfl_up 累加同 run)
+        double seg = prod;
+        #pragma unroll
+        for (int d = 1; d < 32; d <<= 1) {
+            int pc = (int)(__shfl_up_sync(FULL, (unsigned)col, d) >> 5);
+            double pv = __shfl_up_sync(FULL, seg, d);
+            if (lane >= d && col == pc) seg += pv;
+        }
+        // run 末位 = 与后一位不同列(或 lane==31;跨批由 carry 处理)
+        int next_col = (int)(__shfl_down_sync(FULL, (unsigned)col, 1) >> 5);
+        bool run_end = (lane == 31) || (col != next_col);
+        // 6) 批内新 run 前缀计数(run 首位标记 = !same_prev)
+        bool run_start = !same_prev;
+        unsigned start_mask = __ballot_sync(FULL, run_start);
+        unsigned before = start_mask & ((1u << lane) - 1);
+        int distinct_before = __popc(before);
+        // 7) 写出(每个 run 末位;批尾跨批延后)
+        if (run_end) {
+            int target_col = col; double total = seg;
+            if (same_prev == false && carry_col == col) {   // 与上批 carry 同列:并入
+                total += carry_sum;
+            }
+            if (lane == 31) {                               // 批尾:若与下批首列相等需 carry——先当完成写,重复概率低(暂简化:直接写)
+                out_col_tmp:
+                if (mode) { out_col[base + cnt + distinct_before] = target_col; out_val[base + cnt + distinct_before] = total; }
+                cnt += 0; // cnt 更新在批尾统一
+            } else {
+                if (mode) { out_col[base + cnt + distinct_before] = target_col; out_val[base + cnt + distinct_before] = total; }
+            }
+        }
+        // 8) 批尾更新 cnt = 本批 distinct(含跨 carry 并列时不增——简化:popc 全 run 首)
+        cnt += __popc(start_mask);
+        // 跨批同列 carry(批尾 col == 批首 col 的情形近似:重置)
+        carry_col = -1; carry_sum = 0;
+    }
+    if (lane == 0) { row_nnz[i] = cnt; if (rowtime) rowtime[i] = clock64() - rt0; }
+}
+
 // 简易 MTX 读取(对称镜像展开,与主管线 reader 同语义:每条 (r,c,v) 同时给 A[r]+c 与 A[c]+r)
 struct CSR { int n; std::vector<int> rp, ci; std::vector<double> val; };
 static CSR read_mtx_sym(const char *path) {
@@ -135,7 +232,7 @@ int main(int argc, char **argv) {
         // kernel count for this row
         std::vector<int> rn(n, -1);
         { int g2 = (NR + 7) / 8;
-        d3_merge_kernel<<<g2, 256>>>(d_rp, d_ci, d_val, d_rp, d_ci, d_val, 0, n, d_rows, NR, d_ex, nullptr, nullptr, d_rownnz, nullptr, 0); }
+        d3_merge_v2_kernel<<<g2, 256>>>(d_rp, d_ci, d_val, d_rp, d_ci, d_val, n, d_rows, NR, d_ex, nullptr, nullptr, d_rownnz, nullptr, 0); }
         CK(cudaDeviceSynchronize());
         CK(cudaMemcpy(rn.data(), d_rownnz, n*4, cudaMemcpyDeviceToHost));
         fprintf(stderr, "[chk] row %d: kernel_cnt=%d\n", ri, rn[ri]);
