@@ -58,6 +58,8 @@ static CSR read_mtx_sym(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) { fprintf(stderr, "open %s fail\n", path); exit(1); }
     char line[512];
+    fgets(line, sizeof line, f);   // header:general 不镜像(生产 reader 同语义;pre2=general!)
+    bool is_sym = strstr(line, "symmetric") != nullptr;
     do { fgets(line, sizeof line, f); } while (line[0] == '%');
     long long M, K, NNZ; sscanf(line, "%lld %lld %lld", &M, &K, &NNZ);
     if (M != K) { fprintf(stderr, "非方阵\n"); exit(1); }
@@ -67,7 +69,7 @@ static CSR read_mtx_sym(const char *path) {
         int r, c; double v;
         if (fscanf(f, "%d %d %lf", &r, &c, &v) != 3) break;
         r--; c--; er[z] = r; ec[z] = c; ev[z] = v;
-        deg[r + 1]++; if (c != r) deg[c + 1]++;
+        deg[r + 1]++; if (is_sym && c != r) deg[c + 1]++;
     }
     fclose(f);
     CSR A; A.n = M; A.rp.assign(M + 1, 0);
@@ -76,7 +78,7 @@ static CSR read_mtx_sym(const char *path) {
     A.ci.resize(A.rp[M]); A.val.resize(A.rp[M]);
     for (long long z = 0; z < NNZ; z++) {
         A.ci[cur[er[z]]] = ec[z]; A.val[cur[er[z]]++] = ev[z];
-        if (ec[z] != er[z]) { A.ci[cur[ec[z]]] = er[z]; A.val[cur[ec[z]]++] = ev[z]; }
+        if (is_sym && ec[z] != er[z]) { A.ci[cur[ec[z]]] = er[z]; A.val[cur[ec[z]]++] = ev[z]; }
     }
     for (int i = 0; i < M; i++) {   // 行内排序(保序:值随键)
         int s = A.rp[i], e2 = A.rp[i + 1];
