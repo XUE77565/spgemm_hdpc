@@ -149,6 +149,51 @@ __global__ void d3_merge_v2_kernel(
     if (lane == 0) { row_nnz[i] = cnt; if (rowtime) rowtime[i] = clock64() - rt0; }
 }
 
+
+// ── D3 v3(子warp组锦标赛:8 lane/行 × 4 行/warp;mask 域 op;ILP×4)──────────
+__global__ void d3_merge_v3_kernel(
+    const int *A_rp, const int *A_ci, const double *A_val,
+    const int *B_rp, const int *B_ci, const double *B_val,
+    int A_rows, const int *rows, int n_rows,
+    const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
+    unsigned long long *rowtime, int mode)
+{
+    constexpr int GL = 8, RPG = 32 / GL;             // 组宽 8,4 行/warp
+    int wid = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    int g = (threadIdx.x & 31) >> 3;                  // 组号 0..3
+    int gl = threadIdx.x & (GL - 1);                  // 组内 lane
+    unsigned gm = 0xFFu << (g * GL);                  // 组 mask
+    int ridx = wid * RPG + g;
+    if (ridx >= n_rows) { /* 组空:仍需参与组域 op?组独立 mask,可直接 return(lane 全组一致) */ return; }
+    int i = rows[ridx];
+    unsigned long long rt0 = rowtime ? clock64() : 0;
+    int rs = A_rp[i], re = A_rp[i + 1];
+    int k = re - rs;                                  // ≤8(谓词保证;>8 的行不入此核)
+    int p = B_rp[A_ci[rs + gl]], e = B_rp[A_ci[rs + gl] + 1];
+    double a = (gl < k) ? A_val[rs + gl] : 0.0;
+    int base = exact_rp[i];
+    int prev_col = -1; double sum = 0.0; int cnt = 0;
+    while (true) {
+        int my = (gl < k && p < e) ? B_ci[p] : 0x7fffffff;
+        unsigned m = __reduce_min_sync(gm, (unsigned)my);
+        if (m == 0x7fffffff) break;
+        int col = (int)m;
+        unsigned winners = __ballot_sync(gm, my == col);
+        int w = __ffs(winners) - 1;                   // 绝对 lane
+        double av = __shfl_sync(gm, a, w);
+        int pw = __shfl_sync(gm, p, w);
+        double prod = av * B_val[pw];
+        if (col != prev_col) {
+            if (prev_col >= 0) { if (mode) { out_col[base + cnt] = prev_col; out_val[base + cnt] = sum; } cnt++; }
+            prev_col = col; sum = 0.0;
+        }
+        sum += prod;
+        if (my == col && p < e && (threadIdx.x & 31) == w) p++;
+    }
+    if (prev_col >= 0) { if (mode) { out_col[base + cnt] = prev_col; out_val[base + cnt] = sum; } cnt++; }
+    if (gl == 0) { row_nnz[i] = cnt; if (rowtime) rowtime[i] = clock64() - rt0; }
+}
+
 // 简易 MTX 读取(对称镜像展开,与主管线 reader 同语义:每条 (r,c,v) 同时给 A[r]+c 与 A[c]+r)
 struct CSR { int n; std::vector<int> rp, ci; std::vector<double> val; };
 static CSR read_mtx_sym(const char *path) {
@@ -193,6 +238,7 @@ static CSR read_mtx_sym(const char *path) {
 int main(int argc, char **argv) {
     if (argc < 4) { fprintf(stderr, "usage: %s <mtx> <v9_rows> <rt_out> [rep]\n", argv[0]); return 1; }
     int rep = argc > 4 ? atoi(argv[4]) : 3;
+    // v3:组宽 8,行单过滤 a_len≤8(在谓词读入后于 main 内再滤)
     CSR A = read_mtx_sym(argv[1]);
     int n = A.n;
     // 行单:v9 dump 谓词
@@ -203,7 +249,9 @@ int main(int argc, char **argv) {
         if (nf == 9) { int al = t[1], est = t[3], sp = t[4];
           if (al >= 1 && al <= 32 && est >= 256 && est <= 4096 && sp <= 16384) rows.push_back(t[0]); } }
       fclose(f); }
-    fprintf(stderr, "[d3bench] n=%d 行单 %zu\n", n, rows.size());
+    { auto it = std::remove_if(rows.begin(), rows.end(), [&](int r){ return (A.rp[r+1]-A.rp[r]) > 8; });
+      rows.erase(it, rows.end()); }   // v3:仅 a_len≤8
+    fprintf(stderr, "[d3bench] n=%d 行单 %zu(v3: a_len≤8)\n", n, rows.size());
     int NR = rows.size();
     // device
     int *d_rp, *d_ci; double *d_val, *d_oval; int *d_rows, *d_rownnz, *d_ex; unsigned long long *d_rt;
