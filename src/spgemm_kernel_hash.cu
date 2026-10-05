@@ -1084,9 +1084,7 @@ __device__ int g_dflag_probe_row = -1;   // DFLAG_PROBE 探针行(diter 雷判�
 // (溢出换 2× 占用的交易,电池裁决)。
 // K1 首写免原子(study/31):认领制——首写者普通写+fence,重复者才 atomicAdd(原子占比 100%→dup 比)
 #define K1_ACC(dval_, j_, flag_, v_) do { \
-    if (atomicExch(&(flag_)[j_], 1) == 0) { \
-        unsigned long long exp_ = 0ULL; \
-        atomicCAS((unsigned long long*)&(dval_)[j_], exp_, __double_as_longlong(v_)); } \
+    if (atomicExch(&(flag_)[j_], 1) == 0) { (dval_)[j_] = (v_); __threadfence_block(); } \
     else atomicAdd(&(dval_)[j_], (v_)); } while (0)
 __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
