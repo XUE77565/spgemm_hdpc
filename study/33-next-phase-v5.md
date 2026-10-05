@@ -149,3 +149,28 @@
 5. **expand 类逐阵参数决策**:归 dispatcher 成本模型里程碑(M3)维度,禁止单人手门
    (ADAPT_EXPAND 08-30 判负前科;"缝缝补补"否决,用户 10-06)
 6. A/B 方法:交替配对序 + 同路由对照组 case-control(compare/guard_smallnnz_ab_battery.log 范式)
+
+## [10-06 05:0x] 夜班战报:基线落定 + kernel₇ 出鞘(独立台全绿)
+
+### ① 修正口径认证基线(HEAD+守卫 414161a)
+**51 阵 GM = 1.3895**(暖净窗 ×3;ocean 复用 10-05 日志)——守卫在记分板上再收 −1.9%
+(1.4167→1.3895)。germany_osm 仍无效(C_nnz=-1 溢出回退 merge,待 merge 路径测量)。
+新最差名单头部:bloweybq 3.40/333SP 2.08/pf2177 2.05/af_2 2.03/c-71 1.98/HTC 1.94。
+
+### ② kernel₇(双遍位图 + rank 直写,dup≈1 人口)独立台首战
+- **靶修正**:bloweybq = 全 dense 路由阵(10001/10001 diter 行;校准表旧解析错误已更正),
+  病根 = dense_direct 主导的 12.9ms 净窗;行形态 a_len≈14 × B≈717,dup 1.0001(每行 ~1 碰撞)
+- **形态**:Pass1 atomicOr 位图(1-bit,免 F64)→ popcount = 精确 nnz → cum 秩表 →
+  Pass2 认领(atomicOr 32-bit)→ 胜者**纯普通写**到 rank 位,败者入 SMEM fixup 表 →
+  __syncthreads → 统一 atomicAdd(**屏障定序**:块内全局写可见 ⇒ 败者加必在胜者写后)
+- **关键设计三则**:①2D(k,p) 切分——a_len=14 时 kk-stride 只用 14/128 线程 = v1 878ms
+  的元凶,切分后 B 流合并读,296× 提速;②atomicExch 不解决次序(两原子次序仍任意,
+  值门 FAIL 实证)→ fixup 协议;③**count 证书**:flop−distinct ≤ FIX_MAX(512)的行才进
+  快道——溢出不可能,容量有数学背书
+- **战果(bloweybq)**:count 0.49ms + numeric 2.73ms = **3.2ms vs 管线 12.91ms ≈ 4×**;
+  顺带消灭估计器链(mh_merge 1.8ms)与 compact+sort(2.0ms)——k7 的 count 就是精确计数
+- **守门全绿**:memcheck 0 / racecheck 0 hazards / nnz 10000/10000 行精确 /
+  值门 列错0-值错0-无序0 PASS / Xid 全程 0
+- **下一步(集成,按新纪律)**:BIN_K7 路由谓词(a_len≤32 ∧ span≤32768 ∧ dup 估计≤1.67,
+  est/flop 从估计器来)+ 复用 dense 管线的 count→scan→write 槽位 + 51 阵广域屏零回归
+  + 守门三件套 → 才谈翻默认
