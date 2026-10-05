@@ -360,6 +360,15 @@ constexpr int DENSE_TIER_SPAN_MAX = dense_tier_max(DENSE_TIER_COUNT - 1); // 145
 constexpr int DITER_FLOP_TIER = SMEM_DEFAULT_MAX / 12 / 2;   // = 2048
 constexpr int DITER_EST_TIER  = SMEM_DEFAULT_MAX / 12 / 4;   // = 1024
 
+// ── v33d 小阵守卫(T10 广域 10-05 定谳)─────────────────────────────────────
+// 上面两条松地板的摊销前提 = 大阵:v33d 电池(09-04)八阵全为重阵代表,无小阵覆盖。
+// T10 52 阵:dense 主导 23 阵 GM 2.073 全部 nnz≤2.03M(c-43 3.64/pli 3.76/Si10H16 3.38;
+// 同阵全 hash 相位和 2.21ms vs v32 5.15ms = 快 2.3×),v33d 受益/无害侧(in-2004 −28.5%/
+// nd24k/crankseg_2)nnz≥14.1M——(2.4M,14.1M) 窗口 T10 无阵。nnz < 阈值时档内地板
+// 回 v32 值(EST_DENSE_MIN / EST_DENSE_MIN/2 = 28-v32 的 337 阵认证行为)。
+// 阈值取 4M = 空窗中央(2 的幂,与 STREAMLINE_NNZ_STRUCT 同为 A_nnz 轴物理分层)。
+constexpr long long DITER_SMALL_NNZ_DEFAULT = 4LL * 1024 * 1024;   // DITER_SMALL_NNZ env 可改;0=关守卫
+
 // ── §22b Ocean 双维档位比较(Analysis.cuh L248-264 移植;09-04 dump 校准)─────────
 // Ocean 的 dense 分流不是单边门,是同一 SMEM 预算梯上的【档位比较】:
 //   dense 赢 ⟺ dense_tier_of(span) ≤ hash_tier_of(ht)

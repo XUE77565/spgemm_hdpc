@@ -4578,17 +4578,24 @@ static void hash_product(
     if (g_largest < 0) { const char *e = getenv("LARGEST"); g_largest = (e && *e) ? atoi(e) : 1; }
     static int g_esc = -1;       // docs/76 v31-④:零表 counting-sort 短行
     if (g_esc < 0) { const char *e = getenv("ESC_K"); g_esc = (e && *e) ? atoi(e) : 1; }
-    static int g_diter_est_min = -1;   // docs/76 §16:diter est 下限(默认 EST_DENSE_MIN/2;Ocean dense 分流启示)
-    if (g_diter_est_min < 0) { const char *e = getenv("DITER_EST_MIN"); g_diter_est_min = (e && *e) ? atoi(e) : DITER_EST_TIER; }   // v33d 翻默认:档内行结构档 1024(超档老路径在 kernel 内钳 2048)
+    static int g_diter_est_min = -1; static bool g_est_env = false;   // docs/76 §16:diter est 下限(默认 EST_DENSE_MIN/2;Ocean dense 分流启示)
+    if (g_diter_est_min < 0) { const char *e = getenv("DITER_EST_MIN"); if (e && *e) { g_diter_est_min = atoi(e); g_est_env = true; } else g_diter_est_min = DITER_EST_TIER; }   // v33d 翻默认:档内行结构档 1024(超档老路径在 kernel 内钳 2048);g_est_env=显式实验值,小阵守卫不改写
     static int g_dstruct_win = -2;    // §22:-1 = 档位梯(span≤7277 五档联动);0 = 关;>0 = 手调单窗
     if (g_dstruct_win == -2) { const char *e = getenv("DSTRUCT_WIN"); g_dstruct_win = (e && *e) ? atoi(e) : -1; }   // v33d 翻默认:-1 = 档位梯分流(数值侧按 span 分两路,路由不驱逐)
     prof("binning", [&]{
         static int g_tgt_alpha = -1;   // HASH_TGT_ALPHA(表配 target=α%×est;连续 est 下默认 150 单次吸附,study/13)
         if (g_tgt_alpha < 0) { const char *e = getenv("HASH_TGT_ALPHA"); g_tgt_alpha = (e && *e) ? atoi(e) : (g_est_cont ? 150 : 200); }
         CHECK_CUDA(cudaMemset(d_cnt, 0, N_BINS * sizeof(int)));   // 先清零(fused kernel 内 atomicAdd 累加)
-        static int g_diter = -1;   // dense-iter 重行阈值(DITER_MIN_FLOP,默认 4096;0=关)
-        if (g_diter < 0) { const char *e = getenv("DITER_MIN_FLOP"); g_diter = (e && *e) ? atoi(e) : DITER_FLOP_TIER; }   // v33d 默认 2048 复归:数值相 docs/46 前缀第三遍缺失已修(study/18:
-                                                                                                                                 // woff46 漏 warp 内偏移 → rank 撞车 → msc 3261 垃圾行;修复后 diter 开 17 位 PASS)
+        static int g_diter = -1; static bool g_diter_env = false;   // dense-iter 重行阈值(DITER_MIN_FLOP,默认 4096;0=关)
+        if (g_diter < 0) { const char *e = getenv("DITER_MIN_FLOP"); if (e && *e) { g_diter = atoi(e); g_diter_env = true; } else g_diter = DITER_FLOP_TIER; }   // v33d 默认 2048 复归:数值相 docs/46 前缀第三遍缺失已修(study/18:
+                                                                                                                                 // woff46 漏 warp 内偏移 → rank 撞车 → msc 3261 垃圾行;修复后 diter 开 17 位 PASS);g_diter_env=显式实验值,小阵守卫不改写
+        // v33d 小阵守卫(T10 10-05 定谳,推导见 structural_params.cuh):nnz<4M 时档内地板回 v32 值;
+        // 只改写默认域(env 未显式设置的那一侧),DITER_SMALL_NNZ=0 可关
+        static long long g_dsmall = -1;
+        if (g_dsmall < 0) { const char *e = getenv("DITER_SMALL_NNZ"); g_dsmall = (e && *e) ? atoll(e) : DITER_SMALL_NNZ_DEFAULT; }
+        const bool dsmall_on = g_dsmall > 0 && (long long)A_nnz < g_dsmall;
+        const int diter_thr_run  = (dsmall_on && !g_diter_env) ? EST_DENSE_MIN    : g_diter;          // 小阵回 v32 地板 4096
+        const int diter_est_min_run = (dsmall_on && !g_est_env) ? EST_DENSE_MIN / 2 : g_diter_est_min;   // 小阵回 v32 地板 2048
         static int g_dim2 = -1;
         if (g_dim2 < 0) { const char *e = getenv("DIM2"); g_dim2 = (e && *e) ? atoi(e) : 0; }   // docs/61:双维路由基建(默认关 —— c-big straggler 实测挂 v4 span 门 19491/19578,路由无解需窗口内核经济学升级)
         static int g_dtier_cmp = -1;   // §22b Ocean 双维档位比较(默认关;电池 in-2004 95.3% 通过率校准)
@@ -4624,7 +4631,7 @@ static void hash_product(
                 if (g_fdest < 0) { const char *e = getenv("FORCE_DITER_EST"); g_fdest = (e && *e) ? atoi(e) : 0; }
         static int g_had_l1 = -1;   // HAD L1 路由修正(④;env HAD_L1=阈值:1=旧30 兼容,8=09-30 判别式;默认关)
         if (g_had_l1 < 0) { const char *e = getenv("HAD_L1"); g_had_l1 = (e && *e) ? atoi(e) : 0; if (g_had_l1 == 1) g_had_l1 = 30; }
-        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, g_diter, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, g_diter_est_min, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
+        compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, diter_thr_run, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, diter_est_min_run, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
             g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff, g_fdest, g_had_l1);
         if (d_est_save) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零(D2TIER 工作量轴也吃)
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
