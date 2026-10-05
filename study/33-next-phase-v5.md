@@ -174,3 +174,13 @@
 - **下一步(集成,按新纪律)**:BIN_K7 路由谓词(a_len≤32 ∧ span≤32768 ∧ dup 估计≤1.67,
   est/flop 从估计器来)+ 复用 dense 管线的 count→scan→write 槽位 + 51 阵广域屏零回归
   + 守门三件套 → 才谈翻默认
+
+### ⚠ [10-06 04:1x] 夜班尾事件:GPU 驱动拥堵(未升级 wedge)
+- pre2 k7 探针二跑被 30min 截杀后,nvidia-smi 连续 >30-60s 超时;6 进程 D 态
+  (nvidia-smi×4+k7_bench×2,kill 不掉)+ 1 僵尸;**Xid/NVRM 零记录(journalctl 实读)**
+  = 驱动级拥堵非硬件故障,可能自愈。已停一切 GPU 交互等晨检(一次 nvidia-smi 即知;
+  仍堵=协调重启老剧本)
+- 教训:①dmesg 空=dmesg_restrict,早期 Xid 哨兵可能假阴性→哨兵改 journalctl -k;
+  ②后台 GPU 任务必须自带 timeout 自杀,勿依赖 harness 截杀(SIGKILL 驻核进程=拥堵源)
+- **夜班交付不受影响**(全部事发前 commit):基线 1.3895 + kernel₇ bloweybq 4× 全绿 +
+  纪律升级 4 commit;pre2 k7 定位未完(count 3.8ns/行正常,numeric 未打完)
