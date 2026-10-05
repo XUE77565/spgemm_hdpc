@@ -96,3 +96,29 @@
   (rel ≤2.2e-15)/七锚零回归(全同路由同 nnz,偏差噪声带内)/Xid 0
 - **勘误**:前文"net100 上 11118 行"系 count-pass(含 BIN_LARGEST)与 diter-bin 口径混用;
   net100 diter-bin 两臂同为 18802,守卫对其无作用(入对照组)
+
+## [10-06 02:1x] 追加:vs-v32 配对分解 + accumulate 退步真凶定谳(用户三问触发)
+
+### 同阵配对(51 阵,v32 CSV 时代 vs 今日 T10,我方/ocean 分侧)
+- 我方今/v32 = **0.995**(CSV 是 v32+mempool,同配置估算 HEAD≈v32×0.97,c-43 同日直比 6.79/6.99 佐证)
+- **ocean 今/彼 = 0.963(CSV 时代 ocean 数疑似含冷,小阵尤甚:c-43 彼 2.00→今 1.71,大阵 ±0.5%)**
+- 净比值变化 1.032 = "配对退步"主体是 ocean 侧口径差,**但真退步家族是实的**
+
+### 真凶(相位级差分,HEAD vs v32 worktree 同日)
+| 家族 | 净窗 H/V | 病灶 | 机制 |
+|---|---|---|---|
+| af_2/af_shell4 | 1.366/1.348 | accumulate 7.98→12.42(+56%) | est_expand 1.15→**1.80**(+57% 严丝合缝) |
+| HTC | 1.332 | accumulate 8.19→18.84(+130%) | 同上,margin 白付 |
+| FEM | 1.210 | accumulate +62% | 同上 |
+| c-64/bloweybl | 1.042/1.049 | dense_direct+count +1.5ms | 另案(第二优先) |
+
+- 根子:hash.cu:4362 `g_est_cont → est_expand=1.8`(study/13,"连续 est 余量由 expand 扛;F2 ovf 1319→0")
+  —— v32 是 EXPAND 扫描裁决 1.15-1.40("紧 est 完胜"电池在注释里)。**又一例只在锚族验证就翻默认**
+- A/B 定谳(HASH_EXPAND env):HTC 1.15 → accumulate **−46%**/TOTAL −15%(ovf 6↔6,margin 免疫结构性溢出=死重);
+  af_2 1.15 → 更差(ovf 0→6:连续 est 低估尾部需要 margin;病根=估计质量,v32 离散估计 1.15 即够);
+  FEM 微差同 af_2 型;REXP=2 不覆盖(E≤4096 恒等)
+- **修法方向(下一场主刀候选):margin 按实测溢出行为自适应**(round1 1.8 → ovf_cnt 结构性即收紧),
+  af_2 型需估计器工作(低估尾部补偿/离散档对齐)
+### Q4(CPU)定谳:相位↔净窗 gap 中位 9.7%(hugetrace 39%/333SP 36%)= 计时窗内
+### launch 间隙+host 逻辑+未打桩传输——我们自己的 17 相位管线串行,ocean 3 相位结构免疫;
+### 共租 CPU 安静。另:mempool v32 时代能跑 c-64 今夜 host arena 溢出(配置回归待查)
