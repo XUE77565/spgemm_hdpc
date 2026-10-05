@@ -1083,9 +1083,7 @@ __device__ int g_dflag_probe_row = -1;   // DFLAG_PROBE 探针行(diter 雷判�
 // c-64 头对头:我指令 4.01G(瘦 14%)仍慢 31% = 纯占用差。强制 2 块/SM → 编译器压 ≤32 regs
 // (溢出换 2× 占用的交易,电池裁决)。
 // K1 首写免原子(study/31):认领制——首写者普通写+fence,重复者才 atomicAdd(原子占比 100%→dup 比)
-#define K1_ACC(dval_, j_, flag_, v_) do { \
-    if (atomicExch(&(flag_)[j_], 1) == 0) { (dval_)[j_] = (v_); __threadfence_block(); } \
-    else atomicAdd(&(dval_)[j_], (v_)); } while (0)
+#define K1_ACC(dval_, j_, flag_, v_) atomicAdd(&(dval_)[j_], (v_))   // K1 判负废弃:降级原样(k1fw 死码)
 __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
@@ -1113,8 +1111,8 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
     unsigned long long rt0 = rowtime ? clock64() : 0;
     extern __shared__ __align__(8) unsigned char wsmem[];
     double *dval = (double*)wsmem;
-    unsigned int *dflag = (unsigned int*)(wsmem + (size_t)PB2_W * sizeof(double));   // K1:int 升格(atomicExch 认领)
-    int *dpref = (int*)(wsmem + (((size_t)PB2_W * 12) + 3) / 4 * 4);
+    unsigned char *dflag = wsmem + (size_t)PB2_W * sizeof(double);   // K1 布局回退(int 升格未门控曾致 cursor SMEM+33% → dense_direct 2× 污染 T10)
+    int *dpref = (int*)(wsmem + (((size_t)PB2_W * 9) + 3) / 4 * 4);
     int *smap_g = smap_base + smap_off[i];                  // 全局游标(大 a_len 回退)
     int *smir_g = smap_base + smir_bias + smap_off[i];
     int *smap_s = dpref + PB2_W;                            // SMEM 游标区(与 dpref 分立)
@@ -6163,7 +6161,7 @@ static void hash_product(
                 CHECK_CUDA(cudaMemcpy(&sm_tot, d_smap_off + A_rows, sizeof(int), cudaMemcpyDeviceToHost));
                 d_smap = decltype(d_smap)(dev_alloc((size_t)(sm_tot > 0 ? 2 * sm_tot : 1) * sizeof(int)));   // 2×:活动游标 + 本窗镜像
                 dev_free(d_alen);
-                size_t wsm = ((size_t)PB2_W * 12 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
+                size_t wsm = ((size_t)PB2_W * 9 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
                            + 2 * (size_t)SMAP_SMEM_MAX * sizeof(int);
                 CHECK_CUDA(cudaFuncSetAttribute(hash_dense_direct_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)wsm));
                 static int g_pb2cur = -1;
@@ -6300,7 +6298,7 @@ static void hash_product(
             }
             // ---- 老窗口 cursor 内核(大 span 段;或 DSTRUCT<2 的全体 dense 行)----
             if (old_nr > 0) {
-                size_t wsm = ((size_t)PB2_W * 12 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
+                size_t wsm = ((size_t)PB2_W * 9 + 3) / 4 * 4 + (size_t)PB2_W * sizeof(int)
                            + 2 * (size_t)SMAP_SMEM_MAX * sizeof(int);
                 if (const char *dp2 = getenv("DFLAG_PROBE")) { int pr = atoi(dp2); cudaMemcpyToSymbol(g_dflag_probe_row, &pr, sizeof(int)); }
                 static int g_cb16 = -1;   // spec86-A:CURSOR_B16=1 门(默认关;hash_spa 的 B16 分裂人格前科,系统电池裁决)
