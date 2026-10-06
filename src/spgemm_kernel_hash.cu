@@ -1049,6 +1049,9 @@ __global__ void k7_numeric_kernel(
     // 核内证书:flop−distinct ≤ K7_FIX_MAX(含防御带越界产品)→ 快道;否则 exch 慢道
     bool fast = (fl_tot - (int)cum[K7_W] <= K7_FIX_MAX);
     int obase = exact_rp[i];
+    if (blockIdx.x == 1 && threadIdx.x == 0) {
+        int j0 = A_col_idx[rs];
+            }
     if (k_idx < ak) {
         int j = A_col_idx[rs + k_idx];
         double a = A_val[rs + k_idx];
@@ -1078,6 +1081,10 @@ __global__ void k7_numeric_kernel(
             }
         }
     }
+    __syncthreads();
+    if (blockIdx.x == 1 && threadIdx.x == 0)
+        printf("[k7rb] i=%d obase=%d col0=%d col1=%d col2=%d val0=%.3f\n", i, obase,
+               (int)out_col[obase], (int)out_col[obase+1], (int)out_col[obase+2], out_val[obase]);
     __syncthreads();
     if (fast) {
         int nf = *fcnt;
@@ -4897,9 +4904,11 @@ static void hash_product(
     // dense 累积器门(2026-08-26,exdata_1 类):小 n + 输出 ≥15% 稠密 → 直接寻址免探测免 CAS
     #define DENSE_WIN_MAX_N DENSE_WIN_MAX_N_STRUCT
     const bool dense_mode = (A_cols <= DENSE_MAX_N) && A_rows > 0 &&
-        ((double)total_est / ((double)A_rows * A_cols) >= DENSE_MIN_FRAC);
+        ((double)total_est / ((double)A_rows * A_cols) >= DENSE_MIN_FRAC)
+        && h_cnt[BIN_K7] == 0;   // k7 接管时矩阵级 dense 语义失效(accumulate 兜底+compact 矩阵拷贝双侧;10-06 零化案根修)
     const bool dense_win_mode = !dense_mode && (A_cols <= DENSE_WIN_MAX_N) && A_rows > 0 &&
-        ((double)total_est / ((double)A_rows * A_cols) >= DENSE_MIN_FRAC);
+        ((double)total_est / ((double)A_rows * A_cols) >= DENSE_MIN_FRAC)
+        && h_cnt[BIN_K7] == 0;   // 同上
     // ---- 方案5(docs/27 §4.1):dense 行精确计数 + 直写终态。DIRECT5=1 开,默认关。----
     // dense 行集合 = 矩阵级 dense/dense_win(全体行)或 Phase A bin(v4 门含 dup<8 = 两遍直写
     // 交通量赢面);hash 行不动(结构同 Ocean type2 est 工作流)。count pass 在 accumulate 前
@@ -6313,8 +6322,7 @@ static void hash_product(
             dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, A_rows, k7_rows, d_span_lo,
             dC_rp, dC_ci, d_val_ip, nullptr, d_k7err2);
         int herr2 = 0; CHECK_CUDA(cudaMemcpy(&herr2, d_k7err2, sizeof(int), cudaMemcpyDeviceToHost));
-        if (herr2) fprintf(stderr, "[hash] k7_numeric 防御带 %d 产品(值门必查)\n", herr2);
-        dev_free(d_k7err2);
+        if (herr2) fprintf(stderr, "[hash] k7_numeric 防御带 %d 产品(值门必查)\n", herr2);        dev_free(d_k7err2);
         });
         dbg("[%s] k7_direct: %d 行(BIN_K7)rank 直写 dC(免表/免值原子/免 compact+sort)\n", tag, k7_nr);
     }
