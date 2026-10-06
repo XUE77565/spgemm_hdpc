@@ -6,6 +6,8 @@
 #include <thrust/scan.h>
 #include <thrust/sort.h>
 #include <thrust/device_ptr.h>
+#include <thrust/gather.h>
+#include <thrust/reduce.h>
 #include <cstdio>
 #include <algorithm>
 #include <cstdlib>
@@ -260,6 +262,7 @@ __global__ void row_span_only_kernel(
 #define BIN_ESC8 21     // v31-④ v2:flop≤8 → 8 线程子组(4 行/warp;road avg 乘积 6.7 的对位档)
 #define BIN_ESC16 22    // flop≤16 → 16 线程子组
 #define BIN_ESC32 23    // flop≤32 → 32 线程子组(=v1 形态)
+#define BIN_K7 15        // kernel₇:双遍位图+rank 直写,dup≈1∧窄span∧短a_len 人口(10-06;K7 env,默认关)
 #define BATCH_S_HT BATCH_S_HT_STRUCT  // 64 = 2×32(α=0.5)
 #define GLOBAL_HT_MAX_SLOTS GLOBAL_HT_MAX_STRUCT  // 内存预算÷12B/槽
 #define AVG_FLOP_THR AVG_FLOP_THR_STRUCT  // warp_size×2(结构推导)
@@ -949,6 +952,139 @@ __global__ void hash_dense_bcnt_kernel(
     if (lane == 0) wcnt[warp] = cnt;
     __syncthreads();
     if (tid == 0) { int s = 0; for (int x = 0; x < nw; x++) s += wcnt[x]; row_nnz[i] = s; }
+}
+
+// ===================== kernel₇:双遍位图 + rank 直写(dup≈1 人口,10-06)=====================
+// 独立台背书(tools/k7_bench.cu,bloweybq 3.2ms vs 12.9ms ≈4×;布局纪律见
+// structural_params.cuh K7_FIX_OFF_W 注 —— wedge#8 = fvl/mark 重叠教训,勿改布局)。
+// 路由前置:BIN_K7 只收 span≤K7_SPAN_MAX ∧ a_len≤K7_ALEN_MAX ∧ !att 的行,
+// 故 SMEM 按上限静态定尺寸(W=K7_SPAN_MAX/32 字),无需 per-launch gather。
+constexpr int K7_W = K7_SPAN_MAX / 32;                    // 1024 字 = mark/claim/cum 各一区
+constexpr int K7_SMEM_W = K7_FIX_OFF_W + 3 * K7_W + 2;    // 总字数(含 fcnt+pad)
+__global__ void k7_count_kernel(
+    const int *A_row_ptr, const int *A_col_idx,
+    const int *B_row_ptr, const int *B_col_idx,
+    int A_rows, const int *bucket_rows, const int *span_lo,
+    int *row_nnz, int *k7_err /*nullable:越界产品计数,守门响亮报错*/)
+{
+    extern __shared__ __align__(8) unsigned bmp[];        // [K7_W]
+    int i = bucket_rows ? bucket_rows[blockIdx.x] : blockIdx.x;
+    if (i >= A_rows) return;
+    for (int w = threadIdx.x; w < K7_W; w += blockDim.x) bmp[w] = 0u;
+    __syncthreads();
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    int base = span_lo[i];
+    int ak = re - rs, tg = blockDim.x / (ak > 0 ? ak : 1); if (tg < 1) tg = 1;
+    int k_idx = threadIdx.x / tg, t_in = threadIdx.x % tg;   // 2D(k,p) 切分:a_len 小则全 block 摊 B 流
+    if (k_idx < ak) {
+        int j = A_col_idx[rs + k_idx];
+        for (int p = B_row_ptr[j] + t_in; p < B_row_ptr[j + 1]; p += tg) {
+            int c = B_col_idx[p] - base;                   // span_lo = 精确行 min(count_flop 算好)
+            if ((unsigned)c < (unsigned)K7_SPAN_MAX)       // 防御带:路由外值响亮计数不静默
+                atomicOr(&bmp[c >> 5], 1u << (c & 31));
+            else if (k7_err) atomicAdd(k7_err, 1);
+        }
+    }
+    __syncthreads();
+    __shared__ unsigned red[K7_BLOCK];
+    unsigned cnt = 0;
+    for (int w = threadIdx.x; w < K7_W; w += blockDim.x) cnt += __popc(bmp[w]);
+    red[threadIdx.x % K7_BLOCK] = cnt;                     // blockDim = K7_BLOCK(128)约定
+    __syncthreads();
+    for (int s = K7_BLOCK >> 1; s > 0; s >>= 1) {
+        if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) row_nnz[i] = (int)red[0];
+}
+
+// numeric:Pass1 标记+flop 计 → 核内证书(flop−distinct ≤ K7_FIX_MAX ? 快道 : exch 慢道)
+// → Pass2 写终态(有序+精确位)。快道 = 胜者纯普通写 + 败者 SMEM fixup 表 + 屏障后统一加。
+__global__ void k7_numeric_kernel(
+    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
+    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
+    int A_rows, const int *bucket_rows, const int *span_lo,
+    const int *exact_rp, int *out_col, double *out_val,
+    int *row_nnz /*nullable*/, int *k7_err /*nullable*/)
+{
+    extern __shared__ __align__(8) unsigned k7sm[];       // [fvl 1024w][frk 512w][fcnt+pad][mark][claim][cum]
+    int i = bucket_rows ? bucket_rows[blockIdx.x] : blockIdx.x;
+    if (i >= A_rows) return;
+    unsigned *mark = k7sm + K7_FIX_OFF_W, *claim = mark + K7_W, *cum = mark + 2 * K7_W;
+    double *fvl = (double *)k7sm;                         // words 0..1023(8B 对齐)
+    int *frk = (int *)(k7sm + 1024);                      // words 1024..1535
+    volatile int *fcnt = (volatile int *)(k7sm + 1536);   // word 1536
+    for (int w = threadIdx.x; w < K7_W; w += blockDim.x) { mark[w] = 0u; claim[w] = 0u; }
+    if (threadIdx.x == 0) *fcnt = 0;
+    __shared__ unsigned red[K7_BLOCK];
+    red[threadIdx.x] = 0u;
+    __syncthreads();
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    int base = span_lo[i];
+    int ak = re - rs, tg = blockDim.x / (ak > 0 ? ak : 1); if (tg < 1) tg = 1;
+    int k_idx = threadIdx.x / tg, t_in = threadIdx.x % tg;
+    unsigned myfl = 0;
+    if (k_idx < ak) {
+        int j = A_col_idx[rs + k_idx];
+        for (int p = B_row_ptr[j] + t_in; p < B_row_ptr[j + 1]; p += tg) {
+            int c = B_col_idx[p] - base;
+            if ((unsigned)c < (unsigned)K7_SPAN_MAX) atomicOr(&mark[c >> 5], 1u << (c & 31));
+            else { myfl++; if (k7_err) atomicAdd(k7_err, 1); }   // 防御带:越界产品不入位图也不写值
+        }
+    }
+    red[threadIdx.x] = myfl;
+    __syncthreads();
+    for (int s = K7_BLOCK >> 1; s > 0; s >>= 1) {
+        if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s];
+        __syncthreads();
+    }
+    int fl_tot = (int)red[0];
+    if (threadIdx.x == 0) {
+        int acc = 0;
+        for (int w = 0; w < K7_W; w++) { cum[w] = acc; acc += __popc(mark[w]); }
+        cum[K7_W] = acc;
+        if (row_nnz) row_nnz[i] = acc;
+    }
+    __syncthreads();
+    // 核内证书:flop−distinct ≤ K7_FIX_MAX(含防御带越界产品)→ 快道;否则 exch 慢道
+    bool fast = (fl_tot - (int)cum[K7_W] <= K7_FIX_MAX);
+    int obase = exact_rp[i];
+    if (k_idx < ak) {
+        int j = A_col_idx[rs + k_idx];
+        double a = A_val[rs + k_idx];
+        for (int p = B_row_ptr[j] + t_in; p < B_row_ptr[j + 1]; p += tg) {
+            int c = B_col_idx[p] - base;
+            if ((unsigned)c >= (unsigned)K7_SPAN_MAX) continue;   // 防御带:与 count 同口径跳过
+            unsigned bit = 1u << (c & 31);
+            int word = c >> 5;
+            unsigned old = atomicOr(&claim[word], bit);           // 认领:旧值无此位 = 首写
+            int rank = (int)cum[word] + __popc(mark[word] & (bit - 1));
+            double prod = a * B_val[p];
+            if (fast) {
+                if (!(old & bit)) {
+                    out_col[obase + rank] = c + base;             // 胜者:纯普通写(免一切值原子)
+                    out_val[obase + rank] = prod;
+                } else {
+                    int slot = atomicAdd((int *)fcnt, 1);
+                    if (slot < K7_FIX_MAX) { frk[slot] = rank; fvl[slot] = prod; }
+                    else atomicAdd(&out_val[obase + rank], prod); // 证书下不应达;达 = 响铃值门
+                }
+            } else {
+                if (!(old & bit)) {
+                    out_col[obase + rank] = c + base;
+                    atomicExch(reinterpret_cast<unsigned long long *>(&out_val[obase + rank]),
+                               __double_as_longlong(prod));       // 慢道:值原子(次序任意但只此路径)
+                } else atomicAdd(&out_val[obase + rank], prod);
+            }
+        }
+    }
+    __syncthreads();
+    if (fast) {
+        int nf = *fcnt;
+        for (int s = threadIdx.x; s < nf && s < K7_FIX_MAX; s += blockDim.x)
+            atomicAdd(&out_val[obase + frk[s]], fvl[s]);          // 屏障后:确定性追加
+    }
+    __syncthreads();
 }
 
 __global__ void hash_dense_count_kernel(
@@ -3132,7 +3268,7 @@ __global__ void compute_bucket_kernel(
     double tbl_eref = 1.8,                        // eref = 实际 est_expand(E = e/eref)
     int occ_coeff = SPANF_COEFF,
     int force_est_min = 0,   // 决赛 v2 真强制
-    int had_l1 = 0)          // HAD L1 路由修正(env HAD_L1,host 读取传入:est≥此值终判 BIN_DITER(覆盖全门;0=关)                  // OCCGATE 系数(默认 16;OCC_GATE_COEFF=10 已验证但停靠③阶段启用;env OCCGATE_COEFF —— REXP
+    int had_l1 = 0, int k7_on = 0)   // k7_on:BIN_K7 路由开关(env K7,默认关)          // HAD L1 路由修正(env HAD_L1,host 读取传入:est≥此值终判 BIN_DITER(覆盖全门;0=关)                  // OCCGATE 系数(默认 16;OCC_GATE_COEFF=10 已验证但停靠③阶段启用;env OCCGATE_COEFF —— REXP
                                                   // 轮盘教训:crankseg −8.5 实为本门 est×16<span 边界
                                                   // 迁移,直接调门替代 est 侧信道;变小=更多重行留 hash)
                           //   1.63× → 表≈真需求 3.3× vs Ocean 1.75×;env HASH_TGT_ALPHA(200=legacy)
@@ -3195,6 +3331,12 @@ __global__ void compute_bucket_kernel(
         // 256 内数组比一切 hash 表都小且密集,是唯一稳定赢的槽位(nemeth18 全族实证)。
         bid = 14;
     }
+    else if (k7_on && e >= K7_EST_MIN && sl0 > 0 && sl0 <= K7_SPAN_MAX
+             && (A_row_ptr[i + 1] - A_row_ptr[i]) >= 1
+             && (A_row_ptr[i + 1] - A_row_ptr[i]) <= K7_ALEN_MAX
+             && (long long)flop[i] - e <= K7_FIX_MAX                       // 碰撞预算(核内精确证书复核)
+             && (long long)flop[i] <= (long long)(K7_DUP_MAX * (double)e)  // dup 预算(路由侧估计)
+             ) bid = BIN_K7;   // kernel₇:dup≈1∧窄span∧短a_len(10-06;位图 0.125B/列 vs 表 12B/槽)
     else if (e <= ultra_thr) bid = BIN_ULTRA;             // ultra:线性免 hash
     // dense-iter 路由(docs/24 裁决,docs/72 结构化推导)
     // 三个门控常数均从 structural_params.cuh 的字节模型推导(docs/72 Phase 2 论文策略):
@@ -4582,6 +4724,8 @@ static void hash_product(
     if (g_diter_est_min < 0) { const char *e = getenv("DITER_EST_MIN"); if (e && *e) { g_diter_est_min = atoi(e); g_est_env = true; } else g_diter_est_min = DITER_EST_TIER; }   // v33d 翻默认:档内行结构档 1024(超档老路径在 kernel 内钳 2048);g_est_env=显式实验值,小阵守卫不改写
     static int g_dstruct_win = -2;    // §22:-1 = 档位梯(span≤7277 五档联动);0 = 关;>0 = 手调单窗
     if (g_dstruct_win == -2) { const char *e = getenv("DSTRUCT_WIN"); g_dstruct_win = (e && *e) ? atoi(e) : -1; }   // v33d 翻默认:-1 = 档位梯分流(数值侧按 span 分两路,路由不驱逐)
+    int k7_nr = 0; const int *k7_rows = nullptr;   // kernel₇ 行集(BIN_K7;count/numeric 两段共用,binning 内赋值)
+    long long k7_nnz_sum = 0;
     prof("binning", [&]{
         static int g_tgt_alpha = -1;   // HASH_TGT_ALPHA(表配 target=α%×est;连续 est 下默认 150 单次吸附,study/13)
         if (g_tgt_alpha < 0) { const char *e = getenv("HASH_TGT_ALPHA"); g_tgt_alpha = (e && *e) ? atoi(e) : (g_est_cont ? 150 : 200); }
@@ -4631,8 +4775,11 @@ static void hash_product(
                 if (g_fdest < 0) { const char *e = getenv("FORCE_DITER_EST"); g_fdest = (e && *e) ? atoi(e) : 0; }
         static int g_had_l1 = -1;   // HAD L1 路由修正(④;env HAD_L1=阈值:1=旧30 兼容,8=09-30 判别式;默认关)
         if (g_had_l1 < 0) { const char *e = getenv("HAD_L1"); g_had_l1 = (e && *e) ? atoi(e) : 0; if (g_had_l1 == 1) g_had_l1 = 30; }
+        static int g_k7 = -1;   // kernel₇(BIN_K7):双遍位图 dup≈1 人口(10-06;默认关,51 阵屏全绿再议)
+        if (g_k7 < 0) { const char *e = getenv("K7"); g_k7 = (e && *e) ? atoi(e) : 0; }
+        g_k7 = g_k7 && !att;   // att(upper-tri)形态未适配:span_lo 基址不含 tri 过滤
         compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, diter_thr_run, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, diter_est_min_run, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
-            g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff, g_fdest, g_had_l1);
+            g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff, g_fdest, g_had_l1, g_k7);
         if (d_est_save) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零(D2TIER 工作量轴也吃)
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
@@ -4652,6 +4799,7 @@ static void hash_product(
             dev_free(d_tflop); dev_free(d_avg_gate);
             d_tflop = nullptr; d_avg_gate = nullptr;
         }
+        if (h_cnt[BIN_K7] > 0) { k7_nr = h_cnt[BIN_K7]; k7_rows = d_sort + h_off[BIN_K7]; }   // kernel₇ 行集(count/numeric 两段共用)
         if (est_projected >= 0) total_est = est_projected;   // MHSAMP:d_est=min(flop,n) 的 scan 非 Σest 真值 → 投影覆写(dup 路由保持诚实)
         // DUMP_ROUTING=<path>:路由决策数据落盘(est/span/flop/bkid 四数组;docs/76 §22 收口的
         // 校准数据源 —— 档位梯双维门[span 档 vs est 档]的赢家/输家分离度验证,只跑一次)
@@ -5098,6 +5246,30 @@ static void hash_product(
             dbg("[%s] 方案5:count pass %d dense 行(Σest=%lld Σnnz=%lld)→ cnnz_scan 后直写终态\n",
                 tag, dense_nr, dense_est_sum, dense_nnz_sum);
         }
+    }
+    // ---- kernel₇:BIN_K7 行 count(位图标记+popcount → d_row_nnz;方案5 同构直写族)----
+    if (k7_nr > 0) {
+        prof("k7_count", [&]{
+            int *d_k7err = decltype(d_k7err)(dev_alloc(sizeof(int)));
+            CHECK_CUDA(cudaMemset(d_k7err, 0, sizeof(int)));
+            k7_count_kernel<<<k7_nr, K7_BLOCK, (size_t)K7_W * 4>>>(
+                dA_rp, dA_ci, dB_rp, dB_ci, A_rows, k7_rows, d_span_lo, d_row_nnz, d_k7err);
+            int herr = 0; CHECK_CUDA(cudaMemcpy(&herr, d_k7err, sizeof(int), cudaMemcpyDeviceToHost));
+            if (herr) fprintf(stderr, "[hash] k7_count 防御带 %d 产品(span_lo/路由不变式破坏,值门必查)\n", herr);
+            dev_free(d_k7err);
+            {   // Σnnz(underflow 检查扣减项;gather+ToLL 归约,文件同款 idiom)
+                int *d_k7n = decltype(d_k7n)(dev_alloc((size_t)k7_nr * sizeof(int)));
+                thrust::gather(thrust::device_pointer_cast(k7_rows), thrust::device_pointer_cast(k7_rows + k7_nr),
+                               thrust::device_pointer_cast(d_row_nnz), thrust::device_pointer_cast(d_k7n));
+                k7_nnz_sum = thrust::reduce(
+                    thrust::make_transform_iterator(thrust::device_ptr<int>(d_k7n), ToLL()),
+                    thrust::make_transform_iterator(thrust::device_ptr<int>(d_k7n + k7_nr), ToLL()),
+                    (long long)0, thrust::plus<long long>());
+                dev_free(d_k7n);
+            }
+            zero_est_kernel<<<(k7_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, k7_rows, k7_nr);   // 与 dense 同窗:hash 侧 tmp 不为 k7 行定容
+        });
+        dbg("[%s] k7_count: %d 行(BIN_K7)位图精确计数 Σnnz=%lld\n", tag, k7_nr, k7_nnz_sum);
     }
     // ---- D5H:方案5 扩展到 hash 行(docs/31;D5H=1 开,默认关)----
     // bins 1-10 行 MODE=1 count-only → row_nnz 精确 → MODE=2 数值 pass 直写 dC。
@@ -6032,8 +6204,8 @@ static void hash_product(
     // est underflow check: actual C_nnz > estimated total → 回退 merge3
     // 方案5:dense 行计数精确(可 > 其 est,合法),检查改 hash 侧 = C_nnz − Σnnz_dense ≤ tmp_slots
     if (!g_cnf) {   /* CNT_FUSE: underflow check deferred to late cnnz */
-    if ((dense_nr > 0 || d5h_rows > 0)
-            ? ((long long)C_nnz_result - dense_nnz_sum - d5h_nnz_sum > tmp_slots)
+    if ((dense_nr > 0 || d5h_rows > 0 || k7_nr > 0)
+            ? ((long long)C_nnz_result - dense_nnz_sum - d5h_nnz_sum - k7_nnz_sum > tmp_slots)
             : ((long long)C_nnz_result > total_est)) {
         fprintf(stderr, "[hash] est underflow: C_nnz=%d > total_est=%lld → 回退 merge"
                         " [组件: dense_nr=%d dense_sum=%lld d5h_rows=%d d5h_sum=%lld tmp_slots=%lld hash侧=%lld]\n",
@@ -6089,7 +6261,7 @@ static void hash_product(
         static int g_fix2 = -1;
         if (g_fix2 < 0) { const char *e = getenv("FIX2"); g_fix2 = (e && *e) ? atoi(e) : 0; }
         in_place = (min_marg >= 0) && g_fix2 && ((long long)C_nnz_result > INPLACE_MIN_CNNZ)
-                   && (dense_nr == 0) && (h_d3_n == 0) && !g_d5h_on;   // 方案5/D5H 互斥:direct 写终态与 tmp 前缀紧缩重叠,且 est 已置 0 致 margin 失义
+                   && (dense_nr == 0) && (h_d3_n == 0) && !g_d5h_on && (k7_nr == 0);   // 方案5/D5H/K7 互斥:direct 写终态与 tmp 前缀紧缩重叠,且 est 已置 0 致 margin 失义
         dev_free(d_eoff); dev_free(d_marg);
         dbg("[%s] compact in_place=%d (min_margin=%lld)\n", tag, (int)in_place, min_marg);
     }
@@ -6129,6 +6301,19 @@ static void hash_product(
     // 方案5 数值 pass(Phase B v2 游标版):dense 行数据驱动窗口直写终态
     int *d_smap = nullptr, *d_smap_off = nullptr;
     if (dense_nr > 0) {
+        if (k7_nr > 0) {
+            prof("k7_direct", [&]{
+                int *d_k7err2 = decltype(d_k7err2)(dev_alloc(sizeof(int)));
+                CHECK_CUDA(cudaMemset(d_k7err2, 0, sizeof(int)));
+                k7_numeric_kernel<<<k7_nr, K7_BLOCK, (size_t)K7_SMEM_W * 4>>>(
+                    dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, A_rows, k7_rows, d_span_lo,
+                    dC_rp, dC_ci, d_val_ip, nullptr, d_k7err2);
+                int herr2 = 0; CHECK_CUDA(cudaMemcpy(&herr2, d_k7err2, sizeof(int), cudaMemcpyDeviceToHost));
+                if (herr2) fprintf(stderr, "[hash] k7_numeric 防御带 %d 产品(值门必查)\n", herr2);
+                dev_free(d_k7err2);
+            });
+            dbg("[%s] k7_direct: %d 行(BIN_K7)rank 直写 dC(免表/免值原子/免 compact+sort)\n", tag, k7_nr);
+        }
         prof("dense_direct", [&]{
             // ---- §22d 分流复用(count 阶段已算好:档内段→档位梯数值;超档段→老窗口 cursor 内核)----
             static int g_dtier_single = -1;   // §22c:1 = 档内行单发最大档(实验开关;三臂实验定谳:

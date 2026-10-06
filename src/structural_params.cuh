@@ -369,6 +369,22 @@ constexpr int DITER_EST_TIER  = SMEM_DEFAULT_MAX / 12 / 4;   // = 1024
 // 阈值取 4M = 空窗中央(2 的幂,与 STREAMLINE_NNZ_STRUCT 同为 A_nnz 轴物理分层)。
 constexpr long long DITER_SMALL_NNZ_DEFAULT = 4LL * 1024 * 1024;   // DITER_SMALL_NNZ env 可改;0=关守卫
 
+// ── kernel₇(BIN_K7):双遍位图 + rank 直写,dup≈1 人口(10-06 独立台背书)──────────
+// 机理:Pass1 atomicOr 位图(1-bit/列,免 F64 原子)→ popcount=精确 nnz → cum 秩表 →
+// Pass2 认领 → 胜者纯普通写,败者入 SMEM fixup 表 → __syncthreads 后统一 atomicAdd
+// (屏障定序)。独立台:bloweybq 3.2ms vs 管线 12.9ms ≈ 4×(tools/k7_bench.cu)。
+// 经济学:位图 0.125B/列 vs hash 表 12B/槽(96× 脚印差,占用物理赢侧);count 即精确
+// 计数 + rank 写即终态有序 ⇒ 该 bin 免估计器余量/compact+sort/值原子。
+constexpr int K7_SPAN_MAX  = 32768;    // 位图 ≤4KB(路由上限;SMEM 由此静态定尺寸)
+constexpr int K7_ALEN_MAX  = 32;       // 2D(k,p) 切分假设(a_len 小时全 block 摊 B 流)
+constexpr int K7_EST_MIN   = 256;      // 不偷 batch_s/ultra/esc 人口
+constexpr double K7_DUP_MAX = 1.67;    // 路由侧 dup 预算(估计;精确证书在核内判)
+constexpr int K7_FIX_MAX   = 512;      // fixup 表容量(核内证书:flop−distinct ≤ 此值才走快道)
+constexpr int K7_FIX_OFF_W = 512 + 1024 + 2;  // SMEM 字偏移:[fvl 1024w][frk 512w][cnt+pad]
+constexpr int K7_BLOCK     = 128;             // 一行一 block(numeric/count 同约定,red[] 依赖)
+// ⚠ 布局纪律(wedge#8 教训):fvl=words 0..1023 / frk=1024..1535 / fcnt=1536 / mark 自 1538 起;
+//   多结构共 SMEM 必须画字偏移图核对(512 doubles = 1024 字,勿按 512 字算)
+
 // ── §22b Ocean 双维档位比较(Analysis.cuh L248-264 移植;09-04 dump 校准)─────────
 // Ocean 的 dense 分流不是单边门,是同一 SMEM 预算梯上的【档位比较】:
 //   dense 赢 ⟺ dense_tier_of(span) ≤ hash_tier_of(ht)
