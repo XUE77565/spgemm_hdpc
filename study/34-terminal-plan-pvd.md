@@ -67,3 +67,15 @@ L2 核内证书:验证式快道 —— k7 的 count 证书(flop−distinct≤CAP
 GPU 六条 + 新三条(journalctl 哨兵/TERM 自杀/pgrep 防自匹配[第 5 变体:循环等待器]) +
 结论稳定纪律(验证人群标注) + 51 阵屏守门 + 同日配对;PVD 一切对比走 oracle-gap 与
 case-control 双口径;跨表(config/系数)改动一律同日 worktree。
+
+## [10-06 追加·用户两条] merge3 收编 + 学习型对照(D 线 v1.1)
+
+1. **C_merge 第四成本律**:`C_merge ≈ η·a_len·log(归并因子) + θ·flop`(小阵短行甜点 =
+   hash 截距税人口;first100 0.614×/59 阵已背书)。D1 标定集加 first100 抽样;D3 把
+   first100 特例 dispatcher 路径**收编进 PVD**——论文话术:"一个调度器横跨两个全集"。
+2. **D6 学习型对照**:GBT/微 MLP(4 特征→三/四路成本或 argmax),逐行数据训练
+   (HASH/DD/k7 rowtime + DUMP_ROUTING 特征,百万行级);**按矩阵切分**
+   (leave-one-matrix-out,行内相关,按行切=泄漏);推理量化嵌入 compute_bucket(~50
+   FLOPs/行)。结局两赢:学习胜→量化部署;解析打平→"四特征解析模型匹敌学习器"=
+   更强物理故事。动笔前查重(learned sparse format selection/学习型 QO 邻作),定位
+   =逐行 dispatch + 证书兜底 + 物理先验混合。离线训练不触"运行中自调"红线。
