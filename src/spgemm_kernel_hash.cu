@@ -3343,7 +3343,9 @@ __global__ void compute_bucket_kernel(
              && (A_row_ptr[i + 1] - A_row_ptr[i]) <= K7_ALEN_MAX
              && (long long)flop[i] - e <= K7_FIX_MAX                       // 碰撞预算(核内精确证书复核)
              && (long long)flop[i] <= (long long)(K7_DUP_MAX * (double)e)  // dup 预算(路由侧估计)
-             ) bid = BIN_K7;   // kernel₇:dup≈1∧窄span∧短a_len(10-06;位图 0.125B/列 vs 表 12B/槽)
+             && (long long)span_factor * flop[i] >= (long long)sl0         // spanf 门(diter 同款:重乘积才值得窗口化;
+             && (long long)span_factor * e >= (long long)sl0               //  occgate 同款:est≥span/16,位图利用率)
+             ) bid = BIN_K7;                                               // 10-06 A/B:缺此双门 → 从 hash 抢行,Si10H16 −4%/c-43 −11%   // kernel₇:dup≈1∧窄span∧短a_len(10-06;位图 0.125B/列 vs 表 12B/槽)
     else if (e <= ultra_thr) bid = BIN_ULTRA;             // ultra:线性免 hash
     // dense-iter 路由(docs/24 裁决,docs/72 结构化推导)
     // 三个门控常数均从 structural_params.cuh 的字节模型推导(docs/72 Phase 2 论文策略):
