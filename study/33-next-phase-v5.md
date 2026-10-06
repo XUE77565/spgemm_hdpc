@@ -216,3 +216,20 @@ SMEM 布局重叠(fvl 1024..2047 ∩ mark≥1538;fcnt∈fvl[256])——pre2 中 
 踩位图 → rank 越界 → illegal instruction → context 损坏 → SIGKILL → wedge。
 bloweybq 碰撞≈1 只用 slot0 故全绿(sanitizer 对界内语义重叠盲)。修复=重排
 (fvl→0..1023/frk→1024..1535/fcnt→1536);教训三条入 [[gpu-safety-discipline]]。
+
+### [10-06 晚] k7 管线集成五连修(自动化调试链,值门未过前零翻默认讨论)
+集成不是接线是缠斗:路由/管线共五处暗礁,全部由"仪器探针链"(kernel printf→DUMP_ROUTING
+逐行谓词复刻→bins 计数打印→相位分解)定位:
+1. **第二条路由链覆盖**(k7 bin=0 之谜):bid=BIN_K7 后被后续 diter 链覆写——豁免名单
+   (`bid==LARGEST||ESC`)漏了 K7;host 谓词复刻全过 vs kernel bin=0 的矛盾靠 block1 printf 定谳
+2. **accumulate per-bin 漏跳过**:bin15 掉进 hash 梯 else(ht=32<<15=百万槽表)→ 80ms 灾难
+3. **compact 环漏跳过**:k7 行 tmp 宽度 0 而 row_nnz 大 → csort 必越界读(潜在 #8 同类!)
+4. **矩阵级 dense 兜底重算**:方案5 规模门(dense_nr=1<MIN_ROWS)中止后掉进 dense_mode
+   全矩阵累积器 → k7 行被重算 + 56ms retry(k7 接管时禁入,残留行走 per-bin 正路)
+5. **k7_direct 被裹在 if(dense_nr>0) 内**:规模门清 0 后永不发射 → k7 行值全垃圾
+   (值门 20001/100M 抓获;挪为平级块)
+战果(修后):bloweybq C_nnz 精确,accumulate 80.8→1.0ms,retry 清零,
+**净窗 5.8ms vs K7=0 12.6ms ≈ 2.2×**(TOTAL 口径 63.6 vs 56.5——d2h 波动主导,净窗为准)
+教训:①direct-write 新家族要过"四张跳过名单"(路由链豁免/accumulate/compact/矩阵级兜底)
+——多门架构的回归面实证(ocean 少门哲学的又一注脚);②二进制新鲜度验证用纯 ASCII 子串
+(中文混 grep 假阴性险些误导);③集成后第一发必看 bins 全计数打印

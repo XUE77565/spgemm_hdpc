@@ -3402,7 +3402,7 @@ __global__ void compute_bucket_kernel(
     // 争用 B 推导:H100 SMEM 同地址 atomicAdd 吞吐 ≈ 1/4 cycles vs 不同地址 ≈ 1/cycle
     //   → 每"多余乘积"(flop>est 部分)多付 3 cycles ≈ 3×4B = 12B 争用字节
     //   (Ga41 dup=38× → 37×est×12B ≈ 巨额 → 正确回 hash;F2 dup<3 → 小额 → 留 dense)
-    if (bid == BIN_LARGEST || (bid >= BIN_ESC8 && bid <= BIN_ESC32)) {}
+    if (bid == BIN_LARGEST || (bid >= BIN_ESC8 && bid <= BIN_ESC32) || bid == BIN_K7) {}   // k7 同 largest/esc:已定案不被后续 diter 链覆写(10-06 bug:漏豁免致全数被 diter 抢走)
     // ↑ largest/esc 已定案,后续链(小跨度/ultra/v4/heavy)不覆写;原 if(false) 占位
     // SROUTE v3(docs/72 Phase 2):结构化字节路由,替代 v4 拟合门(sroute>0 时)
     else if (sroute > 0 && diter_thr > 0 && dup_ok) {
@@ -4832,6 +4832,10 @@ static void hash_product(
             }
         }
         dbg("[%s] diter bin=%d 行 / %d\n", tag, h_cnt[BIN_DITER], A_rows);   // TEMP:docs/24 路由观测
+        dbg("[%s] k7 bin=%d 行 / %d\n", tag, h_cnt[BIN_K7], A_rows);   // kernel₇ 路由观测(10-06)
+        { char bs[256]; int off = 0;
+          for (int bi = 0; bi < N_BINS; bi++) if (h_cnt[bi]) off += snprintf(bs+off, sizeof(bs)-off, "%d:%d ", bi, h_cnt[bi]);
+          dbg("[%s] bins: %s\n", tag, bs); }
         if (getenv("BINS_DBG")) {   // 每 bin 行数分布(小行族定位:docs/13 v2/road 家族)
             for (int bi = 0; bi < N_BINS; bi++)
                 if (h_cnt[bi]) dbg("[%s]   bin[%2d](ht=%5d) = %d 行\n", tag, bi,
@@ -5381,7 +5385,7 @@ static void hash_product(
     if (dense_nr > 0 && (dense_mode || dense_win_mode)) {
         // 方案5 矩阵级:count 已出精确 row_nnz,数值 pass 在 cnnz_scan 后直写(此分支无 accumulate)
     } else
-    if (dense_mode) {
+    if (dense_mode && k7_nr == 0) {   // k7 接管时禁入:矩阵级兜底会重算 k7 行(10-06 实测 187ms 主因);残留行走 per-bin 正路
         dbg("[%s] dense 累积器路径(n=%d, est 占比 %.1f%%)\n", tag, A_cols,
             100.0 * total_est / ((double)A_rows * A_cols));
         prof("accumulate", [&]{
@@ -5397,7 +5401,7 @@ static void hash_product(
                 d_ovf_rows, d_ovf_cnt, d_row_ovf);
             CHECK_CUDA(cudaGetLastError());
         });
-    } else if (dense_win_mode) {
+    } else if (dense_win_mode && k7_nr == 0) {   // 同上:k7 接管时禁入
         dbg("[%s] dense 窗口路径(n=%d, est 占比 %.1f%%)\n", tag, A_cols,
             100.0 * total_est / ((double)A_rows * A_cols));
         prof("accumulate", [&]{
@@ -5448,6 +5452,7 @@ static void hash_product(
             cudaStream_t cur_s = use_ms ? bin_s[bi % g_nstream] : (cudaStream_t)0;
             int n = h_cnt[bi];
             if (n == 0) continue;
+            if (bi == BIN_K7) continue;   // kernel₇:有自己的 k7_count/k7_direct 相位,禁入 hash 梯(漏跳过=百万槽表灾难,10-06 实测 187ms)
             if (g_d5h_on && bi >= 1 && bi <= HASH_LADDER_MAX_BIN) continue;   // D5H:bins1-10 延后 MODE=2(scan 后直写)
             int *rows_ptr = d_sort + h_off[bi];
             // ⚠ ca7bb79(subwarp8 实验)曾把 subwarp8 分支插在 heavy 前面挡死了 BIN_HEAVY 的 dispatch
@@ -6300,20 +6305,21 @@ static void hash_product(
     outscan("pre-compact");
     // 方案5 数值 pass(Phase B v2 游标版):dense 行数据驱动窗口直写终态
     int *d_smap = nullptr, *d_smap_off = nullptr;
+    if (k7_nr > 0) {
+        prof("k7_direct", [&]{
+        int *d_k7err2 = decltype(d_k7err2)(dev_alloc(sizeof(int)));
+        CHECK_CUDA(cudaMemset(d_k7err2, 0, sizeof(int)));
+        k7_numeric_kernel<<<k7_nr, K7_BLOCK, (size_t)K7_SMEM_W * 4>>>(
+            dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, A_rows, k7_rows, d_span_lo,
+            dC_rp, dC_ci, d_val_ip, nullptr, d_k7err2);
+        int herr2 = 0; CHECK_CUDA(cudaMemcpy(&herr2, d_k7err2, sizeof(int), cudaMemcpyDeviceToHost));
+        if (herr2) fprintf(stderr, "[hash] k7_numeric 防御带 %d 产品(值门必查)\n", herr2);
+        dev_free(d_k7err2);
+        });
+        dbg("[%s] k7_direct: %d 行(BIN_K7)rank 直写 dC(免表/免值原子/免 compact+sort)\n", tag, k7_nr);
+    }
+
     if (dense_nr > 0) {
-        if (k7_nr > 0) {
-            prof("k7_direct", [&]{
-                int *d_k7err2 = decltype(d_k7err2)(dev_alloc(sizeof(int)));
-                CHECK_CUDA(cudaMemset(d_k7err2, 0, sizeof(int)));
-                k7_numeric_kernel<<<k7_nr, K7_BLOCK, (size_t)K7_SMEM_W * 4>>>(
-                    dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, A_rows, k7_rows, d_span_lo,
-                    dC_rp, dC_ci, d_val_ip, nullptr, d_k7err2);
-                int herr2 = 0; CHECK_CUDA(cudaMemcpy(&herr2, d_k7err2, sizeof(int), cudaMemcpyDeviceToHost));
-                if (herr2) fprintf(stderr, "[hash] k7_numeric 防御带 %d 产品(值门必查)\n", herr2);
-                dev_free(d_k7err2);
-            });
-            dbg("[%s] k7_direct: %d 行(BIN_K7)rank 直写 dC(免表/免值原子/免 compact+sort)\n", tag, k7_nr);
-        }
         prof("dense_direct", [&]{
             // ---- §22d 分流复用(count 阶段已算好:档内段→档位梯数值;超档段→老窗口 cursor 内核)----
             static int g_dtier_single = -1;   // §22c:1 = 档内行单发最大档(实验开关;三臂实验定谳:
@@ -6655,6 +6661,7 @@ static void hash_product(
                 break;
             }
             if (n == 0) continue;               // 空 bin 免 <<<0,TPB>>> 非法 launch(dense 重构曾吃掉此守卫)
+            if (bi == BIN_K7) continue;   // k7_direct 已直写终态(有序+精确);tmp 宽度 0 而 row_nnz 大,csort 必越界读
             if (g_d5h_on && bi >= 1 && bi <= HASH_LADDER_MAX_BIN) {   // D5H:小行已有序直写免善后;大行原地 csort
                 if (bi <= ilog2c(CSORT_HT / WARP_SIZE)) continue;
                 if (bi <= ilog2c(TABLE_DOUBLING_THR / WARP_SIZE)) launch_csort_ip<CSORT_TPB_A, CSORT_IPT_A>(n, rows_ptr, dC_rp, dC_ci, d_val);
