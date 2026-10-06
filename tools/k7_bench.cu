@@ -17,7 +17,7 @@
 #define K7_DUP_MIN    0.60           // distinct/flop 下限(=dup 上限 1.67)
 #define K7_BLOCK      128            // 一行一 block
 #define K7_FIX_MAX    512            // 每行 fixup 表容量(碰撞数=count 证书 flop−distinct)
-#define K7_FIX_OFF    (512 + 1024 + 2)   // smem 字偏移:[rk 512w][vl 1024w][cnt+pad 2w] 后是 mark
+#define K7_FIX_OFF    (512 + 1024 + 2)   // smem 字偏移:[fvl 1024w][frk 512w][cnt+pad 2w] 后是 mark(1538)
 
 __global__ void k7_count_kernel(
     const int *A_rp, const int *A_ci,
@@ -76,7 +76,7 @@ __global__ void k7_numeric2_kernel(
     int W = span_words[i];
     unsigned *mark = smem + K7_FIX_OFF, *claim = mark + W, *cum = mark + 2 * W;
     for (int w = threadIdx.x; w < W; w += blockDim.x) { mark[w] = 0u; claim[w] = 0u; }
-    if (threadIdx.x == 0) *(smem + 512 + 1024) = 0u;          // fixup 计数器清零
+    if (threadIdx.x == 0) *(smem + 1536) = 0u;                // fixup 计数器清零(fvl 后)
     __syncthreads();
     int rs = A_rp[rows[i]], re = A_rp[rows[i] + 1];
     int base = col_base[i];
@@ -103,9 +103,12 @@ __global__ void k7_numeric2_kernel(
         // 统一 atomicAdd —— 屏障保证块内全局写可见 ⇒ 败者的加必然落在胜者写之后(次序由
         // 屏障定,免 atomicExch 的"两原子次序仍任意"缺陷)。容量由 count 证书背书:
         // flop−distinct ≤ K7_FIX_MAX(host 行单已滤);溢出走 racy 兜底由值门兜底报错。
-        int *frk = (int *)(smem + 512);                       // rk 区 512 字
-        double *fvl = (double *)(smem + 512 + 512);           // vl 区 1024 字
-        volatile int *fcnt = (volatile int *)(smem + 512 + 1024);
+        // 布局 v5(修 10-06 重叠 bug):fvl 必须 1024 连续字且不与 mark(K7_FIX_OFF 起)
+        // 重叠 —— 旧版 fvl=1024..2047 与 mark≥1538 重叠,pre2 中 dup 人口 slot≥257 踩位图
+        // → rank 越界 → illegal instruction(wedge #8 根因);bloweybq 碰撞≈1 只用 slot0 故绿
+        double *fvl = (double *)(smem);                       // words 0..1023(8B 对齐)
+        int *frk = (int *)(smem + 1024);                      // words 1024..1535
+        volatile int *fcnt = (volatile int *)(smem + 1536);
         if (k_idx < ak) {
             int j = A_ci[rs + k_idx];
             double a = A_val[rs + k_idx];

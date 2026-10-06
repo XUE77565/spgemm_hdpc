@@ -184,3 +184,35 @@
   ②后台 GPU 任务必须自带 timeout 自杀,勿依赖 harness 截杀(SIGKILL 驻核进程=拥堵源)
 - **夜班交付不受影响**(全部事发前 commit):基线 1.3895 + kernel₇ bloweybq 4× 全绿 +
   纪律升级 4 commit;pre2 k7 定位未完(count 3.8ns/行正常,numeric 未打完)
+
+## [10-06 下午] kernel₇ 集成设计(Phase 1,desk 定稿待实施)
+
+### 路由(compute_bucket_kernel 新增 BIN_K7,优先级在 diter 检查之前)
+谓词(核内全有现成量):
+- `K7` env(默认 0,51 阵屏全绿后再议翻默认)
+- a_len ∈ [1,32](2D 切分假设)
+- span_len[i] ≤ 32768(位图 ≤4KB,SMEM 经济学)
+- dup 预算:flop[i]−est[i] ≤ 512 ∧ flop[i]/est[i] ≤ 1.67(估计器侧,近似——精确证书在核内)
+- est ≥ 256(不偷 batch_s/ultra 人口的行)
+
+### 管线槽位(复用 dense 方案5 机器,k7 = 换 count/numeric 两核)
+k7_count(标记+popcount)→ 现有 cnnz_scan/scan 机器出 offsets → k7_numeric 直写终态 C
+(有序+精确 nnz,该 bin 的行**整条免 compact+sort、免估计器余量**)。行集走 BIN_K7 的
+scatter/计数,与 BIN_DITER 同构。
+
+### 溢出安全(核内证书 + 旗标重跑,废 racy 兜底)
+- numeric 里 fcnt 达 FIX_MAX → 该 block 置全局 per-row 状态旗标,本行不再写
+- 主核后补一小发清理 launch:只重跑旗标行,走 exch 慢道(有界,罕见)
+- 路由估计器侧 dup 是近似的——溢出可能但安全,快道纯净性保持
+
+### 守门(按新纪律)
+1. 三件套 ×N:bloweybq(dup≈1 纯靶)+ pre2(中 dup,fixup 尾部人口——wedge#8 教训:
+   **必须盖 fixup 尾**)+ 合成高碰撞小阵(slot 全区间)
+2. 51 阵广域屏零未解释回归 >2%(盯 c-64/dense 人群不变)
+3. 记分板目标:bloweybq 3.40 → ~0.9;基线 1.3895 → ~1.35
+
+### wedge#8 根因与修复(同日定谳)
+SMEM 布局重叠(fvl 1024..2047 ∩ mark≥1538;fcnt∈fvl[256])——pre2 中 dup 人口 slot≥257
+踩位图 → rank 越界 → illegal instruction → context 损坏 → SIGKILL → wedge。
+bloweybq 碰撞≈1 只用 slot0 故全绿(sanitizer 对界内语义重叠盲)。修复=重排
+(fvl→0..1023/frk→1024..1535/fcnt→1536);教训三条入 [[gpu-safety-discipline]]。
