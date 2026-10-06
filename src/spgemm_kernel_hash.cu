@@ -4338,6 +4338,8 @@ static void hash_product(
                 if (p1 <= p0) break;
                 const int *base = h_rp + 1, *top = h_rp + A_rows + 1;
                 int r1 = (int)(std::upper_bound(base, top, (int)p1) - h_rp);   // 首个 rp > p1 的行号
+                if (r1 > A_rows) r1 = A_rows;   // 末块 upper_bound 饱和返回 A_rows+1 → 核写 d_flop[A_rows]
+                                                // 越界 4B(10-06 memcheck 实锤,h2dovl 路每次必发;陈年暗病,k7 无关)
                 CHECK_CUDA(cudaMemcpyAsync((char*)dA + A_rp_sz + p0 * 4, h_ci + p0 * 4,
                                            (size_t)(p1 - p0) * 4, cudaMemcpyHostToDevice, sC));
                 CHECK_CUDA(cudaMemcpyAsync((char*)dA + val_off + p0 * 8, h_val + p0 * 8,
