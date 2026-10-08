@@ -39,6 +39,24 @@ def feats_matrix(d):
                      dup, dens, fps], 1)
 
 
+def stratified_mask(d, w, bandcap):
+    """v3 分层抽样帽:est 五带 [0,256)/[256,1K)/[1K,4K)/[4K,16K)/[16K,∞) 各限帽——
+    治 333SP 型微行洪水(微行带单阵最多贡献 bandcap 行,重行/边际带保底同权)。"""
+    import numpy as _np
+    idx_all = _np.where(d["legal"][:, WEAPONS.index(w)])[0]
+    if len(idx_all) <= bandcap * 5:
+        return idx_all
+    es = d["raw"]["es"][idx_all]
+    bands = _np.searchsorted([256, 1024, 4096, 16384], es)
+    keep = []
+    for b in range(5):
+        sub = idx_all[bands == b]
+        if len(sub) > bandcap:
+            sub = sub[:bandcap]     # 顺序取(行序=矩阵行序,无偏)
+        keep.append(sub)
+    return _np.concatenate(keep) if keep else idx_all
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("mat", nargs="*",
@@ -49,16 +67,24 @@ def main():
                              "bp_0", "arc130"])
     ap.add_argument("--iters", type=int, default=200)
     ap.add_argument("--cap", type=int, default=400000)
+    ap.add_argument("--bandcap", type=int, default=0,
+                    help="v3 分层帽:每阵×武器×est带 行数帽(0=关,用旧 per-matrix 帽)")
+    ap.add_argument("--exclude", default="",
+                    help="消融:排除阵名(逗号分隔,如 333SP)")
     a = ap.parse_args()
     rng = np.random.default_rng(42)
-    data = prep(a.mat)
+    ex = set(x for x in a.exclude.split(",") if x)
+    data = prep([m for m in a.mat if m not in ex])
     for m, d in data.items():
         d["X"] = feats_matrix(d)
         d["trainmask"] = {}
         for w in WEAPONS:
-            idx = np.where(d["legal"][:, WEAPONS.index(w)])[0]
-            if len(idx) > a.cap:
-                idx = rng.choice(idx, a.cap, replace=False)
+            if a.bandcap > 0:
+                idx = stratified_mask(d, w, a.bandcap)
+            else:
+                idx = np.where(d["legal"][:, WEAPONS.index(w)])[0]
+                if len(idx) > a.cap:
+                    idx = rng.choice(idx, a.cap, replace=False)
             d["trainmask"][w] = idx
     mats = sorted(data)
     print(f"特征({len(FEATNAMES)} 维):{','.join(FEATNAMES)}  HGB iters={a.iters} 训练帽={a.cap}/阵/武器\n")
