@@ -21,7 +21,8 @@ from fit_d1_context import prep, evaluate, WEAPONS
 FEATNAMES = ["a_len", "flop", "est", "span", "ht", "W",
              "log_al", "log_fl", "log_es", "log_sp", "ctx_rows", "ctx_sumfl", "ctx_meanes",
              "dup_est", "dens", "fl_per_sp",
-             "avgB", "log_avgB", "maxbl", "log_maxbl"]   # v4:avgB=flop/a_len(docs/66 §8 主轴)+maxbl(LLB 同源)
+             "avgB", "log_avgB", "maxbl", "log_maxbl",
+             "collision"]   # v5:flop−est(k7 fixup 尾/原子争用物理量)
 
 
 def load_maxbl(m):
@@ -56,11 +57,12 @@ def feats_matrix(d, mat=None):
     avgB = fl / np.maximum(al, 1)                     # 平均 B 链长(cursor/search 模式主轴)
     mb_full = load_maxbl(mat) if mat else None
     mb = mb_full[d["rid"]] if mb_full is not None else np.zeros(n)   # 最长 B 链(LLB 同源,rid 对位)
+    coll = np.maximum(fl - es, 0)                     # 碰撞数估计(k7 fixup 尾;dense 原子争用)
     return np.stack([al, fl, es, sp, ht, W,
                      np.log1p(al), np.log1p(fl), np.log1p(np.maximum(es, 1)),
                      np.log1p(sp), np.full(n, ctx[0]), np.full(n, ctx[1]), np.full(n, ctx[2]),
                      dup, dens, fps,
-                     avgB, np.log1p(avgB), mb, np.log1p(mb)], 1)
+                     avgB, np.log1p(avgB), mb, np.log1p(mb), coll], 1)
 
 
 def stratified_mask(d, w, bandcap):
@@ -95,6 +97,8 @@ def main():
                     help="v3 分层帽:每阵×武器×est带 行数帽(0=关,用旧 per-matrix 帽)")
     ap.add_argument("--exclude", default="",
                     help="消融:排除阵名(逗号分隔,如 333SP)")
+    ap.add_argument("--mode", choices=["reg", "argmax"], default="reg",
+                    help="v5:reg=4 回归器 argmin;argmax=多类分类器直接选武器(plan v1.1 预案)")
     a = ap.parse_args()
     rng = np.random.default_rng(42)
     ex = set(x for x in a.exclude.split(",") if x)
@@ -117,31 +121,52 @@ def main():
     gn = gd = 0.0
     per = {}
     for hold in mats:
-        Xtr, ytr = {w: [] for w in WEAPONS}, {w: [] for w in WEAPONS}
-        for m, d in data.items():
-            if m == hold:
-                continue
+        if a.mode == "reg":
+            Xtr, ytr = {w: [] for w in WEAPONS}, {w: [] for w in WEAPONS}
+            for m, d in data.items():
+                if m == hold:
+                    continue
+                for w in WEAPONS:
+                    idx = d["trainmask"][w]
+                    if len(idx):
+                        Xtr[w].append(d["X"][idx])
+                        ytr[w].append(d["cyc"][idx, WEAPONS.index(w)])
+            models = {}
             for w in WEAPONS:
-                idx = d["trainmask"][w]
-                if len(idx):
-                    Xtr[w].append(d["X"][idx])
-                    ytr[w].append(d["cyc"][idx, WEAPONS.index(w)])
-        models = {}
-        for w in WEAPONS:
-            X = np.concatenate(Xtr[w]); y = np.concatenate(ytr[w])
-            if len(X) < 200:
-                models[w] = None
-                continue
-            mdl = HistGradientBoostingRegressor(max_iter=a.iters, learning_rate=0.1,
-                                                 early_stopping=True, validation_fraction=0.1,
-                                                 random_state=0, verbose=0)
-            mdl.fit(X, y)
-            models[w] = mdl
-        # 评估 hold:预测即"伪律"接口——借用 evaluate:lam=1,feats 用预测值替换
-        d = data[hold]
-        pred = np.stack([models[w].predict(d["X"]) if models[w] is not None
-                         else np.full(d["n"], np.nan) for w in WEAPONS], 1)
+                X = np.concatenate(Xtr[w]); y = np.concatenate(ytr[w])
+                if len(X) < 200:
+                    models[w] = None
+                    continue
+                mdl = HistGradientBoostingRegressor(max_iter=a.iters, learning_rate=0.1,
+                                                     early_stopping=True, validation_fraction=0.1,
+                                                     random_state=0, verbose=0)
+                mdl.fit(X, y)
+                models[w] = mdl
+            d = data[hold]
+            pred = np.stack([models[w].predict(d["X"]) if models[w] is not None
+                             else np.full(d["n"], np.nan) for w in WEAPONS], 1)
+        else:   # argmax:多类分类器(训练行=≥2 候选,y=实测 argmin)
+            from sklearn.ensemble import HistGradientBoostingClassifier
+            Xs, ys = [], []
+            for m, d in data.items():
+                if m == hold:
+                    continue
+                c2 = np.where(d["legal"], d["cyc"], np.inf)
+                sel = (np.isfinite(c2).sum(1) >= 2) & (c2.min(1) < np.inf)
+                if sel.any():
+                    Xs.append(d["X"][sel]); ys.append(c2[sel].argmin(1))
+            clf = HistGradientBoostingClassifier(max_iter=a.iters, learning_rate=0.1,
+                                                  early_stopping=True, validation_fraction=0.1,
+                                                  random_state=0)
+            clf.fit(np.concatenate(Xs), np.concatenate(ys))
+            d = data[hold]
+            pr = np.zeros((d["n"], 4))
+            pr[:] = np.nan
+            pr[:, clf.classes_] = clf.predict_proba(d["X"])
+            pred = pr   # 概率当"负成本"用:越大越优
         cand = d["legal"] & np.isfinite(pred)
+        if a.mode == "argmax":   # cand 语义翻转:概率高者优
+            pred = -pred
         sel = cand.sum(1) >= 2
         p2 = np.where(cand, pred, np.inf)[sel]
         c2 = np.where(cand, d["cyc"], np.inf)[sel]
