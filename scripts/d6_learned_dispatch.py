@@ -97,8 +97,9 @@ def main():
                     help="v3 分层帽:每阵×武器×est带 行数帽(0=关,用旧 per-matrix 帽)")
     ap.add_argument("--exclude", default="",
                     help="消融:排除阵名(逗号分隔,如 333SP)")
-    ap.add_argument("--mode", choices=["reg", "argmax"], default="reg",
-                    help="v5:reg=4 回归器 argmin;argmax=多类分类器直接选武器(plan v1.1 预案)")
+    ap.add_argument("--mode", choices=["reg", "argmax", "ens"], default="reg",
+                    help="v5:reg=4 回归器 argmin;argmax=分类器直选;ens=双模型+分歧仲裁(D2 收口)")
+    ap.add_argument("--seed", type=int, default=0, help="HGB random_state(刀锋阵多种子中位用)")
     a = ap.parse_args()
     rng = np.random.default_rng(42)
     ex = set(x for x in a.exclude.split(",") if x)
@@ -120,7 +121,93 @@ def main():
     tot_ag = tot_n = 0
     gn = gd = 0.0
     per = {}
+    # ens 仲裁规则账本:rule → [对, 判行, Σ选, Σ优];另记三路口径(mrg3 出局)
+    RULES = ["reg", "argmax", "margin0.7", "gap1.2"]
+    ens_acc = {r: [0, 0, 0.0, 0.0] for r in RULES}
+    ens3_acc = {r: [0, 0, 0.0, 0.0] for r in RULES}
+    ens_per = {}
     for hold in mats:
+        if a.mode == "ens":
+            # ── 双模型同折训练 ──
+            Xtr, ytr = {w: [] for w in WEAPONS}, {w: [] for w in WEAPONS}
+            Xc, yc = [], []
+            for m, d0 in data.items():
+                if m == hold:
+                    continue
+                for w in WEAPONS:
+                    idx = d0["trainmask"][w]
+                    if len(idx):
+                        Xtr[w].append(d0["X"][idx]); ytr[w].append(d0["cyc"][idx, WEAPONS.index(w)])
+                c2t = np.where(d0["legal"], d0["cyc"], np.inf)
+                st = (np.isfinite(c2t).sum(1) >= 2) & (c2t.min(1) < np.inf)
+                if st.any():
+                    Xc.append(d0["X"][st]); yc.append(c2t[st].argmin(1))
+            models = {}
+            for w in WEAPONS:
+                X = np.concatenate(Xtr[w]); y = np.concatenate(ytr[w])
+                mdl = HistGradientBoostingRegressor(max_iter=a.iters, learning_rate=0.1,
+                                                     early_stopping=True, validation_fraction=0.1,
+                                                     random_state=a.seed, verbose=0)
+                mdl.fit(X, y)
+                models[w] = mdl
+            from sklearn.ensemble import HistGradientBoostingClassifier
+            clf = HistGradientBoostingClassifier(max_iter=a.iters, learning_rate=0.1,
+                                                  early_stopping=True, validation_fraction=0.1,
+                                                  random_state=a.seed)
+            clf.fit(np.concatenate(Xc), np.concatenate(yc))
+            d = data[hold]
+            pr = np.stack([models[w].predict(d["X"]) for w in WEAPONS], 1)   # 成本
+            pb = np.zeros((d["n"], 4)); pb[:] = np.nan
+            pb[:, clf.classes_] = clf.predict_proba(d["X"])                   # 概率
+            cand = d["legal"] & np.isfinite(pr) & np.isfinite(pb)
+            sel = cand.sum(1) >= 2
+            cs, ps, bs = cand[sel], pr[sel], pb[sel]
+            c2 = np.where(cs, d["cyc"][sel], np.inf)
+            oracle = c2.argmin(1)
+            pick_reg = np.where(cs, ps, np.inf).argmin(1)
+            pick_am = np.where(cs, bs, -np.inf).argmax(1)
+            # 分歧行上的两个仲裁信号
+            pmax = np.where(cs, bs, -np.inf).max(1)                            # argmax 置信
+            pr_sort = np.sort(np.where(cs, ps, np.inf), 1)
+            near = (pr_sort[:, 1] <= 1.2 * np.maximum(pr_sort[:, 0], 1e-9))    # reg 认为前二接近
+            disagree = pick_reg != pick_am
+            picks = {"reg": pick_reg, "argmax": pick_am}
+            picks["margin0.7"] = np.where(disagree & (pmax >= 0.7), pick_am, pick_reg)
+            picks["gap1.2"] = np.where(disagree & near, pick_am, pick_reg)
+            ag_rate = 1 - disagree.mean()
+            line = f"  [ens] {hold:<12} 判行 {int(sel.sum())} 双模一致 {ag_rate:.0%} | "
+            for r in RULES:
+                pk = picks[r]
+                ok = pk == oracle
+                s_ = float(np.take_along_axis(c2, pk[:, None], 1).sum())
+                o_ = float(np.take_along_axis(c2, oracle[:, None], 1).sum())
+                A = ens_acc[r]; A[0] += int(ok.sum()); A[1] += int(sel.sum()); A[2] += s_; A[3] += o_
+                line += f"{r}:{ok.mean():.0%} "
+                ens_per.setdefault((hold, r), int(ok.sum()))
+            # 三路口径(mrg3 出局——架构修正后的诚实门值)
+            cs3 = cs.copy(); cs3[:, 3] = False
+            i3 = np.where(cs3.sum(1) >= 2)[0]          # sel 子集内的行号
+            if len(i3):
+                c3 = np.where(cs3, d["cyc"][sel], np.inf)[i3]
+                oracle3 = c3.argmin(1)
+                ps3 = np.where(cs3, ps, np.inf)[i3]
+                bs3 = np.where(cs3, bs, -np.inf)[i3]
+                pick_reg3 = ps3.argmin(1); pick_am3 = bs3.argmax(1)
+                dis3 = pick_reg3 != pick_am3
+                pm3 = bs3.max(1)
+                psrt3 = np.sort(ps3, 1)
+                near3 = psrt3[:, 1] <= 1.2 * np.maximum(psrt3[:, 0], 1e-9)
+                p3 = {"reg": pick_reg3, "argmax": pick_am3}
+                p3["margin0.7"] = np.where(dis3 & (pm3 >= 0.7), pick_am3, pick_reg3)
+                p3["gap1.2"] = np.where(dis3 & near3, pick_am3, pick_reg3)
+                for r in RULES:
+                    ok3 = p3[r] == oracle3
+                    s3_ = float(np.take_along_axis(c3, p3[r][:, None], 1).sum())
+                    o3_ = float(np.take_along_axis(c3, oracle3[:, None], 1).sum())
+                    A = ens3_acc[r]; A[0] += int(ok3.sum()); A[1] += len(i3); A[2] += s3_; A[3] += o3_
+            t3s = f"{(pick_reg3==oracle3).mean():.0%}" if len(i3) else "n/a"
+            print(line + "| 三路reg:" + t3s, flush=True)
+            continue
         if a.mode == "reg":
             Xtr, ytr = {w: [] for w in WEAPONS}, {w: [] for w in WEAPONS}
             for m, d in data.items():
@@ -178,6 +265,13 @@ def main():
         gd += float(np.take_along_axis(c2, oracle[:, None], 1).sum())
         per[hold] = (ag, n)
         print(f"  [LOO] {hold:<10} {ag}/{n} = {ag/max(1,n):.1%}", flush=True)
+    if a.mode == "ens":
+        print("\n== D2 收口:集成仲裁规则汇总(四路口径含 mrg3 | 三路口径=架构修正后门值)==")
+        for r in RULES:
+            A, B = ens_acc[r], ens3_acc[r]
+            print(f"  {r:<10} 四路 {A[0]}/{A[1]} = {A[0]/max(1,A[1]):.1%}  gap {A[2]/max(1,A[3]):.4f}"
+                  f"   |   三路 {B[0]}/{B[1]} = {B[0]/max(1,B[1]):.1%}  gap {B[2]/max(1,B[3]):.4f}")
+        return
     print(f"\n== D6 LOO 汇总:一致率 {tot_ag}/{tot_n} = {tot_ag/max(1,tot_n):.1%}  "
           f"oracle-gap {gn/gd:.4f} ==")
     print("(对照:v3b 解析律池化 45.6%/gap 6.66;v4 λ 上限 in-sample 57.6%/1.095)")
