@@ -19,19 +19,24 @@ from fit_d1_costlaws import load, ht_slots
 from fit_d1_context import prep, evaluate, WEAPONS
 
 FEATNAMES = ["a_len", "flop", "est", "span", "ht", "W",
-             "log_al", "log_fl", "log_es", "log_sp", "ctx_rows", "ctx_sumfl", "ctx_meanes"]
+             "log_al", "log_fl", "log_es", "log_sp", "ctx_rows", "ctx_sumfl", "ctx_meanes",
+             "dup_est", "dens", "fl_per_sp"]   # D6 v2:三比价(dup=flop/est 估计/dens=est/span/flop-per-span)
 
 
 def feats_matrix(d):
-    """一行的 13 维特征矩阵(n×13)。"""
+    """一行的特征矩阵(n×16)。比值特征=三武器单价分岔的物理主轴,dispatch 时可算,无答案泄漏。"""
     r = d["raw"]
     al, fl, es, sp = r["al"], r["fl"], r["es"], r["sp"]
     ht, W = d["feats"]["hash"][:, 0], d["feats"]["dense"][:, 0]
     ctx = np.array(d["ctx"])
     n = len(al)
+    dup = fl / np.maximum(es, 1)                      # dup 估计(估计器口径)
+    dens = es / np.maximum(sp, 1)                     # 密度(近密=pre2 型标志)
+    fps = fl / np.maximum(sp, 1)
     return np.stack([al, fl, es, sp, ht, W,
                      np.log1p(al), np.log1p(fl), np.log1p(np.maximum(es, 1)),
-                     np.log1p(sp), np.full(n, ctx[0]), np.full(n, ctx[1]), np.full(n, ctx[2])], 1)
+                     np.log1p(sp), np.full(n, ctx[0]), np.full(n, ctx[1]), np.full(n, ctx[2]),
+                     dup, dens, fps], 1)
 
 
 def main():
@@ -39,7 +44,9 @@ def main():
     ap.add_argument("mat", nargs="*",
                     default=["bloweybq", "pre2", "c-43", "Si10H16", "in-2004", "nd24k",
                              "crankseg_2", "F2", "c-64", "bcsstk32", "bcsstk23", "bcsstm23",
-                             "bcspwr08", "bcspwr05", "bcsstm01", "1138_bus", "ash219"])
+                             "bcspwr08", "bcspwr05", "bcsstm01", "1138_bus", "ash219",
+                             "pf2177", "HTC_336_9129", "333SP", "opt1", "af_shell4",   # 10-08 补师
+                             "bp_0", "arc130"])
     ap.add_argument("--iters", type=int, default=200)
     ap.add_argument("--cap", type=int, default=400000)
     a = ap.parse_args()

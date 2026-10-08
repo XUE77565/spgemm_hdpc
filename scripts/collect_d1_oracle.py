@@ -26,7 +26,8 @@ LOGS = os.path.join(OUT, "logs")
 
 BIG6 = ["bloweybq", "pre2", "c-43", "Si10H16", "in-2004", "nd24k"]
 F100 = ["bcsstk32", "bcsstk23", "bcsstm23", "bcspwr08", "bcspwr05", "bcsstm01",  # 规模分层抽样
-        "1138_bus", "ash219"]   # 10-08 补:非 bcs 族(C_merge 泛化)
+        "1138_bus", "ash219",   # 10-08 补:非 bcs 族(C_merge 泛化)
+        "bp_0", "arc130"]       # 10-08 补师:mrg3-k7 边际带(D6 v2)
 BIG_DIR = os.path.join("data", "ocean", "square")
 F100_DIR = os.path.join("data", "first100")
 

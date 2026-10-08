@@ -23,7 +23,7 @@ SRC = os.path.join(REPO, "compare", "d1_oracle")
 OUT = os.path.join(SRC, "truth")
 BIG6 = ["bloweybq", "pre2", "c-43", "Si10H16", "in-2004", "nd24k"]
 F100 = ["bcsstk32", "bcsstk23", "bcsstm23", "bcspwr08", "bcspwr05", "bcsstm01",
-        "1138_bus", "ash219"]
+        "1138_bus", "ash219", "bp_0", "arc130"]
 
 
 def median_maps(paths, ncols):
