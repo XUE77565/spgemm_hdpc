@@ -55,6 +55,7 @@ def prep(mats):
                 idx = rng.choice(idx, FIT_CAP, replace=False)
             fitmask[w] = idx
         out[m] = dict(feats=feats, cyc=cyc, legal=legal, ctx=ctx, fitmask=fitmask, n=n,
+                      rid=np.array([t[1] for t in rs], dtype=np.int64),
                       raw=dict(al=al.astype(float), fl=fl, es=es.astype(float), sp=sp))
     return out
 

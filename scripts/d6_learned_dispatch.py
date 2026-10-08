@@ -20,11 +20,31 @@ from fit_d1_context import prep, evaluate, WEAPONS
 
 FEATNAMES = ["a_len", "flop", "est", "span", "ht", "W",
              "log_al", "log_fl", "log_es", "log_sp", "ctx_rows", "ctx_sumfl", "ctx_meanes",
-             "dup_est", "dens", "fl_per_sp"]   # D6 v2:三比价(dup=flop/est 估计/dens=est/span/flop-per-span)
+             "dup_est", "dens", "fl_per_sp",
+             "avgB", "log_avgB", "maxbl", "log_maxbl"]   # v4:avgB=flop/a_len(docs/66 §8 主轴)+maxbl(LLB 同源)
 
 
-def feats_matrix(d):
-    """一行的特征矩阵(n×16)。比值特征=三武器单价分岔的物理主轴,dispatch 时可算,无答案泄漏。"""
+def load_maxbl(m):
+    """全矩阵 maxbl 数组(按矩阵行号);truth 行由 rid 对位取值。"""
+    p = os.path.join(REPO, "compare", "d1_oracle", "feat", m + ".maxbl.tsv")
+    if not os.path.exists(p):
+        return None
+    mb = {}
+    mx = 0
+    for ln in open(p):
+        r, v = ln.split()
+        ri = int(r)
+        mb[ri] = float(v)
+        if ri > mx:
+            mx = ri
+    arr = np.zeros(mx + 1)
+    for ri, v in mb.items():
+        arr[ri] = v
+    return arr
+
+
+def feats_matrix(d, mat=None):
+    """一行的特征矩阵(n×20)。比值特征=三武器单价分岔的物理主轴,dispatch 时可算,无答案泄漏。"""
     r = d["raw"]
     al, fl, es, sp = r["al"], r["fl"], r["es"], r["sp"]
     ht, W = d["feats"]["hash"][:, 0], d["feats"]["dense"][:, 0]
@@ -33,10 +53,14 @@ def feats_matrix(d):
     dup = fl / np.maximum(es, 1)                      # dup 估计(估计器口径)
     dens = es / np.maximum(sp, 1)                     # 密度(近密=pre2 型标志)
     fps = fl / np.maximum(sp, 1)
+    avgB = fl / np.maximum(al, 1)                     # 平均 B 链长(cursor/search 模式主轴)
+    mb_full = load_maxbl(mat) if mat else None
+    mb = mb_full[d["rid"]] if mb_full is not None else np.zeros(n)   # 最长 B 链(LLB 同源,rid 对位)
     return np.stack([al, fl, es, sp, ht, W,
                      np.log1p(al), np.log1p(fl), np.log1p(np.maximum(es, 1)),
                      np.log1p(sp), np.full(n, ctx[0]), np.full(n, ctx[1]), np.full(n, ctx[2]),
-                     dup, dens, fps], 1)
+                     dup, dens, fps,
+                     avgB, np.log1p(avgB), mb, np.log1p(mb)], 1)
 
 
 def stratified_mask(d, w, bandcap):
@@ -76,7 +100,7 @@ def main():
     ex = set(x for x in a.exclude.split(",") if x)
     data = prep([m for m in a.mat if m not in ex])
     for m, d in data.items():
-        d["X"] = feats_matrix(d)
+        d["X"] = feats_matrix(d, mat=m)
         d["trainmask"] = {}
         for w in WEAPONS:
             if a.bandcap > 0:
