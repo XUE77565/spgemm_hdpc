@@ -52,7 +52,8 @@ def feats(row):
 
 
 def dclass_pred(row):
-    """dense 子律预测:档内(≤7277)=2(dsn 梯);档外 avgB=flop/a_len≥64→cursor(1) 否则 search(0)。"""
+    """dense 子律预测:档内(≤7277)=2(dsn 梯);档外 avgB=flop/a_len≥64→cursor(1) 否则 0。
+    0=search 态=【幽灵律】(自然路由全矩阵≈0 人口,10-08 DN 臂终审):dense 非候选。"""
     _, a_len, flop, est, span = row[:5]
     if span <= TIER_SPAN_MAX:
         return 2
@@ -108,7 +109,7 @@ def main():
     for w, key in cols.items():
         if w == "dense":
             laws[w] = {}
-            for dc, dnm in [(0, "search"), (1, "cursor"), (2, "dsn梯")]:
+            for dc, dnm in [(1, "cursor"), (2, "dsn梯")]:   # 0=search 幽灵律出律(D2 v3,DN 臂终审)
                 coef, r2, n = fit(rows, key, w, dclass=dc)
                 if coef is None:
                     print(f"C_dense[{dnm}] 样本不足(n={n}),跳过")
@@ -132,10 +133,12 @@ def main():
     for t in rows:
         cycs = {"hash": t[9], "dense": t[10], "k7": t[11], "mrg3": t[12]}
         have = {k: v for k, v in cycs.items() if v > 0 and k in laws}
+        f = feats(t[1:])
+        if "dense" in have and dclass_pred(t[1:]) == 0:
+            del have["dense"]   # search 态=dense 非候选(幽灵律;强制臂平台=坏假设决策成本)
         if len(have) < 2:
             continue
         oracle = min(have, key=have.get)
-        f = feats(t[1:])
         pred = {}
         for k in have:
             if k == "dense":

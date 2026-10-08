@@ -93,3 +93,36 @@ Si10H16 bin5-6 1.3 万行=死区人口。与既定地图全吻合。
 - `scripts/collect_d1_oracle.py`(采集,可复跑)/ `scripts/build_d1_truth.py`(join 构建)/
   `scripts/fit_d1_costlaws.py`(D2 拟合,本报告只出原始 argmin,系数拟合见 D2 报告)
 - `compare/d1_oracle/`(原始 tsv/bin/log)/ `compare/d1_oracle/truth/*.truth.tsv`(真值表)
+
+## 七、[10-08 晚] 补采 + search 幽灵律终审 + D2 v3b(本轮desk专轮收口)
+
+### 补采电池(5 阵+DN 臂,26/47 OK,域界全分类)
+
+- 新增 **DN 臂**(默认路由+DD/DSN 仪器)=自然语境 dense 逐行周期,与 D 臂(强制)同行配对
+- crankseg_2(中 dup 15-60 人口)/F2(甜点带)/c-64(cursor 主场)H/D/DN/R 齐;1138_bus+ash219
+  (非 bcs 族,C_merge 泛化)H/M 齐;F2=全微行 dense 不可达域界+K 域空(dup 15-60);
+  ash219.K=非方阵工具域界(主二进制 H/M 正常)
+- **真值表 v3b 全集:18 阵,1,798,177 行**
+
+### search 幽灵律终审(两假设一并判决,数据定谳)
+
+1. **自然路由 search 人口≈0 全域**:in-2004 DN 臂 153K dd 行中 search 仅 **7 行**;
+   c-64 DN 19,347 cursor vs **97 search** → C_dense[search] 出律(PVD v1 不需要它)
+2. 强制臂 26.6 万"平台行"真相:flop p50=132 微行(avgB<64→search 态)被硬塞 1024 线程
+   窗内核,每行付 ~2.2M cyc 固定开张成本=**坏假设决策的成本,非 dense 真单价**
+3. 7 行真怪物 search:DN/D=0.983(语境无关,成本本来就真)
+4. **cursor 语境温和**:crankseg DN/D=1.015,in-2004 DN/D=1.112(±11% 带)
+5. 单价语境漂移普适实证:search 态 per-flop 17.5(c-43 小阵)→301(in-2004 百万行发射);
+   **hash 同病**:实测 cyc/flop pre2=35.6 vs in-2004=92.2(2.6×)
+
+### D2 v3b(修 oracle 污染+dense 合法域 avgB≥64 后)
+
+- **11/15 判阵 ≥84%**:first100 六阵 91-100%/c-64 91.8%/crankseg 84.3%/c-43 92.9%/
+  nd24k 94.2%/1138_bus 99.7%
+- 律:C_hash .926 / C_dense[cursor] .920 / C_k7 .831 / C_mrg3 .800 / dsn 梯 n=1545 薄样本
+- **残症(未定谳)**:in-2004 19.4%/pre2 38.3%/Si10H16 67.6% = 单价语境漂移压在边际
+  (pre2 best 结构 dense 274K/k7 153K 全是边际行;池化单律天花板)
+- **D2 下一轮设计分叉(等用户定向)**:
+  A. 成本律加语境特征(发射规模/bin 人口等 dispatch 时可算量)——合规(非运行时自调)
+  B. 两级标定:矩阵级语境系数 × 行级律(L0 思想下放)
+  C. hash/dense 律改 per-matrix 标定表(51 阵屏离线扫)——最重但最准

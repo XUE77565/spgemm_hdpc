@@ -25,7 +25,8 @@ OUT = os.path.join(REPO, "compare", "d1_oracle")
 LOGS = os.path.join(OUT, "logs")
 
 BIG6 = ["bloweybq", "pre2", "c-43", "Si10H16", "in-2004", "nd24k"]
-F100 = ["bcsstk32", "bcsstk23", "bcsstm23", "bcspwr08", "bcspwr05", "bcsstm01"]  # 规模分层抽样
+F100 = ["bcsstk32", "bcsstk23", "bcsstm23", "bcspwr08", "bcspwr05", "bcsstm01",  # 规模分层抽样
+        "1138_bus", "ash219"]   # 10-08 补:非 bcs 族(C_merge 泛化)
 BIG_DIR = os.path.join("data", "ocean", "square")
 F100_DIR = os.path.join("data", "first100")
 
@@ -77,7 +78,7 @@ def main():
     for m in mats:
         d = F100_DIR if m in F100 else BIG_DIR
         mtx = os.path.join(d, m + ".mtx")
-        arms = ["H", "M", "K"] if m in F100 else ["H", "D", "R", "K"]
+        arms = ["H", "M", "K"] if m in F100 else ["H", "D", "DN", "R", "K"]
         for arm in arms:
             if want and arm not in want:
                 continue
@@ -99,6 +100,10 @@ def main():
         elif arm == "M":
             ok, missing = sh(m, arm, rep, mtx, {"METHOD": "merge3"},
                              {"MRG3_ROWTIME": "tsv"})
+        elif arm == "DN":
+            # 自然语境 dense:默认路由(零强制)下真实走 dense_direct/梯子的行逐行周期
+            # ——与 D 臂(强制开门)同批行对拍,判 co-residency 语境假设(study/35 §五b)
+            ok, missing = sh(m, arm, rep, mtx, {}, {"DD_ROWTIME": "dd.tsv", "DSN_RT": "dsn.tsv"})
         elif arm == "R":
             ok, missing = sh(m, arm, rep, mtx, {}, {"DUMP_ROUTING": "routing.bin"})
         elif arm == "K":

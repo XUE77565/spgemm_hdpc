@@ -22,7 +22,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(REPO, "compare", "d1_oracle")
 OUT = os.path.join(SRC, "truth")
 BIG6 = ["bloweybq", "pre2", "c-43", "Si10H16", "in-2004", "nd24k"]
-F100 = ["bcsstk32", "bcsstk23", "bcsstm23", "bcspwr08", "bcspwr05", "bcsstm01"]
+F100 = ["bcsstk32", "bcsstk23", "bcsstm23", "bcspwr08", "bcspwr05", "bcsstm01",
+        "1138_bus", "ash219"]
 
 
 def median_maps(paths, ncols):
@@ -106,6 +107,10 @@ def main():
                 cyc_m = M.get(r, 0)
                 cand = {"hash": cyc_h, "dense": cyc_d, "k7": cyc_k, "mrg3": cyc_m}
                 cand = {k: v for k, v in cand.items() if v > 0}
+                # dense 合法域(D2 v3):档内=dsn 候选;档外需 avgB=flop/a_len≥64(cursor 态)。
+                # search 态(档外∧avgB<64)=幽灵人口(自然路由≈0,DN 臂终审)——强制臂实测=坏假设决策成本,不作 oracle 依据
+                if "dense" in cand and span > 7277 and (a_len <= 0 or flop / a_len < 64):
+                    del cand["dense"]
                 best = min(cand, key=cand.get) if cand else "-"
                 if best != "-":
                     n_win[best] += 1
