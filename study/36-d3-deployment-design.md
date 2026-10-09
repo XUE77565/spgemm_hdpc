@@ -53,3 +53,42 @@ LOO 考试被测量掩码遮蔽的两个教师外推病理,部署语义(无条�
      四阵 A/B 交替序+守门三件套(系统级真差),保真度中位 0.95+证书作为放行依据
 - D3② 工程清单:student_export.cuh 挂载+21 特征在 bucket 相的逐项对齐(含 maxbl
   预计算小核)+L0 规则两行+D6EXP 门;守门链照 k7 集成五连修清单执行
+
+## 五、[10-09 午] D3② 接线与 A/B 真门:三胜两崩,成本模型盲区定谳
+
+### 接线与守门(全绿)
+
+- 代码:src/student_dispatch.cuh(学生树常量)+ row_maxbl_kernel + compute_bucket
+  覆盖块(争夺区三路+L0 规则)+ host ctx 三量;D6EXP 默认关
+- memcheck 0+0(bloweybq/c-43);bins 语义正确(**bloweybq 10000 行全进 BIN_K7=L0 规则
+  精确兑现**;c-43 三路分布+微 bin 放行);值门 4/4 PASS(bloweybq 逐位 0 错)
+
+### A/B(暖净窗 ×3 交替序)
+
+| 阵 | off | on | on/off | 判 |
+|---|---|---|---|---|
+| bloweybq | 12.82 | 11.10 | **0.866** | ✅ 赢(但 k7 潜力未兑现:est 链 2.9ms 未跳过/accumulate 1.86ms 为 1 heavy 行/k7_direct 管线内 5.06 vs 独立台 2.73) |
+| c-43 | 2.27 | 1.99 | **0.873** | ✅ 边际阵 −12.7% |
+| Si10H16 | 3.05 | 2.82 | **0.925** | ✅ 死区阵 −7.5% |
+| pre2 | 29.21 | 76.12 | **2.606** | ❌ 灾难 |
+| c-64 | 19.32 | 287.02 | **14.854** | ❌❌ 15× 灾难 |
+| in-2004 | 52.23 | 69.25 | **1.326** | ❌ +33%(同 dense_count/hash 改判谱) |
+
+### 定谳:D1 真值表成本=numeric 相 only,管线相位不对称未入模
+
+- **dense 列漏 dense_count 精确计数相位税**(HAD_L1 刀2 判负在案:pre2 行走 diter →
+  dense_count 25.5ms>整条 hash 路)——pre2 2.606 主因
+- **c-64 14.854**:学生把 dense/cursor 主场行大规模改判 hash → c-64 宽 span 行在
+  hash 梯=占用崖死区放大 15×(hash 行级本就 1.9× 慢于彼;真值表 hash 列同样只测
+  numeric,未含 compact/est 摊账,且 c-64 hash 列是 H 臂强制测度)
+- **方法论教训**:保真度代理门(学生复现教师 0.95)看不见这类错——教师本身就错在
+  成本口径;A/B 真门一发放现。路线 B(以真门代代理门)此役实证正确
+
+### 修复路径(D1 测量模型 v2,全 desk,零 GPU)
+
+1. **相位摊账重标**:从 D/R 臂日志提取 dense_count/compact/retry 相位时长 → 按行
+   摊入对应武器成本(dense+=dense_count/rows;hash+=compact+retry/rows;k7+=0——
+   k7 的 count 即精确计数无额外税)
+2. ctx 特征全行重算(训练用 truth 行子集 vs 部署全行的 skew 修掉)
+3. 重训教师→学生→重 A/B;预期 pre2 回 1.0±/c-64 回 ≤1.0,三胜保留
+4. bloweybq 二阶税(纯 k7 阵跳 est 精修/heavy 单行免 accumulate 开张)另立小刀

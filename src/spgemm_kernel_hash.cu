@@ -3247,6 +3247,22 @@ SP_HD int tbl_target_rexp(int e, int alpha_pct, double glo, double ghi,
     return nt < 1.0 ? 1 : (int)nt;
 }
 
+// ── D3②:PVD 学生派发(study/36)────────────────────────────────────────────
+#include "student_dispatch.cuh"   // 学生树(margin0.7 教师蒸馏;再生 scripts/d3_{train_teacher,distill_student}.py)
+
+// maxbl 预计算:行内最长 B 链长(平方阵 B=A;LLB 同源量,学生特征 #19);O(nnz) 一发
+__global__ void row_maxbl_kernel(const int *A_rp, const int *A_ci, int A_rows, int *maxbl) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= A_rows) return;
+    int mb = 0;
+    for (int p = A_rp[i]; p < A_rp[i + 1]; p++) {
+        int j = A_ci[p];
+        int l = A_rp[j + 1] - A_rp[j];
+        if (l > mb) mb = l;
+    }
+    maxbl[i] = mb;
+}
+
 // GPU 端分桶(无 host 往返):每行算 bucket_id 并直方图计数(融合省 1 launch)
 __global__ void compute_bucket_kernel(
     const int *est, const int *A_row_ptr, int A_rows, int ultra_thr,
@@ -3275,7 +3291,9 @@ __global__ void compute_bucket_kernel(
     double tbl_eref = 1.8,                        // eref = 实际 est_expand(E = e/eref)
     int occ_coeff = SPANF_COEFF,
     int force_est_min = 0,   // 决赛 v2 真强制
-    int had_l1 = 0, int k7_on = 0)   // k7_on:BIN_K7 路由开关(env K7,默认关)          // HAD L1 路由修正(env HAD_L1,host 读取传入:est≥此值终判 BIN_DITER(覆盖全门;0=关)                  // OCCGATE 系数(默认 16;OCC_GATE_COEFF=10 已验证但停靠③阶段启用;env OCCGATE_COEFF —— REXP
+    int had_l1 = 0, int k7_on = 0,   // k7_on:BIN_K7 路由开关(env K7,默认关)
+    int d6_on = 0, const int *d6_maxbl = nullptr,          // D6EXP:PVD 学生派发(study/36;默认关)
+    float d6_cr = 0.f, float d6_cs = 0.f, float d6_cm = 0.f, int d6_ncols = 0)          // HAD L1 路由修正(env HAD_L1,host 读取传入:est≥此值终判 BIN_DITER(覆盖全门;0=关)                  // OCCGATE 系数(默认 16;OCC_GATE_COEFF=10 已验证但停靠③阶段启用;env OCCGATE_COEFF —— REXP
                                                   // 轮盘教训:crankseg −8.5 实为本门 est×16<span 边界
                                                   // 迁移,直接调门替代 est 侧信道;变小=更多重行留 hash)
                           //   1.63× → 表≈真需求 3.3× vs Ocean 1.75×;env HASH_TGT_ALPHA(200=legacy)
@@ -3461,6 +3479,50 @@ __global__ void compute_bucket_kernel(
             bid = (rk <= WARP_SIZE) ? BIN_BATCH2 : bi;
         } else {
             bid = bi;
+        }
+    }
+    // ── D3②:PVD 学生派发(D6EXP,默认关;study/36)──只接管争夺区行(梯 0-10/diter/k7),
+    //    micro bin(ESC/batch/ultra/sspan/largest/heavy)原路放行;确定性 L0 规则先行(代码非学习:
+    //    全稠密 C=位图主场,dense 回归器此域零训练样本=瞎外推,bloweybq 病理处方)。
+    if (d6_on && (bid <= 10 || bid == BIN_DITER || bid == BIN_K7)) {
+        const int al = A_row_ptr[i + 1] - A_row_ptr[i];
+        const int fl = flop[i], sp2 = span_len[i], e2 = est[i];
+        bool k7_legal = (al >= 1 && al <= 32 && sp2 > 0 && sp2 <= 32768 && e2 >= 256
+                         && (fl - e2) <= 512 && (double)fl <= 1.67 * (double)e2
+                         && (long long)span_factor * fl >= (long long)sp2
+                         && 16LL * e2 >= (long long)sp2);
+        if (k7_legal && d6_ncols > 0 && (double)e2 >= 0.9 * (double)d6_ncols) {
+            bid = BIN_K7;                                    // L0 全稠密规则
+        } else {
+            float x[21];                                     // 特征序=d3_distill_student.py FEATNAMES
+            int t = (int)((double)e2 * 1.5); int s = 32; while (s < t && s < 65536) s <<= 1;
+            x[0] = (float)al; x[1] = (float)fl; x[2] = (float)e2; x[3] = (float)sp2; x[4] = (float)s;
+            x[5] = (float)((sp2 > 0) ? (sp2 + 5399) / 5400 : 1);   // W=ceil(span/PB2_W)
+            x[6] = logf((float)al + 1.f); x[7] = logf((float)fl + 1.f);
+            x[8] = logf((float)e2 + 1.f); x[9] = logf((float)sp2 + 1.f);
+            x[10] = d6_cr; x[11] = d6_cs; x[12] = d6_cm;
+            x[13] = (float)fl / fmaxf((float)e2, 1.f); x[14] = (float)e2 / fmaxf((float)sp2, 1.f);
+            x[15] = (float)fl / fmaxf((float)sp2, 1.f);
+            x[16] = (float)fl / fmaxf((float)al, 1.f); x[17] = logf(x[16] + 1.f);
+            float mb = d6_maxbl ? (float)d6_maxbl[i] : 0.f;
+            x[18] = mb; x[19] = logf(mb + 1.f); x[20] = (float)((fl > e2) ? fl - e2 : 0);
+            int node = 0;
+            while (stu_leaf[node] < 0)
+                node = (x[stu_feat[node]] <= stu_thr[node]) ? stu_cl[node] : stu_cr[node];
+            int pick = stu_leaf[node];                       // 0=hash 1=dense 2=k7
+            if (pick == 2 && k7_legal) bid = BIN_K7;
+            else if (pick == 1 && (sp2 <= 7277 || x[16] >= 64.f)) bid = BIN_DITER;
+            else if (pick != 1 && !(pick == 2) && bid <= 10) { /* hash:静态已在梯内,保持 */ }
+            else {                                            // hash 但静态来自 13/15(或 pick 落空)→ 回梯
+                if (e2 > HASH_CAP) bid = BIN_HEAVY;
+                else {
+                    int bi2 = 0, ht2 = WARP_SIZE;
+                    int tgt2 = tbl_target_rexp(e2, tgt_alpha_pct, tbl_glo, tbl_ghi, tbl_elo, tbl_ehi, tbl_eref);
+                    while (ht2 < tgt2 && ht2 < HASH_CAP) { ht2 <<= 1; bi2++; }
+                    if (e2 <= BATCH_EST_MAX && al <= WARP_SIZE && batch_s_max && e2 <= batch_s_max) bid = BIN_BATCH_S;
+                    else bid = bi2;
+                }
+            }
         }
     }
     bucket_id[i] = bid;
@@ -4789,8 +4851,25 @@ static void hash_product(
         static int g_k7 = -1;   // kernel₇(BIN_K7):双遍位图 dup≈1 人口(10-06;默认关,51 阵屏全绿再议)
         if (g_k7 < 0) { const char *e = getenv("K7"); g_k7 = (e && *e) ? atoi(e) : 0; }
         g_k7 = g_k7 && !att;   // att(upper-tri)形态未适配:span_lo 基址不含 tri 过滤
+        // D6EXP(D3② PVD 学生派发,默认关):maxbl 预计算 + 阵级 ctx 三量 + 传参
+        static int g_d6 = -1;
+        if (g_d6 < 0) { const char *e = getenv("D6EXP"); g_d6 = (e && *e) ? atoi(e) : 0; }
+        int *d6_maxbl = nullptr; float d6_cr = 0.f, d6_cs = 0.f, d6_cm = 0.f;
+        if (g_d6) {
+            d6_maxbl = decltype(d6_maxbl)(dev_alloc(A_rows * sizeof(int)));
+            row_maxbl_kernel<<<(A_rows + 255) / 256, 256>>>(dA_rp, dA_ci, A_rows, d6_maxbl);
+            long long s_fl = thrust::reduce(thrust::device_ptr<const int>(d_flop),
+                                            thrust::device_ptr<const int>(d_flop + A_rows), 0LL);
+            long long s_es = thrust::reduce(thrust::device_ptr<const int>(d_est),
+                                            thrust::device_ptr<const int>(d_est + A_rows), 0LL);
+            d6_cr = (float)log((double)A_rows);
+            d6_cs = (float)log((double)s_fl);
+            d6_cm = (float)log((double)s_es / (double)A_rows);
+            dbg("[%s] D6EXP on:ctx rows=%.2f sumfl=%.2f meanes=%.2f\n", tag, d6_cr, d6_cs, d6_cm);
+        }
         compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, diter_thr_run, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, g_esc, diter_est_min_run, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
-            g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff, g_fdest, g_had_l1, g_k7);
+            g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff, g_fdest, g_had_l1, g_k7,
+            g_d6, d6_maxbl, d6_cr, d6_cs, d6_cm, g_d6 ? A_cols : 0);
         if (d_est_save) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零(D2TIER 工作量轴也吃)
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
@@ -4804,6 +4883,7 @@ static void hash_product(
         if (pfuse)   // PIPEFUSE:count_flop 的 device 规约在此取回(消一个独立 host 同步点)
             CHECK_CUDA(cudaMemcpyAsync(&total_flop, d_tflop, sizeof(long long), cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaStreamSynchronize(0));
+        if (d6_maxbl) { dev_free(d6_maxbl); d6_maxbl = nullptr; }   // bucket 消费完即释(D3②)
         if (pfuse) {
             avg_product = A_rows ? (double)total_flop / A_rows : 0.0;
             dbg("[%s] avg_product=%.1f (total_flop=%lld, PIPEFUSE 延迟取回)\n", tag, avg_product, total_flop);
