@@ -17,7 +17,7 @@ import argparse, math, os, sys
 import numpy as np
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TRUTH = os.path.join(REPO, "compare", "d1_oracle", "truth")
+TRUTH = os.path.join(REPO, "compare", "d1_oracle", os.environ.get("TRUTH_DIR", "truth"))   # v2:relabel 产物走 truth_v2
 BIG6 = ["bloweybq", "pre2", "c-43", "Si10H16", "in-2004", "nd24k"]
 F100 = ["bcsstk32", "bcsstk23", "bcsstm23", "bcspwr08", "bcspwr05", "bcsstm01"]
 

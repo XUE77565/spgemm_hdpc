@@ -46,7 +46,19 @@ def prep(mats):
                  "dense": np.stack([W, fl, np.ones(n)], 1),
                  "k7": np.stack([sp, fl, np.ones(n)], 1),
                  "mrg3": np.stack([al * np.maximum(1.0, np.log2(np.maximum(al, 2))), fl, np.ones(n)], 1)}
-        ctx = [math.log(n), math.log(max(1.0, fl.sum())), math.log(max(1.0, es.mean()))]
+        # ctx v2 严谨口径:R 臂 DUMP_ROUTING 全行(truth 行子集=train/serve skew,D3② A/B 教训)
+        import struct as _st
+        _rp = os.path.join(REPO, "compare", "d1_oracle", f"{m}.R1.routing.bin")
+        if os.path.exists(_rp):
+            with open(_rp, "rb") as _f:
+                _rn, _ = _st.unpack("2i", _f.read(8))
+                _f.seek(8)
+                _es = _st.unpack(f"{_rn}i", _f.read(_rn * 4))
+                _f.seek(8 + 3 * _rn * 4)
+                _fl = _st.unpack(f"{_rn}i", _f.read(_rn * 4))
+            ctx = [math.log(_rn), math.log(max(1, sum(_fl))), math.log(max(1.0, sum(_es) / max(1, _rn)))]
+        else:
+            ctx = [math.log(n), math.log(max(1.0, fl.sum())), math.log(max(1.0, es.mean()))]
         # 拟合抽样(每武器独立掩码,一致率评估用全量)
         fitmask = {}
         for w, col in zip(WEAPONS, range(4)):
