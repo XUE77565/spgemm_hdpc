@@ -33,6 +33,27 @@
 
 **重启后三步定谳**:① `sudo dmesg | grep -i xid`(13/31=应用=我们 / 79/63=硬件驱动);② `compute-sanitizer --tool memcheck` 跑 storm 配置;③ 干净驱动复现当晚序列(F2×10→pre2 老路×3→c-43)。
 
+### 定谳结果(① 已闭合,22:49 重启后取证)
+
+取证:`sudo journalctl -b -1 -k | grep -iE 'xid|nvrm'`(journal 持久化,-1 = 08-29→09-15 22:37 出事 boot,共 5718 行 NVRM,存 /tmp/xid_prev_boot.log)。
+
+**三层事实:**
+
+1. **Sep 13-15 的脏窗真凶 = 他方 python 作业**:GPU0 上 ~130 个 python 进程连环空指针读 fault(fault @ 0x0,Sep 13 23:41 → Sep 15 16:00),Xid 31 ×5065 + Xid 109(CTX SWITCH TIMEOUT)×102。全部在 GPU0,与 GPU1 楔死无关——但解释了为何电池在 GPU1 跑。
+2. **GPU1 整个 boot 周期仅 7 条记录,全部在 09-15 晚 = 事故现场**:
+   - 20:40:54 Xid 31 spgemm_test(pid 681018)越界读 @0x729a_a6f98000
+   - 20:41:10 Xid 13 spgemm_test(pid 681180)Graphics Exception ChID 000d Class cbc0
+   - 20:41:40 Xid 31 spgemm_test(pid 681180)越界写 @0x73b8_dcdcd000
+   - 21:54:43-55 **Xid 119 ×3**:pid 681180 的 cuda-EvtHandlr 等 GPU1 GSP RPC(FREE)6s 超时 ×3,伴随 **GSP RISC-V task watchdog timeout 完整栈转储**(libos partition 4#0 task 3,sepc 0x14d08f4)→ **Xid 154:GPU Reset Required** → 楔死
+   - 22:01:06 GPU0 Xid 43(spgemm_test pid 708497)= "c-43 活性测试自旋 12min 后死"的内核侧记录(GPU0 自愈)
+3. **20:41→21:54 的 73 分钟**:pid 681180 报完异常未退出、卡在 GPU 调用上(= 电池"第 12 运行 None → 后续全灭"窗口);kill 触发清理路径发 FREE RPC,才暴露 GSP 已死。
+
+**定性(三问三答):**
+
+- **谁的锅** = 双重:我们的 kernel 越界异常(触发源)+ 驱动 GSP 固件 task 挂死(放大器,把可恢复的 app fault 变成 reset-required)。越界写与雷①(retry_prep 垃圾 rht→hash_global 越界写)路径吻合——**当晚跑的是含雷版本(雷①修复 22:31 才提交)**,静态排雷"无雷可解释"被推翻,"ncu 重编程压力"第三解读不再需要。
+- **硬件无罪**:无 Xid 79(掉卡)/63(ECC retirement)/48(DBE)。Sep 04 00:34 有同构前科(GPU1 Xid 13 ×468 + Xid 43 ×2,spgemm_test,未楔死)——同类 app fault 驱动通常能恢复,09-15 GSP task 卡死是低概率路径。
+- **③(复现序列)降级可选**;②(sanitizer memcheck)优先级升高——20:40 越界读与 Xid 13 仍无代码级定位,有明确靶子。
+
 ## 顺手尸检
 
 - int4 向量清表:+16% 回退(标量跨线程清表已最优),已回滚

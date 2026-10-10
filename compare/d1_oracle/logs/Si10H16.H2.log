@@ -1,0 +1,220 @@
+[dbg     0.001 ms] main entry, initializing CUDA context...
+[dbg   441.578 ms] CUDA context ready
+[dbg   441.666 ms] start read_matrix_market: data/ocean/square/Si10H16.mtx
+[dbg   599.101 ms] read done: 17077 x 17077, nnz=875923
+[mempool] OFF — legacy cudaMallocHost (USE_MEMPOOL unset/0)
+[dbg   599.137 ms] [hash] start (HASH_CAP=16384)
+[dbg   601.161 ms] [hash-prof] h2d                1.606 ms
+[dbg   601.173 ms] [hash] h2d
+[dbg   606.517 ms] [hash] HASH_BI: B16 交织 875923 项(+13.4MB)
+[dbg   606.688 ms] [hash-prof] count_flop         0.138 ms
+[dbg   606.691 ms] [hash] avg_product=6574.1 (total_flop=112265707)
+[dbg   606.851 ms] [hash-prof] mh_construct       0.026 ms
+[dbg   606.855 ms] [hash] est_expand=1.80(total_flop=112265707)
+[dbg   607.008 ms] [hash-prof] mh_merge           0.143 ms
+[dbg   607.165 ms] [hash-prof] est_scan           0.072 ms
+[dbg   607.390 ms] [hash] diter bin=0 行 / 17077
+[dbg   607.395 ms] [hash] k7 bin=0 行 / 17077
+[dbg   607.398 ms] [hash] bins: 4:35 5:7400 6:5793 7:1988 8:1861 
+[dbg   607.407 ms] [hash-prof] binning            0.150 ms
+[dbg   609.988 ms] [hash-prof] accumulate         1.642 ms
+[dbg   610.004 ms] [hash] dbg: overflow=1 ovf_cnt=2
+[dbg   610.007 ms] [hash] row-retry: 2 行 → flop 定表重跑
+[dbg   610.012 ms] [rtprof] 2 memset_overflow
+[dbg   610.112 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 17077)
+[dbg   610.148 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg   610.246 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=65536 槽
+[dbg   610.286 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg   610.327 ms] [hash] v40 SMEM 重试车: 2/2 行 ht=8192(SMEM=96KB);鲸鱼全局路 0 行
+[dbg   610.330 ms] [rtprof] 7 车发射+全局路完成
+[dbg   610.331 ms] [hash] docs/54 retry 免排序: 2 行(r_slots=5976)→csort
+[dbg   610.333 ms] [rtprof] 8 retry排序段完成
+[dbg   610.341 ms] [hash-prof] retry              0.326 ms
+[dbg   610.432 ms] [hash-prof] cnnz_scan          0.073 ms
+[dbg   610.438 ms] [hash] C_nnz=10860573 (est=19433781, 1.79x over-alloc)
+[dbg   610.616 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg   611.748 ms] [hash-prof] compact+sort       1.000 ms
+[dbg   616.843 ms] [hash] rowtime(17077 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/Si10H16.H2.tsv
+[dbg   674.188 ms] [hash-prof] d2h                4.613 ms
+[dbg   674.818 ms] [hash-prof] TOTAL(GPU)        9.790 ms
+[dbg   686.959 ms] [hash] start (HASH_CAP=16384)
+[dbg   688.776 ms] [hash-prof] h2d                1.627 ms
+[dbg   688.785 ms] [hash] h2d
+[dbg   688.883 ms] [hash] HASH_BI: B16 交织 875923 项(+13.4MB)
+[dbg   688.954 ms] [hash-prof] count_flop         0.046 ms
+[dbg   688.956 ms] [hash] avg_product=6574.1 (total_flop=112265707)
+[dbg   689.098 ms] [hash-prof] mh_construct       0.016 ms
+[dbg   689.103 ms] [hash] est_expand=1.80(total_flop=112265707)
+[dbg   689.225 ms] [hash-prof] mh_merge           0.115 ms
+[dbg   689.329 ms] [hash-prof] est_scan           0.028 ms
+[dbg   689.558 ms] [hash] diter bin=0 行 / 17077
+[dbg   689.562 ms] [hash] k7 bin=0 行 / 17077
+[dbg   689.564 ms] [hash] bins: 4:35 5:7400 6:5793 7:1988 8:1861 
+[dbg   689.574 ms] [hash-prof] binning            0.072 ms
+[dbg   691.071 ms] [hash-prof] accumulate         1.311 ms
+[dbg   691.085 ms] [hash] dbg: overflow=1 ovf_cnt=2
+[dbg   691.087 ms] [hash] row-retry: 2 行 → flop 定表重跑
+[dbg   691.091 ms] [rtprof] 2 memset_overflow
+[dbg   691.134 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 17077)
+[dbg   691.166 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg   691.253 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=65536 槽
+[dbg   691.280 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg   691.322 ms] [hash] v40 SMEM 重试车: 2/2 行 ht=8192(SMEM=96KB);鲸鱼全局路 0 行
+[dbg   691.325 ms] [rtprof] 7 车发射+全局路完成
+[dbg   691.326 ms] [hash] docs/54 retry 免排序: 2 行(r_slots=5976)→csort
+[dbg   691.328 ms] [rtprof] 8 retry排序段完成
+[dbg   691.336 ms] [hash-prof] retry              0.241 ms
+[dbg   691.389 ms] [hash-prof] cnnz_scan          0.037 ms
+[dbg   691.394 ms] [hash] C_nnz=10860573 (est=19433781, 1.79x over-alloc)
+[dbg   691.475 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg   692.117 ms] [hash-prof] compact+sort       0.563 ms
+[dbg   697.406 ms] [hash] rowtime(17077 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/Si10H16.H2.tsv
+[dbg   752.765 ms] [hash-prof] d2h                4.598 ms
+[dbg   753.270 ms] [hash-prof] TOTAL(GPU)        8.654 ms
+[dbg   765.296 ms] [hash] start (HASH_CAP=16384)
+[dbg   767.110 ms] [hash-prof] h2d                1.621 ms
+[dbg   767.119 ms] [hash] h2d
+[dbg   767.219 ms] [hash] HASH_BI: B16 交织 875923 项(+13.4MB)
+[dbg   767.288 ms] [hash-prof] count_flop         0.046 ms
+[dbg   767.290 ms] [hash] avg_product=6574.1 (total_flop=112265707)
+[dbg   767.461 ms] [hash-prof] mh_construct       0.016 ms
+[dbg   767.468 ms] [hash] est_expand=1.80(total_flop=112265707)
+[dbg   767.598 ms] [hash-prof] mh_merge           0.122 ms
+[dbg   767.704 ms] [hash-prof] est_scan           0.030 ms
+[dbg   767.914 ms] [hash] diter bin=0 行 / 17077
+[dbg   767.917 ms] [hash] k7 bin=0 行 / 17077
+[dbg   767.920 ms] [hash] bins: 4:35 5:7400 6:5793 7:1988 8:1861 
+[dbg   767.929 ms] [hash-prof] binning            0.070 ms
+[dbg   769.406 ms] [hash-prof] accumulate         1.295 ms
+[dbg   769.421 ms] [hash] dbg: overflow=1 ovf_cnt=2
+[dbg   769.423 ms] [hash] row-retry: 2 行 → flop 定表重跑
+[dbg   769.427 ms] [rtprof] 2 memset_overflow
+[dbg   769.470 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 17077)
+[dbg   769.503 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg   769.592 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=65536 槽
+[dbg   769.619 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg   769.660 ms] [hash] v40 SMEM 重试车: 2/2 行 ht=8192(SMEM=96KB);鲸鱼全局路 0 行
+[dbg   769.663 ms] [rtprof] 7 车发射+全局路完成
+[dbg   769.664 ms] [hash] docs/54 retry 免排序: 2 行(r_slots=5976)→csort
+[dbg   769.666 ms] [rtprof] 8 retry排序段完成
+[dbg   769.674 ms] [hash-prof] retry              0.243 ms
+[dbg   769.723 ms] [hash-prof] cnnz_scan          0.032 ms
+[dbg   769.725 ms] [hash] C_nnz=10860573 (est=19433781, 1.79x over-alloc)
+[dbg   769.799 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg   770.434 ms] [hash-prof] compact+sort       0.563 ms
+[dbg   775.537 ms] [hash] rowtime(17077 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/Si10H16.H2.tsv
+[dbg   830.321 ms] [hash-prof] d2h                4.604 ms
+[dbg   830.853 ms] [hash-prof] TOTAL(GPU)        8.643 ms
+[dbg   842.882 ms] [hash] start (HASH_CAP=16384)
+[dbg   844.718 ms] [hash-prof] h2d                1.640 ms
+[dbg   844.727 ms] [hash] h2d
+[dbg   844.831 ms] [hash] HASH_BI: B16 交织 875923 项(+13.4MB)
+[dbg   844.905 ms] [hash-prof] count_flop         0.050 ms
+[dbg   844.907 ms] [hash] avg_product=6574.1 (total_flop=112265707)
+[dbg   845.045 ms] [hash-prof] mh_construct       0.016 ms
+[dbg   845.050 ms] [hash] est_expand=1.80(total_flop=112265707)
+[dbg   845.175 ms] [hash-prof] mh_merge           0.118 ms
+[dbg   845.279 ms] [hash-prof] est_scan           0.028 ms
+[dbg   845.523 ms] [hash] diter bin=0 行 / 17077
+[dbg   845.527 ms] [hash] k7 bin=0 行 / 17077
+[dbg   845.529 ms] [hash] bins: 4:35 5:7400 6:5793 7:1988 8:1861 
+[dbg   845.539 ms] [hash-prof] binning            0.072 ms
+[dbg   847.008 ms] [hash-prof] accumulate         1.286 ms
+[dbg   847.022 ms] [hash] dbg: overflow=1 ovf_cnt=2
+[dbg   847.024 ms] [hash] row-retry: 2 行 → flop 定表重跑
+[dbg   847.028 ms] [rtprof] 2 memset_overflow
+[dbg   847.072 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 17077)
+[dbg   847.104 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg   847.237 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=65536 槽
+[dbg   847.264 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg   847.305 ms] [hash] v40 SMEM 重试车: 2/2 行 ht=8192(SMEM=96KB);鲸鱼全局路 0 行
+[dbg   847.308 ms] [rtprof] 7 车发射+全局路完成
+[dbg   847.309 ms] [hash] docs/54 retry 免排序: 2 行(r_slots=5976)→csort
+[dbg   847.311 ms] [rtprof] 8 retry排序段完成
+[dbg   847.318 ms] [hash-prof] retry              0.287 ms
+[dbg   847.377 ms] [hash-prof] cnnz_scan          0.032 ms
+[dbg   847.381 ms] [hash] C_nnz=10860573 (est=19433781, 1.79x over-alloc)
+[dbg   847.457 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg   848.099 ms] [hash-prof] compact+sort       0.565 ms
+[dbg   853.264 ms] [hash] rowtime(17077 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/Si10H16.H2.tsv
+[dbg   908.675 ms] [hash-prof] d2h                4.591 ms
+[dbg   909.198 ms] [hash-prof] TOTAL(GPU)        8.685 ms
+[dbg   921.344 ms] [hash] start (HASH_CAP=16384)
+[dbg   923.171 ms] [hash-prof] h2d                1.615 ms
+[dbg   923.181 ms] [hash] h2d
+[dbg   923.284 ms] [hash] HASH_BI: B16 交织 875923 项(+13.4MB)
+[dbg   923.352 ms] [hash-prof] count_flop         0.046 ms
+[dbg   923.355 ms] [hash] avg_product=6574.1 (total_flop=112265707)
+[dbg   923.496 ms] [hash-prof] mh_construct       0.015 ms
+[dbg   923.503 ms] [hash] est_expand=1.80(total_flop=112265707)
+[dbg   923.628 ms] [hash-prof] mh_merge           0.117 ms
+[dbg   923.731 ms] [hash-prof] est_scan           0.028 ms
+[dbg   923.947 ms] [hash] diter bin=0 行 / 17077
+[dbg   923.950 ms] [hash] k7 bin=0 行 / 17077
+[dbg   923.952 ms] [hash] bins: 4:35 5:7400 6:5793 7:1988 8:1861 
+[dbg   923.961 ms] [hash-prof] binning            0.070 ms
+[dbg   925.449 ms] [hash-prof] accumulate         1.302 ms
+[dbg   925.464 ms] [hash] dbg: overflow=1 ovf_cnt=2
+[dbg   925.466 ms] [hash] row-retry: 2 行 → flop 定表重跑
+[dbg   925.470 ms] [rtprof] 2 memset_overflow
+[dbg   925.515 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 17077)
+[dbg   925.549 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg   925.636 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=65536 槽
+[dbg   925.663 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg   925.706 ms] [hash] v40 SMEM 重试车: 2/2 行 ht=8192(SMEM=96KB);鲸鱼全局路 0 行
+[dbg   925.708 ms] [rtprof] 7 车发射+全局路完成
+[dbg   925.710 ms] [hash] docs/54 retry 免排序: 2 行(r_slots=5976)→csort
+[dbg   925.712 ms] [rtprof] 8 retry排序段完成
+[dbg   925.719 ms] [hash-prof] retry              0.246 ms
+[dbg   925.768 ms] [hash-prof] cnnz_scan          0.031 ms
+[dbg   925.770 ms] [hash] C_nnz=10860573 (est=19433781, 1.79x over-alloc)
+[dbg   925.847 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg   926.486 ms] [hash-prof] compact+sort       0.567 ms
+[dbg   931.518 ms] [hash] rowtime(17077 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/Si10H16.H2.tsv
+[dbg   985.858 ms] [hash-prof] d2h                4.614 ms
+[dbg   986.419 ms] [hash-prof] TOTAL(GPU)        8.651 ms
+[dbg   998.580 ms] warmup done
+[dbg   998.594 ms] T4e hash self_product: start
+[dbg   998.596 ms] [hash] start (HASH_CAP=16384)
+[dbg  1000.393 ms] [hash-prof] h2d                1.609 ms
+[dbg  1000.402 ms] [hash] h2d
+[dbg  1000.505 ms] [hash] HASH_BI: B16 交织 875923 项(+13.4MB)
+[dbg  1000.574 ms] [hash-prof] count_flop         0.046 ms
+[dbg  1000.577 ms] [hash] avg_product=6574.1 (total_flop=112265707)
+[dbg  1000.710 ms] [hash-prof] mh_construct       0.015 ms
+[dbg  1000.715 ms] [hash] est_expand=1.80(total_flop=112265707)
+[dbg  1000.844 ms] [hash-prof] mh_merge           0.122 ms
+[dbg  1000.947 ms] [hash-prof] est_scan           0.029 ms
+[dbg  1001.158 ms] [hash] diter bin=0 行 / 17077
+[dbg  1001.162 ms] [hash] k7 bin=0 行 / 17077
+[dbg  1001.164 ms] [hash] bins: 4:35 5:7400 6:5793 7:1988 8:1861 
+[dbg  1001.173 ms] [hash-prof] binning            0.069 ms
+[dbg  1002.672 ms] [hash-prof] accumulate         1.319 ms
+[dbg  1002.686 ms] [hash] dbg: overflow=1 ovf_cnt=2
+[dbg  1002.688 ms] [hash] row-retry: 2 行 → flop 定表重跑
+[dbg  1002.693 ms] [rtprof] 2 memset_overflow
+[dbg  1002.736 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 17077)
+[dbg  1002.769 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  1002.857 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=65536 槽
+[dbg  1002.883 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  1002.924 ms] [hash] v40 SMEM 重试车: 2/2 行 ht=8192(SMEM=96KB);鲸鱼全局路 0 行
+[dbg  1002.926 ms] [rtprof] 7 车发射+全局路完成
+[dbg  1002.932 ms] [hash] docs/54 retry 免排序: 2 行(r_slots=5976)→csort
+[dbg  1002.934 ms] [rtprof] 8 retry排序段完成
+[dbg  1002.942 ms] [hash-prof] retry              0.245 ms
+[dbg  1002.991 ms] [hash-prof] cnnz_scan          0.032 ms
+[dbg  1002.993 ms] [hash] C_nnz=10860573 (est=19433781, 1.79x over-alloc)
+[dbg  1003.068 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  1003.706 ms] [hash-prof] compact+sort       0.567 ms
+[dbg  1008.829 ms] [hash] rowtime(17077 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/Si10H16.H2.tsv
+[dbg  1071.194 ms] [hash-prof] d2h                4.620 ms
+[dbg  1071.722 ms] [hash-prof] TOTAL(GPU)        8.674 ms
+[dbg  1071.728 ms] T4e hash self_product: done (C_nnz=10860573)
+Reading matrix from data/ocean/square/Si10H16.mtx...
+Input A: 17077 x 17077, nnz = 875923, sparsity = 99.70%
+===============WARMINGUP (5 rounds)===============
+=== Computing C = A x A (Hash SPA) ===
+Result C: 17077 x 17077, nnz = 10860573, sparsity = 96.28%
+Time: 73.136 ms
+
+=== All tests completed ===

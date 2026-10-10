@@ -1,0 +1,196 @@
+[dbg     0.001 ms] main entry, initializing CUDA context...
+[dbg   483.685 ms] CUDA context ready
+[dbg   483.811 ms] start read_matrix_market: data/ocean/square/opt1.mtx
+[dbg   653.549 ms] read done: 15449 x 15449, nnz=1930655
+[mempool] OFF — legacy cudaMallocHost (USE_MEMPOOL unset/0)
+[dbg   653.611 ms] [hash] start (HASH_CAP=16384)
+[dbg   659.797 ms] [hash-prof] h2d                5.524 ms
+[dbg   659.818 ms] [hash] h2d
+[dbg   666.484 ms] [hash] HASH_BI: B16 交织 1930655 项(+29.5MB)
+[dbg   666.732 ms] [hash-prof] count_flop         0.198 ms
+[dbg   666.740 ms] [hash] avg_product=17423.2 (total_flop=269171047)
+[dbg   666.954 ms] [hash-prof] mh_construct       0.036 ms
+[dbg   666.959 ms] [hash] est_expand=1.80(total_flop=269171047)
+[dbg   667.175 ms] [hash-prof] mh_merge           0.205 ms
+[dbg   667.387 ms] [hash-prof] est_scan           0.093 ms
+[dbg   667.693 ms] [hash] diter bin=7352 行 / 15449
+[dbg   667.698 ms] [hash] k7 bin=0 行 / 15449
+[dbg   667.701 ms] [hash] bins: 4:198 5:3379 6:4502 7:18 13:7352 
+[dbg   667.712 ms] [hash-prof] binning            0.196 ms
+[dbg   668.803 ms] [hash] dstr_split 调用#1(dense_nr=7352)
+[dbg   669.638 ms] [hash] §28 矩阵级判据:档内中位密度 0.36 → 老内核
+[dbg   669.682 ms] [hash] §22d 分流:档内 0 行(每档 0/0/0/0/0/0,hmax=5491)+ 超档 7352 行
+[dbg   670.446 ms] [hash-prof] dense_count        1.717 ms
+[dbg   670.449 ms] [hash] 方案5:count pass 7352 dense 行(Σest=8608592 Σnnz=4939025)→ cnnz_scan 后直写终态
+[dbg   671.781 ms] [hash-prof] accumulate         1.096 ms
+[dbg   671.806 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg   671.907 ms] [hash-prof] cnnz_scan          0.079 ms
+[dbg   671.910 ms] [hash] C_nnz=8224575 (est=14606366, 1.78x over-alloc)
+[dbg   672.108 ms] [hash] compact in_place=0 (min_margin=-2235792)
+[dbg   678.497 ms] [hash] DSN_RT 落盘
+[dbg   678.521 ms] [hash-prof] dense_direct       6.283 ms
+[dbg   679.521 ms] [hash] dd_rowtime → /home/xueyizhou/spgemm-challenge/compare/d1_oracle/opt1.D2.dd.tsv
+[dbg   679.744 ms] [hash-prof] compact+sort       0.211 ms
+[dbg   738.125 ms] [hash-prof] d2h                4.625 ms
+[dbg   738.706 ms] [hash-prof] TOTAL(GPU)       20.265 ms
+[dbg   748.244 ms] [hash] start (HASH_CAP=16384)
+[dbg   751.819 ms] [hash-prof] h2d                3.439 ms
+[dbg   751.829 ms] [hash] h2d
+[dbg   751.927 ms] [hash] HASH_BI: B16 交织 1930655 项(+29.5MB)
+[dbg   752.002 ms] [hash-prof] count_flop         0.050 ms
+[dbg   752.005 ms] [hash] avg_product=17423.2 (total_flop=269171047)
+[dbg   752.152 ms] [hash-prof] mh_construct       0.019 ms
+[dbg   752.156 ms] [hash] est_expand=1.80(total_flop=269171047)
+[dbg   752.330 ms] [hash-prof] mh_merge           0.167 ms
+[dbg   752.431 ms] [hash-prof] est_scan           0.027 ms
+[dbg   752.588 ms] [hash] diter bin=7352 行 / 15449
+[dbg   752.592 ms] [hash] k7 bin=0 行 / 15449
+[dbg   752.595 ms] [hash] bins: 4:198 5:3379 6:4502 7:18 13:7352 
+[dbg   752.604 ms] [hash-prof] binning            0.088 ms
+[dbg   752.654 ms] [hash] dstr_split 调用#2(dense_nr=7352)
+[dbg   753.366 ms] [hash] §28 矩阵级判据:档内中位密度 0.36 → 老内核
+[dbg   753.394 ms] [hash] §22d 分流:档内 0 行(每档 0/0/0/0/0/0,hmax=5491)+ 超档 7352 行
+[dbg   754.099 ms] [hash-prof] dense_count        1.481 ms
+[dbg   754.104 ms] [hash] 方案5:count pass 7352 dense 行(Σest=8608592 Σnnz=4939025)→ cnnz_scan 后直写终态
+[dbg   755.029 ms] [hash-prof] accumulate         0.728 ms
+[dbg   755.044 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg   755.097 ms] [hash-prof] cnnz_scan          0.034 ms
+[dbg   755.099 ms] [hash] C_nnz=8224575 (est=14606366, 1.78x over-alloc)
+[dbg   755.176 ms] [hash] compact in_place=0 (min_margin=-2235792)
+[dbg   756.685 ms] [hash] DSN_RT 落盘
+[dbg   756.699 ms] [hash-prof] dense_direct       1.445 ms
+[dbg   757.650 ms] [hash] dd_rowtime → /home/xueyizhou/spgemm-challenge/compare/d1_oracle/opt1.D2.dd.tsv
+[dbg   757.801 ms] [hash-prof] compact+sort       0.140 ms
+[dbg   802.502 ms] [hash-prof] d2h                3.719 ms
+[dbg   803.036 ms] [hash-prof] TOTAL(GPU)       11.337 ms
+[dbg   812.370 ms] [hash] start (HASH_CAP=16384)
+[dbg   816.044 ms] [hash-prof] h2d                3.460 ms
+[dbg   816.056 ms] [hash] h2d
+[dbg   824.956 ms] [hash] HASH_BI: B16 交织 1930655 项(+29.5MB)
+[dbg   825.054 ms] [hash-prof] count_flop         0.060 ms
+[dbg   825.058 ms] [hash] avg_product=17423.2 (total_flop=269171047)
+[dbg   829.772 ms] [hash-prof] mh_construct       0.024 ms
+[dbg   829.786 ms] [hash] est_expand=1.80(total_flop=269171047)
+[dbg   829.965 ms] [hash-prof] mh_merge           0.170 ms
+[dbg   851.429 ms] [hash-prof] est_scan           0.123 ms
+[dbg   851.881 ms] [hash] diter bin=7352 行 / 15449
+[dbg   851.894 ms] [hash] k7 bin=0 行 / 15449
+[dbg   851.901 ms] [hash] bins: 4:198 5:3379 6:4502 7:18 13:7352 
+[dbg   851.916 ms] [hash-prof] binning            0.135 ms
+[dbg   851.997 ms] [hash] dstr_split 调用#3(dense_nr=7352)
+[dbg   853.966 ms] [hash] §28 矩阵级判据:档内中位密度 0.36 → 老内核
+[dbg   854.033 ms] [hash] §22d 分流:档内 0 行(每档 0/0/0/0/0/0,hmax=5491)+ 超档 7352 行
+[dbg   854.779 ms] [hash-prof] dense_count        2.839 ms
+[dbg   854.791 ms] [hash] 方案5:count pass 7352 dense 行(Σest=8608592 Σnnz=4939025)→ cnnz_scan 后直写终态
+[dbg  1008.243 ms] [hash-prof] accumulate         0.798 ms
+[dbg  1008.300 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  1008.458 ms] [hash-prof] cnnz_scan          0.098 ms
+[dbg  1008.470 ms] [hash] C_nnz=8224575 (est=14606366, 1.78x over-alloc)
+[dbg  1008.710 ms] [hash] compact in_place=0 (min_margin=-2235792)
+[dbg  1011.736 ms] [hash] DSN_RT 落盘
+[dbg  1011.774 ms] [hash-prof] dense_direct       1.929 ms
+[dbg  1016.443 ms] [hash] dd_rowtime → /home/xueyizhou/spgemm-challenge/compare/d1_oracle/opt1.D2.dd.tsv
+[dbg  1016.638 ms] [hash-prof] compact+sort       0.164 ms
+[dbg  1080.617 ms] [hash-prof] d2h                4.429 ms
+[dbg  1081.149 ms] [hash-prof] TOTAL(GPU)       14.228 ms
+[dbg  1091.024 ms] [hash] start (HASH_CAP=16384)
+[dbg  1094.568 ms] [hash-prof] h2d                3.407 ms
+[dbg  1094.577 ms] [hash] h2d
+[dbg  1094.674 ms] [hash] HASH_BI: B16 交织 1930655 项(+29.5MB)
+[dbg  1094.751 ms] [hash-prof] count_flop         0.051 ms
+[dbg  1094.754 ms] [hash] avg_product=17423.2 (total_flop=269171047)
+[dbg  1094.971 ms] [hash-prof] mh_construct       0.018 ms
+[dbg  1094.974 ms] [hash] est_expand=1.80(total_flop=269171047)
+[dbg  1095.152 ms] [hash-prof] mh_merge           0.170 ms
+[dbg  1095.252 ms] [hash-prof] est_scan           0.026 ms
+[dbg  1095.385 ms] [hash] diter bin=7352 行 / 15449
+[dbg  1095.388 ms] [hash] k7 bin=0 行 / 15449
+[dbg  1095.390 ms] [hash] bins: 4:198 5:3379 6:4502 7:18 13:7352 
+[dbg  1095.399 ms] [hash-prof] binning            0.061 ms
+[dbg  1095.449 ms] [hash] dstr_split 调用#4(dense_nr=7352)
+[dbg  1096.181 ms] [hash] §28 矩阵级判据:档内中位密度 0.36 → 老内核
+[dbg  1096.213 ms] [hash] §22d 分流:档内 0 行(每档 0/0/0/0/0/0,hmax=5491)+ 超档 7352 行
+[dbg  1096.918 ms] [hash-prof] dense_count        1.505 ms
+[dbg  1096.922 ms] [hash] 方案5:count pass 7352 dense 行(Σest=8608592 Σnnz=4939025)→ cnnz_scan 后直写终态
+[dbg  1097.927 ms] [hash-prof] accumulate         0.729 ms
+[dbg  1097.942 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  1097.993 ms] [hash-prof] cnnz_scan          0.033 ms
+[dbg  1097.996 ms] [hash] C_nnz=8224575 (est=14606366, 1.78x over-alloc)
+[dbg  1098.074 ms] [hash] compact in_place=0 (min_margin=-2235792)
+[dbg  1099.580 ms] [hash] DSN_RT 落盘
+[dbg  1099.594 ms] [hash-prof] dense_direct       1.446 ms
+[dbg  1100.518 ms] [hash] dd_rowtime → /home/xueyizhou/spgemm-challenge/compare/d1_oracle/opt1.D2.dd.tsv
+[dbg  1100.666 ms] [hash-prof] compact+sort       0.138 ms
+[dbg  1142.039 ms] [hash-prof] d2h                3.686 ms
+[dbg  1142.554 ms] [hash-prof] TOTAL(GPU)       11.271 ms
+[dbg  1151.588 ms] [hash] start (HASH_CAP=16384)
+[dbg  1155.113 ms] [hash-prof] h2d                3.393 ms
+[dbg  1155.123 ms] [hash] h2d
+[dbg  1155.343 ms] [hash] HASH_BI: B16 交织 1930655 项(+29.5MB)
+[dbg  1155.420 ms] [hash-prof] count_flop         0.051 ms
+[dbg  1155.428 ms] [hash] avg_product=17423.2 (total_flop=269171047)
+[dbg  1155.678 ms] [hash-prof] mh_construct       0.020 ms
+[dbg  1155.685 ms] [hash] est_expand=1.80(total_flop=269171047)
+[dbg  1155.862 ms] [hash-prof] mh_merge           0.170 ms
+[dbg  1155.967 ms] [hash-prof] est_scan           0.028 ms
+[dbg  1156.099 ms] [hash] diter bin=7352 行 / 15449
+[dbg  1156.102 ms] [hash] k7 bin=0 行 / 15449
+[dbg  1156.105 ms] [hash] bins: 4:198 5:3379 6:4502 7:18 13:7352 
+[dbg  1156.114 ms] [hash-prof] binning            0.064 ms
+[dbg  1156.163 ms] [hash] dstr_split 调用#5(dense_nr=7352)
+[dbg  1156.863 ms] [hash] §28 矩阵级判据:档内中位密度 0.36 → 老内核
+[dbg  1156.894 ms] [hash] §22d 分流:档内 0 行(每档 0/0/0/0/0/0,hmax=5491)+ 超档 7352 行
+[dbg  1157.593 ms] [hash-prof] dense_count        1.466 ms
+[dbg  1157.597 ms] [hash] 方案5:count pass 7352 dense 行(Σest=8608592 Σnnz=4939025)→ cnnz_scan 后直写终态
+[dbg  1158.468 ms] [hash-prof] accumulate         0.730 ms
+[dbg  1158.480 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  1158.530 ms] [hash-prof] cnnz_scan          0.032 ms
+[dbg  1158.533 ms] [hash] C_nnz=8224575 (est=14606366, 1.78x over-alloc)
+[dbg  1158.618 ms] [hash] compact in_place=0 (min_margin=-2235792)
+[dbg  1160.118 ms] [hash] DSN_RT 落盘
+[dbg  1160.131 ms] [hash-prof] dense_direct       1.439 ms
+[dbg  1161.067 ms] [hash] dd_rowtime → /home/xueyizhou/spgemm-challenge/compare/d1_oracle/opt1.D2.dd.tsv
+[dbg  1161.218 ms] [hash-prof] compact+sort       0.141 ms
+[dbg  1214.709 ms] [hash-prof] d2h                3.753 ms
+[dbg  1215.280 ms] [hash-prof] TOTAL(GPU)       11.287 ms
+[dbg  1224.708 ms] warmup done
+[dbg  1224.725 ms] T4e hash self_product: start
+[dbg  1224.727 ms] [hash] start (HASH_CAP=16384)
+[dbg  1233.424 ms] [hash-prof] h2d                8.562 ms
+[dbg  1233.434 ms] [hash] h2d
+[dbg  1233.590 ms] [hash] HASH_BI: B16 交织 1930655 项(+29.5MB)
+[dbg  1233.673 ms] [hash-prof] count_flop         0.057 ms
+[dbg  1233.676 ms] [hash] avg_product=17423.2 (total_flop=269171047)
+[dbg  1233.839 ms] [hash-prof] mh_construct       0.021 ms
+[dbg  1233.843 ms] [hash] est_expand=1.80(total_flop=269171047)
+[dbg  1234.021 ms] [hash-prof] mh_merge           0.169 ms
+[dbg  1234.129 ms] [hash-prof] est_scan           0.032 ms
+[dbg  1234.279 ms] [hash] diter bin=7352 行 / 15449
+[dbg  1234.282 ms] [hash] k7 bin=0 行 / 15449
+[dbg  1234.284 ms] [hash] bins: 4:198 5:3379 6:4502 7:18 13:7352 
+[dbg  1234.293 ms] [hash-prof] binning            0.073 ms
+[dbg  1234.360 ms] [hash] dstr_split 调用#6(dense_nr=7352)
+[dbg  1235.161 ms] [hash] §28 矩阵级判据:档内中位密度 0.36 → 老内核
+[dbg  1235.191 ms] [hash] §22d 分流:档内 0 行(每档 0/0/0/0/0/0,hmax=5491)+ 超档 7352 行
+[dbg  1235.892 ms] [hash-prof] dense_count        1.573 ms
+[dbg  1235.896 ms] [hash] 方案5:count pass 7352 dense 行(Σest=8608592 Σnnz=4939025)→ cnnz_scan 后直写终态
+[dbg  1236.838 ms] [hash-prof] accumulate         0.737 ms
+[dbg  1236.854 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  1236.907 ms] [hash-prof] cnnz_scan          0.034 ms
+[dbg  1236.909 ms] [hash] C_nnz=8224575 (est=14606366, 1.78x over-alloc)
+[dbg  1237.127 ms] [hash] compact in_place=0 (min_margin=-2235792)
+[dbg  1238.696 ms] [hash] DSN_RT 落盘
+[dbg  1238.711 ms] [hash-prof] dense_direct       1.517 ms
+[dbg  1239.656 ms] [hash] dd_rowtime → /home/xueyizhou/spgemm-challenge/compare/d1_oracle/opt1.D2.dd.tsv
+[dbg  1239.812 ms] [hash-prof] compact+sort       0.145 ms
+[dbg  1283.184 ms] [hash-prof] d2h                3.846 ms
+[dbg  1283.759 ms] [hash-prof] TOTAL(GPU)       16.767 ms
+[dbg  1283.765 ms] T4e hash self_product: done (C_nnz=8224575)
+Reading matrix from data/ocean/square/opt1.mtx...
+Input A: 15449 x 15449, nnz = 1930655, sparsity = 99.19%
+===============WARMINGUP (5 rounds)===============
+=== Computing C = A x A (Hash SPA) ===
+Result C: 15449 x 15449, nnz = 8224575, sparsity = 96.55%
+Time: 59.043 ms
+
+=== All tests completed ===

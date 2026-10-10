@@ -53,7 +53,7 @@ ESC门 → LARGEST门 → 小跨度门 → v4主门(flop/est/spanf/occgate/dup �
 | 能力 | Ocean | 我们 | 谁强 |
 |---|---|---|---|
 | dense 位图 symbolic+numeric | ✓(招牌) | ✓ 已学来(六档梯) | ≈ |
-| hash SMEM 梯 | ✓ | ✓(20 档,更细) | ≈ |
+| hash SMEM 梯 | ✓ | ✓(10 档 32→16384,小端更细) | ≈ |
 | 全幅/怪物行 | largest 全局 hashmap | **老窗口 cursor 内核**(c-64 类实测赢家) | 我们 |
 | 排序 | 位图天然有序 | compact+sort(中行族税) | Ocean |
 | 小阵归并 | ✗ | **merge3 自适应分桶**(first100 0.74×) | 我们 |

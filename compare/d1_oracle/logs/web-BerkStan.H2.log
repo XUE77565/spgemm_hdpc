@@ -1,0 +1,214 @@
+[dbg     0.001 ms] main entry, initializing CUDA context...
+[dbg   493.902 ms] CUDA context ready
+[dbg   494.036 ms] start read_matrix_market: data/ocean/square/web-BerkStan.mtx
+[dbg  1961.162 ms] read done: 685230 x 685230, nnz=7600595
+[mempool] OFF — legacy cudaMallocHost (USE_MEMPOOL unset/0)
+[dbg  1961.242 ms] [hash] start (HASH_CAP=16384)
+[dbg  1989.829 ms] [hash-prof] h2d               27.777 ms
+[dbg  1989.854 ms] [hash] h2d
+[dbg  1998.021 ms] [hash] HASH_BI: B16 交织 7600595 项(+116.0MB)
+[dbg  1998.807 ms] [hash-prof] count_flop         0.408 ms
+[dbg  1998.825 ms] [hash] avg_product=324.7 (total_flop=222498869)
+[dbg  1999.162 ms] [hash-prof] mh_construct       0.247 ms
+[dbg  1999.172 ms] [hash] est_expand=1.80(total_flop=222498869)
+[dbg  2000.248 ms] [hash-prof] mh_merge           1.063 ms
+[dbg  2000.689 ms] [hash-prof] est_scan           0.251 ms
+[dbg  2001.623 ms] [hash] diter bin=0 行 / 685230
+[dbg  2001.640 ms] [hash] k7 bin=0 行 / 685230
+[dbg  2001.644 ms] [hash] bins: 0:64406 1:78 2:51435 3:145717 4:148986 5:58730 6:9925 7:2913 8:2707 19:15112 21:84964 22:51933 23:48324 
+[dbg  2001.657 ms] [hash-prof] binning            0.305 ms
+[dbg  2011.177 ms] [hash-prof] accumulate         8.002 ms
+[dbg  2011.211 ms] [hash] dbg: overflow=1 ovf_cnt=42
+[dbg  2011.214 ms] [hash] row-retry: 42 行 → flop 定表重跑
+[dbg  2011.223 ms] [rtprof] 2 memset_overflow
+[dbg  2011.515 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 685230)
+[dbg  2011.663 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  2011.836 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=1376256 槽
+[dbg  2011.894 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  2011.935 ms] [rtprof] 7 车发射+全局路完成
+[dbg  2011.938 ms] [hash] docs/54 retry 免排序: 42 行(r_slots=114)→csort
+[dbg  2011.941 ms] [rtprof] 8 retry排序段完成
+[dbg  2011.981 ms] [hash-prof] retry              0.754 ms
+[dbg  2012.191 ms] [hash-prof] cnnz_scan          0.094 ms
+[dbg  2012.201 ms] [hash] C_nnz=78350597 (est=113832433, 1.45x over-alloc)
+[dbg  2012.775 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  2016.021 ms] [hash-prof] compact+sort       3.041 ms
+[dbg  2221.736 ms] [hash] rowtime(685230 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/web-BerkStan.H2.tsv
+[dbg  2625.000 ms] [hash-prof] d2h               40.051 ms
+[dbg  2626.896 ms] [hash-prof] TOTAL(GPU)       81.994 ms
+[dbg  2754.350 ms] [hash] start (HASH_CAP=16384)
+[dbg  2788.898 ms] [hash-prof] h2d               33.626 ms
+[dbg  2788.927 ms] [hash] h2d
+[dbg  2789.131 ms] [hash] HASH_BI: B16 交织 7600595 项(+116.0MB)
+[dbg  2789.846 ms] [hash-prof] count_flop         0.368 ms
+[dbg  2789.861 ms] [hash] avg_product=324.7 (total_flop=222498869)
+[dbg  2790.199 ms] [hash-prof] mh_construct       0.229 ms
+[dbg  2790.211 ms] [hash] est_expand=1.80(total_flop=222498869)
+[dbg  2791.238 ms] [hash-prof] mh_merge           1.015 ms
+[dbg  2791.708 ms] [hash-prof] est_scan           0.186 ms
+[dbg  2797.516 ms] [hash] diter bin=0 行 / 685230
+[dbg  2797.530 ms] [hash] k7 bin=0 行 / 685230
+[dbg  2797.536 ms] [hash] bins: 0:64406 1:78 2:51435 3:145717 4:148986 5:58730 6:9925 7:2913 8:2707 19:15112 21:84964 22:51933 23:48324 
+[dbg  2797.549 ms] [hash-prof] binning            0.159 ms
+[dbg  2805.661 ms] [hash-prof] accumulate         7.644 ms
+[dbg  2805.681 ms] [hash] dbg: overflow=1 ovf_cnt=42
+[dbg  2805.684 ms] [hash] row-retry: 42 行 → flop 定表重跑
+[dbg  2805.690 ms] [rtprof] 2 memset_overflow
+[dbg  2805.816 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 685230)
+[dbg  2805.926 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  2806.066 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=1376256 槽
+[dbg  2806.102 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  2806.125 ms] [rtprof] 7 车发射+全局路完成
+[dbg  2806.127 ms] [hash] docs/54 retry 免排序: 42 行(r_slots=114)→csort
+[dbg  2806.130 ms] [rtprof] 8 retry排序段完成
+[dbg  2806.169 ms] [hash-prof] retry              0.475 ms
+[dbg  2806.288 ms] [hash-prof] cnnz_scan          0.041 ms
+[dbg  2806.295 ms] [hash] C_nnz=78350597 (est=113832433, 1.45x over-alloc)
+[dbg  2806.642 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  2809.383 ms] [hash-prof] compact+sort       2.594 ms
+[dbg  3064.988 ms] [hash] rowtime(685230 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/web-BerkStan.H2.tsv
+[dbg  3641.279 ms] [hash-prof] d2h               41.549 ms
+[dbg  3643.211 ms] [hash-prof] TOTAL(GPU)       87.888 ms
+[dbg  3776.876 ms] [hash] start (HASH_CAP=16384)
+[dbg  3803.184 ms] [hash-prof] h2d               25.447 ms
+[dbg  3803.209 ms] [hash] h2d
+[dbg  3803.403 ms] [hash] HASH_BI: B16 交织 7600595 项(+116.0MB)
+[dbg  3804.135 ms] [hash-prof] count_flop         0.373 ms
+[dbg  3804.150 ms] [hash] avg_product=324.7 (total_flop=222498869)
+[dbg  3804.492 ms] [hash-prof] mh_construct       0.229 ms
+[dbg  3804.505 ms] [hash] est_expand=1.80(total_flop=222498869)
+[dbg  3805.531 ms] [hash-prof] mh_merge           1.013 ms
+[dbg  3805.936 ms] [hash-prof] est_scan           0.171 ms
+[dbg  3810.866 ms] [hash] diter bin=0 行 / 685230
+[dbg  3810.882 ms] [hash] k7 bin=0 行 / 685230
+[dbg  3810.888 ms] [hash] bins: 0:64406 1:78 2:51435 3:145717 4:148986 5:58730 6:9925 7:2913 8:2707 19:15112 21:84964 22:51933 23:48324 
+[dbg  3810.901 ms] [hash-prof] binning            0.150 ms
+[dbg  3818.879 ms] [hash-prof] accumulate         7.662 ms
+[dbg  3818.901 ms] [hash] dbg: overflow=1 ovf_cnt=42
+[dbg  3818.905 ms] [hash] row-retry: 42 行 → flop 定表重跑
+[dbg  3818.910 ms] [rtprof] 2 memset_overflow
+[dbg  3819.039 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 685230)
+[dbg  3819.145 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  3819.286 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=1376256 槽
+[dbg  3819.319 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  3819.335 ms] [rtprof] 7 车发射+全局路完成
+[dbg  3819.337 ms] [hash] docs/54 retry 免排序: 42 行(r_slots=114)→csort
+[dbg  3819.340 ms] [rtprof] 8 retry排序段完成
+[dbg  3819.379 ms] [hash-prof] retry              0.465 ms
+[dbg  3819.505 ms] [hash-prof] cnnz_scan          0.046 ms
+[dbg  3819.513 ms] [hash] C_nnz=78350597 (est=113832433, 1.45x over-alloc)
+[dbg  3819.843 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  3822.580 ms] [hash-prof] compact+sort       2.596 ms
+[dbg  4056.632 ms] [hash] rowtime(685230 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/web-BerkStan.H2.tsv
+[dbg  4486.174 ms] [hash-prof] d2h               40.079 ms
+[dbg  4488.153 ms] [hash-prof] TOTAL(GPU)       78.230 ms
+[dbg  4624.756 ms] [hash] start (HASH_CAP=16384)
+[dbg  4645.904 ms] [hash-prof] h2d               19.073 ms
+[dbg  4645.927 ms] [hash] h2d
+[dbg  4646.105 ms] [hash] HASH_BI: B16 交织 7600595 项(+116.0MB)
+[dbg  4646.752 ms] [hash-prof] count_flop         0.355 ms
+[dbg  4646.765 ms] [hash] avg_product=324.7 (total_flop=222498869)
+[dbg  4647.088 ms] [hash-prof] mh_construct       0.227 ms
+[dbg  4647.098 ms] [hash] est_expand=1.80(total_flop=222498869)
+[dbg  4648.123 ms] [hash-prof] mh_merge           1.014 ms
+[dbg  4648.511 ms] [hash-prof] est_scan           0.171 ms
+[dbg  4653.055 ms] [hash] diter bin=0 行 / 685230
+[dbg  4653.070 ms] [hash] k7 bin=0 行 / 685230
+[dbg  4653.076 ms] [hash] bins: 0:64406 1:78 2:51435 3:145717 4:148986 5:58730 6:9925 7:2913 8:2707 19:15112 21:84964 22:51933 23:48324 
+[dbg  4653.089 ms] [hash-prof] binning            0.151 ms
+[dbg  4661.051 ms] [hash-prof] accumulate         7.655 ms
+[dbg  4661.071 ms] [hash] dbg: overflow=1 ovf_cnt=42
+[dbg  4661.074 ms] [hash] row-retry: 42 行 → flop 定表重跑
+[dbg  4661.080 ms] [rtprof] 2 memset_overflow
+[dbg  4661.210 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 685230)
+[dbg  4661.325 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  4661.479 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=1376256 槽
+[dbg  4661.513 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  4661.526 ms] [rtprof] 7 车发射+全局路完成
+[dbg  4661.529 ms] [hash] docs/54 retry 免排序: 42 行(r_slots=114)→csort
+[dbg  4661.531 ms] [rtprof] 8 retry排序段完成
+[dbg  4661.571 ms] [hash-prof] retry              0.488 ms
+[dbg  4661.696 ms] [hash-prof] cnnz_scan          0.044 ms
+[dbg  4661.715 ms] [hash] C_nnz=78350597 (est=113832433, 1.45x over-alloc)
+[dbg  4662.045 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  4664.786 ms] [hash-prof] compact+sort       2.599 ms
+[dbg  4917.650 ms] [hash] rowtime(685230 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/web-BerkStan.H2.tsv
+[dbg  5498.455 ms] [hash-prof] d2h               42.026 ms
+[dbg  5500.368 ms] [hash-prof] TOTAL(GPU)       73.802 ms
+[dbg  5638.116 ms] [hash] start (HASH_CAP=16384)
+[dbg  5652.983 ms] [hash-prof] h2d               13.985 ms
+[dbg  5653.000 ms] [hash] h2d
+[dbg  5653.142 ms] [hash] HASH_BI: B16 交织 7600595 项(+116.0MB)
+[dbg  5653.746 ms] [hash-prof] count_flop         0.326 ms
+[dbg  5653.756 ms] [hash] avg_product=324.7 (total_flop=222498869)
+[dbg  5654.058 ms] [hash-prof] mh_construct       0.226 ms
+[dbg  5654.065 ms] [hash] est_expand=1.80(total_flop=222498869)
+[dbg  5655.086 ms] [hash-prof] mh_merge           1.011 ms
+[dbg  5655.387 ms] [hash-prof] est_scan           0.129 ms
+[dbg  5659.196 ms] [hash] diter bin=0 行 / 685230
+[dbg  5659.207 ms] [hash] k7 bin=0 行 / 685230
+[dbg  5659.211 ms] [hash] bins: 0:64406 1:78 2:51435 3:145717 4:148986 5:58730 6:9925 7:2913 8:2707 19:15112 21:84964 22:51933 23:48324 
+[dbg  5659.222 ms] [hash-prof] binning            0.132 ms
+[dbg  5667.139 ms] [hash-prof] accumulate         7.643 ms
+[dbg  5667.158 ms] [hash] dbg: overflow=1 ovf_cnt=42
+[dbg  5667.162 ms] [hash] row-retry: 42 行 → flop 定表重跑
+[dbg  5667.168 ms] [rtprof] 2 memset_overflow
+[dbg  5667.292 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 685230)
+[dbg  5667.391 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  5667.526 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=1376256 槽
+[dbg  5667.558 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  5667.571 ms] [rtprof] 7 车发射+全局路完成
+[dbg  5667.574 ms] [hash] docs/54 retry 免排序: 42 行(r_slots=114)→csort
+[dbg  5667.576 ms] [rtprof] 8 retry排序段完成
+[dbg  5667.615 ms] [hash-prof] retry              0.444 ms
+[dbg  5667.731 ms] [hash-prof] cnnz_scan          0.040 ms
+[dbg  5667.738 ms] [hash] C_nnz=78350597 (est=113832433, 1.45x over-alloc)
+[dbg  5668.039 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  5670.779 ms] [hash-prof] compact+sort       2.603 ms
+[dbg  5928.254 ms] [hash] rowtime(685230 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/web-BerkStan.H2.tsv
+[dbg  6342.418 ms] [hash-prof] d2h               40.090 ms
+[dbg  6344.414 ms] [hash-prof] TOTAL(GPU)       66.629 ms
+[dbg  6458.138 ms] warmup done
+[dbg  6458.184 ms] T4e hash self_product: start
+[dbg  6458.190 ms] [hash] start (HASH_CAP=16384)
+[dbg  6495.162 ms] [hash-prof] h2d               35.555 ms
+[dbg  6495.180 ms] [hash] h2d
+[dbg  6495.336 ms] [hash] HASH_BI: B16 交织 7600595 项(+116.0MB)
+[dbg  6495.924 ms] [hash-prof] count_flop         0.344 ms
+[dbg  6495.933 ms] [hash] avg_product=324.7 (total_flop=222498869)
+[dbg  6496.241 ms] [hash-prof] mh_construct       0.231 ms
+[dbg  6496.248 ms] [hash] est_expand=1.80(total_flop=222498869)
+[dbg  6497.275 ms] [hash-prof] mh_merge           1.017 ms
+[dbg  6497.585 ms] [hash-prof] est_scan           0.146 ms
+[dbg  6501.012 ms] [hash] diter bin=0 行 / 685230
+[dbg  6501.024 ms] [hash] k7 bin=0 行 / 685230
+[dbg  6501.028 ms] [hash] bins: 0:64406 1:78 2:51435 3:145717 4:148986 5:58730 6:9925 7:2913 8:2707 19:15112 21:84964 22:51933 23:48324 
+[dbg  6501.039 ms] [hash-prof] binning            0.143 ms
+[dbg  6508.955 ms] [hash-prof] accumulate         7.647 ms
+[dbg  6508.974 ms] [hash] dbg: overflow=1 ovf_cnt=42
+[dbg  6508.978 ms] [hash] row-retry: 42 行 → flop 定表重跑
+[dbg  6508.984 ms] [rtprof] 2 memset_overflow
+[dbg  6509.107 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 685230)
+[dbg  6509.214 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  6509.344 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=1376256 槽
+[dbg  6509.378 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  6509.395 ms] [rtprof] 7 车发射+全局路完成
+[dbg  6509.398 ms] [hash] docs/54 retry 免排序: 42 行(r_slots=114)→csort
+[dbg  6509.408 ms] [rtprof] 8 retry排序段完成
+[dbg  6509.440 ms] [hash-prof] retry              0.453 ms
+[dbg  6509.567 ms] [hash-prof] cnnz_scan          0.045 ms
+[dbg  6509.573 ms] [hash] C_nnz=78350597 (est=113832433, 1.45x over-alloc)
+[dbg  6509.885 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  6512.605 ms] [hash-prof] compact+sort       2.593 ms
+[dbg  6789.186 ms] [hash] rowtime(685230 行)→ /home/xueyizhou/spgemm-challenge/compare/d1_oracle/web-BerkStan.H2.tsv
+[dbg  7217.958 ms] [hash-prof] d2h               41.381 ms
+[dbg  7219.812 ms] [hash-prof] TOTAL(GPU)       89.554 ms
+[dbg  7219.823 ms] T4e hash self_product: done (C_nnz=78350597)
+Reading matrix from data/ocean/square/web-BerkStan.mtx...
+Input A: 685230 x 685230, nnz = 7600595, sparsity = 100.00%
+===============WARMINGUP (5 rounds)===============
+=== Computing C = A x A (Hash SPA) ===
+Result C: 685230 x 685230, nnz = 78350597, sparsity = 99.98%
+Time: 761.642 ms
+
+=== All tests completed ===

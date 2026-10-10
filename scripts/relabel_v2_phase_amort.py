@@ -66,6 +66,9 @@ def main():
         if not os.path.exists(tp):
             continue
         rows = [ln.split() for ln in open(tp).readlines()[1:]]
+        if not rows:
+            print(f"{m:<18} 空 truth(臂超时/失败)——跳过")
+            continue
         # ① 同臂摊账
         dph = last_phases(os.path.join(LOGS, f"{m}.D1.log"))
         hph = last_phases(os.path.join(LOGS, f"{m}.H1.log"))

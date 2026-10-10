@@ -19,7 +19,7 @@
         ↓
 ③ 路内:
    dense 路:方案5 精确 count → §22d 分流 → 六档位梯(结构内核)/ 老窗口 cursor 内核
-   hash 路:20 档表 → accumulate → retry → compact+sort
+   hash 路:10 档表(32→16384 槽)→ accumulate → retry → compact+sort
 ```
 
 ---
@@ -60,7 +60,7 @@
   对 c-64 类"全幅行"(est 16K ∧ span≈n)是实测赢家
 - 分流在 host 做(按档位索引稳定排序,保行号序 = 保 CSR 访存局部性)
 
-**hash 路**:20 档表 → SMEM 开放寻址累加 → 溢出 retry → compact+sort
+**hash 路**:10 档表(32→16384 槽)→ SMEM 开放寻址累加 → 溢出 retry → compact+sort
 (我们的 compact 排序税在中行族占比可观,是历史靶点)
 
 ---

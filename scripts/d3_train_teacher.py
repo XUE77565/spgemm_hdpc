@@ -17,10 +17,10 @@ from d6_learned_dispatch import feats_matrix, stratified_mask, FEATNAMES
 MATS = ["bloweybq", "pre2", "c-43", "Si10H16", "in-2004", "nd24k", "crankseg_2", "F2", "c-64",
         "bcsstk32", "bcsstk23", "bcsstm23", "bcspwr08", "bcspwr05", "bcsstm01", "1138_bus", "ash219",
         "pf2177", "HTC_336_9129", "333SP", "opt1", "af_shell4", "bp_0", "arc130", "bcsstk30", "bcsstk31",
-        "af_2_k101", "crankseg_1", "rajat20", "wb-edu", "3Dspectralwave2", "Ga41As41H72",   # v2 拓广 10
+        "af_2_k101", "crankseg_1", "rajat20", "3Dspectralwave2", "Ga41As41H72",   # v2 拓广 10
         "TSOPF_FS_b39_c7", "mult_dcop_03", "Ge99H100", "c-58",
         "c-71", "msc23052", "exdata_1", "rajat25", "msc10848", "hugetrace-00020",          # v2 拓广 +14(50 阵)
-        "bundle1", "web-BerkStan", "cage13", "M6", "para-6", "offshore", "std1_Jac3", "email-Enron"]   # 第 50 阵(小)
+        "web-BerkStan", "cage13", "M6", "para-6", "offshore", "std1_Jac3"]   # 第 50 阵(小)
 
 
 def main():

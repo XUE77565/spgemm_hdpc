@@ -3481,9 +3481,11 @@ __global__ void compute_bucket_kernel(
             bid = bi;
         }
     }
-    // ── D3②:PVD 学生派发(D6EXP,默认关;study/36)──只接管争夺区行(梯 0-10/diter/k7),
-    //    micro bin(ESC/batch/ultra/sspan/largest/heavy)原路放行;确定性 L0 规则先行(代码非学习:
-    //    全稠密 C=位图主场,dense 回归器此域零训练样本=瞎外推,bloweybq 病理处方)。
+    // ── D3② Round2:PVD 学生派发保守安全域(study/36 §六)──
+    //    Round1 教训:逐行成本+摊账捕获不了集体相位效应(pre2 2.48/c-64 14.9 崩盘)。
+    //    处方 A:学生只在静态门【已判 diter/k7】的人口内改判(三路);纯 hash 行(梯 0-10)
+    //    只允许 k7 抢走(L0 规则+学生),**永不进 BIN_DITER**——消灭集体 count 相位爆发源。
+    //    micro bin(ESC/batch/ultra/sspan/largest/heavy)原路放行。
     if (d6_on && (bid <= 10 || bid == BIN_DITER || bid == BIN_K7)) {
         const int al = A_row_ptr[i + 1] - A_row_ptr[i];
         const int fl = flop[i], sp2 = span_len[i], e2 = est[i];
@@ -3510,19 +3512,10 @@ __global__ void compute_bucket_kernel(
             while (stu_leaf[node] < 0)
                 node = (x[stu_feat[node]] <= stu_thr[node]) ? stu_cl[node] : stu_cr[node];
             int pick = stu_leaf[node];                       // 0=hash 1=dense 2=k7
+            // Round3 k7-only 安全域:学生唯一权力=合法抢行给 k7;hash↔dense 双向锁定。
+            // 修 c-64 14.9×:学生把 diter 宽行改判回 hash 撞占用崖(同 pre2 病反方向)。
             if (pick == 2 && k7_legal) bid = BIN_K7;
-            else if (pick == 1 && (sp2 <= 7277 || x[16] >= 64.f)) bid = BIN_DITER;
-            else if (pick != 1 && !(pick == 2) && bid <= 10) { /* hash:静态已在梯内,保持 */ }
-            else {                                            // hash 但静态来自 13/15(或 pick 落空)→ 回梯
-                if (e2 > HASH_CAP) bid = BIN_HEAVY;
-                else {
-                    int bi2 = 0, ht2 = WARP_SIZE;
-                    int tgt2 = tbl_target_rexp(e2, tgt_alpha_pct, tbl_glo, tbl_ghi, tbl_elo, tbl_ehi, tbl_eref);
-                    while (ht2 < tgt2 && ht2 < HASH_CAP) { ht2 <<= 1; bi2++; }
-                    if (e2 <= BATCH_EST_MAX && al <= WARP_SIZE && batch_s_max && e2 <= batch_s_max) bid = BIN_BATCH_S;
-                    else bid = bi2;
-                }
-            }
+            // pick 0/1 = hash/dense:保持静态 bin 不变(不回梯不改判)
         }
     }
     bucket_id[i] = bid;
