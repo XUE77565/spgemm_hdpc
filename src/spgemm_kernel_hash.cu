@@ -3512,10 +3512,27 @@ __global__ void compute_bucket_kernel(
             while (stu_leaf[node] < 0)
                 node = (x[stu_feat[node]] <= stu_thr[node]) ? stu_cl[node] : stu_cr[node];
             int pick = stu_leaf[node];                       // 0=hash 1=dense 2=k7
-            // Round3 k7-only 安全域:学生唯一权力=合法抢行给 k7;hash↔dense 双向锁定。
-            // 修 c-64 14.9×:学生把 diter 宽行改判回 hash 撞占用崖(同 pre2 病反方向)。
-            if (pick == 2 && k7_legal) bid = BIN_K7;
-            // pick 0/1 = hash/dense:保持静态 bin 不变(不回梯不改判)
+            // D4 出厂:R2+宽行护栏 v2(阈值=7277=DENSE_TIER_SPAN_MAX,物理出处)
+            //   hash→k7 ✓(L0/学生)  hash→dense ✗(pre2 灭雷)
+            //   diter→k7 ✓            diter→hash 仅 span≤7277(c-64 宽行护栏)
+            if (pick == 2 && k7_legal) {
+                bid = BIN_K7;
+            } else if (pick == 1 && (bid == BIN_DITER || bid == BIN_K7)
+                       && (sp2 <= 7277 || x[16] >= 64.f)) {
+                bid = BIN_DITER;                             // 学生判 dense,静态已在 dense 基础设施
+            } else if (pick == 0 && (bid == BIN_DITER || bid == BIN_K7)
+                       && sp2 <= 7277) {
+                // 学生判 hash:只允许 span≤7277(档位梯界)回梯;宽行保持 diter(c-64 护栏)
+                if (e2 > HASH_CAP) bid = BIN_HEAVY;
+                else {
+                    int bi2 = 0, ht2 = WARP_SIZE;
+                    int tgt2 = tbl_target_rexp(e2, tgt_alpha_pct, tbl_glo, tbl_ghi, tbl_elo, tbl_ehi, tbl_eref);
+                    while (ht2 < tgt2 && ht2 < HASH_CAP) { ht2 <<= 1; bi2++; }
+                    if (e2 <= BATCH_EST_MAX && al <= WARP_SIZE && batch_s_max && e2 <= batch_s_max) bid = BIN_BATCH_S;
+                    else bid = bi2;
+                }
+            }
+            // else:pick 0/1 但静态已在 hash(梯 0-10)→ 保持;micro bin 不改判
         }
     }
     bucket_id[i] = bid;
