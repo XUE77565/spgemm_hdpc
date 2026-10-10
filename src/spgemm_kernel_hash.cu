@@ -4496,6 +4496,9 @@ static void hash_product(
     const bool pfuse = g_pipefuse && !att && A_rows > 0
         && ((unsigned long long)A_rows * MH_M * sizeof(unsigned int)) <= MH_TABLE_MAX_BYTES;
     double avg_product = 0.0;
+    // FASTPATH(study/38):小阵快速路径——强制 est=flop(跳 MinHash)+ 强制关 diter。
+    static int g_fastpath = -1;
+    if (g_fastpath < 0) { const char *e = getenv("FASTPATH"); g_fastpath = (e && *e) ? atoi(e) : 0; }
     if (h2d_count_done) {   // 重叠管线已算 flop+maxbl → 只补 span(B_ci 随机访问,须全量)+ 规约
         prof("count_flop", [&]{
             if (A_nnz <= TINY_ROW_MAX_LEN * A_rows)
@@ -4541,6 +4544,7 @@ static void hash_product(
     static int g_ovf_base_cnt = 0;      // 状态 0 末次的 overflow 行数(供"减半以上"判据)
     if (!pfuse) {
         avg_product = A_rows ? (double)total_flop / A_rows : 0.0;
+        if (g_fastpath) avg_product = 0.0;   // FASTPATH:强制 est=flop 捷径(覆写真实值)
         dbg("[%s] avg_product=%.1f (total_flop=%lld)\n", tag, avg_product, total_flop);
     }
     if (!pfuse && avg_product <= AVG_FLOP_THR) {
@@ -4821,7 +4825,7 @@ static void hash_product(
         static long long g_dsmall = -1;
         if (g_dsmall < 0) { const char *e = getenv("DITER_SMALL_NNZ"); g_dsmall = (e && *e) ? atoll(e) : DITER_SMALL_NNZ_DEFAULT; }
         const bool dsmall_on = g_dsmall > 0 && (long long)A_nnz < g_dsmall;
-        const int diter_thr_run  = (dsmall_on && !g_diter_env) ? EST_DENSE_MIN    : g_diter;          // 小阵回 v32 地板 4096
+        const int diter_thr_run  = g_fastpath ? 999999999 : ((dsmall_on && !g_diter_env) ? EST_DENSE_MIN : g_diter);   // FASTPATH:强制关 diter;小阵回 v32 地板 4096
         const int diter_est_min_run = (dsmall_on && !g_est_env) ? EST_DENSE_MIN / 2 : g_diter_est_min;   // 小阵回 v32 地板 2048
         static int g_dim2 = -1;
         if (g_dim2 < 0) { const char *e = getenv("DIM2"); g_dim2 = (e && *e) ? atoi(e) : 0; }   // docs/61:双维路由基建(默认关 —— c-big straggler 实测挂 v4 span 门 19491/19578,路由无解需窗口内核经济学升级)
@@ -4896,6 +4900,7 @@ static void hash_product(
         if (d6_maxbl) { dev_free(d6_maxbl); d6_maxbl = nullptr; }   // bucket 消费完即释(D3②)
         if (pfuse) {
             avg_product = A_rows ? (double)total_flop / A_rows : 0.0;
+        if (g_fastpath) avg_product = 0.0;   // FASTPATH:强制 est=flop 捷径(覆写真实值)
             dbg("[%s] avg_product=%.1f (total_flop=%lld, PIPEFUSE 延迟取回)\n", tag, avg_product, total_flop);
             dev_free(d_tflop); dev_free(d_avg_gate);
             d_tflop = nullptr; d_avg_gate = nullptr;
