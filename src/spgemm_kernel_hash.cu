@@ -3375,7 +3375,12 @@ __global__ void compute_bucket_kernel(
     //             flop<8est ⟺ B_cont<24B(dup<8 时争用可忽略,G-group 摊薄)
     //             flop≥16384 ∧ <64est ⟺ B_cont<24B×est/(flop−est) 的重行域(docs/37 实证)
     const long long fl64 = (long long)flop[i];
-    bool dup_ok = (fl64 < DUP_LIGHT * e) || (fl64 >= HASH_CAP && fl64 < DUP_HEAVY * e);  // 争用 vs compact 推导
+    // dup_ok(争用 vs compact 推导)+ HEAVY 候选行放宽:
+    //   当 est>HASH_CAP 时,备选方案从 SMEM hash 变为全局内存 hash——全局原子比 SMEM 慢
+    //   一个量级,dense(逐乘积)在高 dup 下仍优于全局 hash(逐 distinct×全局 CAS)。
+    //   因此 HEAVY 候选行用 DUP_HEAVY 门(与 flop≥HASH_CAP 同一物理推导)。
+    //   SiO2 定谳:3521ms accumulate(全局表)vs 8.4ms dense_direct = 419× 差距。
+    bool dup_ok = (fl64 < DUP_LIGHT * e) || ((fl64 >= HASH_CAP || e > HASH_CAP) && fl64 < DUP_HEAVY * e);
     // ── HAD L1 三刀(④路由;had_l1 参数从 host 传入,默认 0)──
     if (had_l1) {
         // 刀1(nd24k): 高 dup × 高 est → 强制 hash(DUP_HEAVY=64 重域条款太宽松;
@@ -3460,6 +3465,10 @@ __global__ void compute_bucket_kernel(
              && (!occgate || (long long)occ_coeff * e >= (long long)sl0)  // OCCGATE:est×coeff ≥ span(默认 16=同 spanf 门系数;OCCGATE_COEFF 可调)
              && tier_cmp_ok
              && ladder_dense_ok) bid = BIN_DITER;
+    // HEAVY 候选行(e>CAP)无条件改判 DITER:全局内存原子(CAS ~600ns)比任何 dense
+    // 窗扫描都贵——dup 门的"防 dense 浪费"逻辑在备选方案为 HEAVY 时不再适用。
+    // SiO2:2373 行×1.74GB 全局表=3521ms;dense_direct 同人口 8.4ms=419× 差距。
+    else if (diter_thr > 0 && e > HASH_CAP) bid = BIN_DITER;
     else if (e > HASH_CAP) bid = BIN_HEAVY;          // heavy:全局表(2026-08-25,不再回退 merge)
     else {
         int bi = 0, ht = WARP_SIZE;
