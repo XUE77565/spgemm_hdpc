@@ -22,6 +22,12 @@ Phase 2: L0 部署(确认收益)
   ├── 2a. 恒A 为默认 + 选择性 k7/dense
   ├── 2b. 337 验证(新决策维度 ×3:DCEST 开关[dense_count vs 链费]、
   │       DCEST_MARGIN[125-200 按证书直方图]、估计器选择[1a 产物])
+  ├── 2c. 裁定结构三层化(10-12 定):
+  │       ① DCEST 开关 = 解析门(α·Σflop_diter vs β·Σnnz_dense+γ·A_rows+δ,
+  │         系数电池标定;binning 后原地判定,零预跑成本)——鲁棒铁律:有出处的模型
+  │       ② margin = 进程内状态机(首轮 200,证书直方图收敛;ADAPT_EXPAND 同款哲学)
+  │       ③ A/B/C kernel 配置 = 保留学习型 L0(集体效应物理不可约)
+  │       → 论文升级点:L0 不只选 kernel,还选 pipeline form(DCEST/估计器两维)
   └── 预期 GM: ~1.15-1.20
 
 Phase 3: L1/L2 突破尝试(核心创新)
