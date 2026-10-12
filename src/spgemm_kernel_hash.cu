@@ -1503,70 +1503,66 @@ __global__ void zero_est_kernel(int *est, const int *rows, int nr) {
     if (r < nr) est[rows[r]] = 0;
 }
 
-// DCEST V2(study/39 Phase 1b):ocean 式——est 分配 + sentinel 扫描 + 全局紧凑
+// DCEST V3(study/39 Phase 1b):est 分配(去 expand 泄漏)+ 溢出证书 + 新 buffer 紧凑拷贝
+// V2 定谳(a81dc1b/df6ccb6 复盘):①数值核行内【连续直写】(base 起 bitmap/cursor 前缀)
+//   且自报精确 row_nnz → fixup 核扫描区间坍缩为实际数据 = no-op 白付 6.8ms,sentinel
+//   从未 launch 而值门通过本身就是"尾洞不存在"的证明 → 两者全删;
+// ②in-place 全局 shift 有竞态:行内左移 src/dst 重叠跨线程乱序 + 跨行 B 的新区可踩
+//   A 未读的旧尾(并行 block 无序,c-64 门通过属调度运气)→ 改读写分离双 buffer 拷贝。
 
-// ① 填 row_nnz = est × margin(替代精确计数)
-__global__ void dcest_fill_kernel(int *row_nnz, const int *est, const int *rows,
-                                   int nr, int margin_pct) {
+// ① 填 row_nnz = dense 行分配额。est 出口语义(mh_merge):min(raw_E × expand, flop)
+//   → flop 封顶行(est==flop,dup≈1 人口)是【精确上界零低估】,直接 ×margin(若除
+//   expand 会把上界砍成 0.56×flop 的欠估 → dup≈1 行必溢出);MinHash 行才做 ÷expand
+//   还原始估计。V2 的 est×1.2 隐含 raw×2.16(1.8 泄漏)→ V3 = raw×margin。
+__global__ void dcest_fill_kernel(int *row_nnz, const int *est, const int *flop, const int *rows,
+                                   int nr, int expand_pct, int margin_pct) {
     int r = blockIdx.x * blockDim.x + threadIdx.x;
     if (r < nr) {
         int i = rows[r];
-        long long v = (long long)est[i] * margin_pct / 100;
+        int e = est[i], fl = flop[i];
+        long long v = (fl > 0 && e >= fl)
+                    ? (long long)e * margin_pct / 100        // flop 封顶 = 精确上界,免还原
+                    : (long long)e * margin_pct / expand_pct; // MinHash:去 expand 还原始 E
         row_nnz[i] = (int)(v > 1 ? v : 1);
     }
 }
 
-// ② sentinel 初始化(dense 行的分配范围填 -1)
-__global__ void dcest_sentinel_kernel(int *dC_ci, const int *dC_rp,
-                                        const int *rows, const int *row_nnz, int nr) {
+// ② 溢出证书(L2,study/39 3c):数值核自报 actual(row_nnz)> scan-1 槽宽(alloc)
+//   → 分配不足。梯子核写位无界已踩邻行(数据损),唯一安全出口 = 判废(-1)回退;
+//   cursor 核 rank≥cap 截断(drop_cnt 同语义)。附带 alloc/actual 比值直方图 —— margin
+//   选择的实测依据(桶界 = ×8 后 2/4/6/8/10/12/16 → ratio <0.25/<0.5/<0.75/<1.0/<1.25/<1.5/<2/≥2)。
+__global__ void dcest_ovf_check_kernel(const int *dense_rows, int nr,
+                                        const int *dC_rp, const int *row_nnz,
+                                        int *n_ovf, int *hist8) {
+    int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= nr) return;
+    int i = dense_rows[r];
+    int slot = dC_rp[i + 1] - dC_rp[i];   // scan-1 槽宽 = alloc
+    int act  = row_nnz[i];                 // 数值核自报实际
+    if (act <= 0) return;                  // 空行无风险不入桶
+    if (act > slot) atomicAdd(n_ovf, 1);
+    int r8 = (int)((long long)slot * 8 / act);
+    int b = r8 < 2 ? 0 : r8 < 4 ? 1 : r8 < 6 ? 2 : r8 < 8 ? 3 : r8 < 10 ? 4 : r8 < 12 ? 5 : r8 < 16 ? 6 : 7;
+    atomicAdd(&hist8[b], 1);
+}
+
+// ③ 紧凑拷贝:dense 行 gapped 旧布局 → exact 新布局。写全部落新 buffer(与所有读源
+//   不相交,V2 in-place shift 的行内/跨行两类竞态结构性根除)。链位置保证此刻 dC 里
+//   只有 dense 行有数据(k7/D5H 在链后写 exact 基址)→ 只搬 dense 行,不动行早退。
+__global__ void dcest_compact_copy_kernel(const int *rows, int nr,
+                                          const int *rp_old, const int *rp_new,
+                                          const int *row_nnz,
+                                          const int *ci_src, const double *v_src,
+                                          int *ci_dst, double *v_dst) {
     int ri = blockIdx.x;
     if (ri >= nr) return;
     int row = rows[ri];
-    int base = dC_rp[row], cnt = row_nnz[row];
-    for (int j = base + threadIdx.x; j < base + cnt; j += blockDim.x)
-        dC_ci[j] = -1;
-}
-
-// ③ dense 行修正:数实际条目 + 行内紧凑 + 更新 row_nnz
-__global__ void dcest_fixup_kernel(const int *dense_rows, int nr,
-                                     const int *dC_rp,
-                                     int *dC_ci, double *d_val,
-                                     int *row_nnz) {
-    int ri = blockIdx.x;
-    if (ri >= nr) return;
-    int row = dense_rows[ri];
-    int base = dC_rp[row], alloc = row_nnz[row];
-    if (threadIdx.x != 0) return;  // 单线程逐行(简单正确;行通常不大)
-    int write = 0;
-    for (int j = 0; j < alloc; j++) {
-        if (dC_ci[base + j] != -1) {
-            if (write != j) {
-                dC_ci[base + write] = dC_ci[base + j];
-                d_val[base + write] = d_val[base + j];
-            }
-            write++;
-        }
-    }
-    row_nnz[row] = write;  // 实际计数(hash 行已有精确值,不受影响)
-}
-
-// ④ 全局紧凑:所有行从 padding 位置搬到正确位置(正向安全:new ≤ old)
-__global__ void dcest_global_shift_kernel(int A_rows,
-                                            const int *dC_rp_old, const int *dC_rp_new,
-                                            const int *row_nnz,
-                                            int *dC_ci, double *d_val) {
-    // 每个线程搬一段数据(粗粒度并行:按全局 slot 索引)
-    // 计算总 slot 数由 host 传入 gridDim
-    extern __shared__ int s_off[];  // [blockDim.x+1] 每 thread 的目标区间
-    // 简化:每 block 处理一行
-    int row = blockIdx.x;
-    if (row >= A_rows) return;
-    int old_base = dC_rp_old[row], new_base = dC_rp_new[row];
-    int cnt = row_nnz[row];
-    if (old_base == new_base) return;  // 无需搬
+    int src = rp_old[row], dst = rp_new[row], cnt = row_nnz[row];
+    // 注意:src==dst 的行【不能】早退 —— 数据在旧 buffer 里,新 buffer 同位置仍是零页
+    // (值门指纹:row5 整行 (5,1,0) = 未拷贝的零页;V2 in-place shift 语义在此不成立)。
     for (int j = threadIdx.x; j < cnt; j += blockDim.x) {
-        dC_ci[new_base + j] = dC_ci[old_base + j];
-        d_val[new_base + j] = d_val[old_base + j];
+        ci_dst[dst + j] = ci_src[src + j];
+        v_dst[dst + j]  = v_src[src + j];
     }
 }
 
@@ -4879,6 +4875,13 @@ static void hash_product(
     void *d_cub_tmp = nullptr;
     static int g_dcest = -1;     // DCEST(study/39 Phase 1b):函数级——dense_count 消灭 + 后置修正
     if (g_dcest < 0) { const char *e = getenv("DCEST"); g_dcest = (e && *e) ? atoi(e) : 0; }
+    static int g_dcest_margin = -1;   // DCEST_MARGIN:alloc = raw_est × margin%(默认 200)。margin 时间中立
+                                      // (数值/拷贝/d2h 都只碰 actual 条,仅 allocation 间距变大)→ 按"证书零触发"选:
+                                      // 10-12 直方图实测 c-64/pre2 125 即零溢出,in-2004 有 2 行 ratio∈[0.75,1.0)@150
+                                      // (MinHash 结构性欠估尾巴,actual=raw×1.5-2)→ 200 全覆盖;125-150 留给 L0 按阵选
+    if (g_dcest_margin < 0) { const char *e = getenv("DCEST_MARGIN"); g_dcest_margin = (e && *e) ? atoi(e) : 200; }
+    static int g_dcest_ovf = -1;      // DCEST_OVF=1:溢出仅报告不判废(采数探针;输出可能损坏,值门会标出)
+    if (g_dcest_ovf < 0) { const char *e = getenv("DCEST_OVF"); g_dcest_ovf = (e && *e) ? atoi(e) : 0; }
     static int g_compact_t = -1; // docs/13 v2:bin0/BATCH_S compact 线程级行(函数级:compact 相位亦用)
     if (g_compact_t < 0) { const char *e = getenv("COMPACT_T"); g_compact_t = (e && *e) ? atoi(e) : 1; }
     static int g_largest = -1;   // docs/74:Ocean-D straggler 位图窗(函数级:binning 传参用)
@@ -5262,15 +5265,18 @@ static void hash_product(
             if (g_dcfuse < 0) { const char *e = getenv("DCFUSE"); g_dcfuse = (e && *e) ? atoi(e) : 1; }   // 交替 A/B 全胜(brainpc2 -5.6/c-58 -13.5/mult_dcop -9.9/bloweya -4.8,无回归)→ 默认开;DCFUSE=0 关
             const bool dcf = g_dcfuse > 0;
             // DCEST(study/39 Phase 1b):消灭 dense_count 的 O(flop) 扫描——
-            // 用 est × margin 填 row_nnz(一个 O(dense_nr) 微核,几乎零成本)。
-            // est 的 MinHash 数学修复后足够准(margin 120% 覆盖 >95% 行);
-            // 溢出行走 hash retry 基础设施。dense_count 从 82ms → ≈0ms。
-            // DCEST V2 逻辑(使用函数级 g_dcest)
+            // 用 est 还原后的原始估计 × margin 填 row_nnz(一个 O(dense_nr) 微核,近零成本)。
+            // dense_count 从 82ms → ≈0ms。V3(vs V2 est×1.2):
+            //   ①去 est 的 expand 泄漏(1.8 默认):over-alloc raw×2.16 → raw×margin;
+            //   ②flop 封顶行(est==flop)是精确上界,不除 expand(dup≈1 人口除则必炸);
+            //   ③溢出不再靠 2.16× 蛮力覆盖 → 证书核 + 判废回退(见 dense_direct 后的修正链)。
+            if (g_dcest && g_cnf) { fprintf(stderr, "[hash] DCEST 与 CNT_FUSE 互斥(cnf 有自己的 tmp/晚 cnnz 数据流)→ DCEST 关\n"); g_dcest = 0; }
             if (g_dcest && dense_nr > 0 && dense_rows) {
                 prof("dcest", [&]{
-                    // ① 填 row_nnz = est × 120%(替代精确计数;在 est 置零前)
+                    // ① 填 row_nnz = alloc(在 est 置零前)
                     dcest_fill_kernel<<<(dense_nr + HASH_BLOCK_STRUCT - 1) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
-                        d_row_nnz, d_est, dense_rows, dense_nr, 120);
+                        d_row_nnz, d_est, d_flop, dense_rows, dense_nr,
+                        (int)(est_expand_final * 100.0 + 0.5), g_dcest_margin);
                     CHECK_CUDA(cudaGetLastError());
                     // ② dstr_split(数值侧需要)
                     if (g_dstr2 >= 2 && dense_rows) dstr_split();
@@ -5289,7 +5295,8 @@ static void hash_product(
                     CHECK_CUDA(cudaMemcpy(&tmp_slots_dev, d_off + A_rows, sizeof(long long), cudaMemcpyDeviceToHost));
                 });
                 dense_nnz_sum = 0; dense_est_sum = 0;   // DCEST 下不精确;underflow 由 cnnz 校正
-                dbg("[%s] DCEST: dense_count 相位消灭(%d 行,est×1.2 替代精确计数)\n", tag, dense_nr);
+                dbg("[%s] DCEST V3: dense_count 相位消灭(%d 行,est/%.2f×%.2f 替代精确计数)\n",
+                    tag, dense_nr, est_expand_final, g_dcest_margin / 100.0);
                 goto dcest_done;
             }
             // 矩阵级路径不再走下方 accumulate 分支(那三处 memset 挪到这里,计时内);mixed 路径 per-bin 头会再清,无害
@@ -6524,18 +6531,6 @@ static void hash_product(
     outscan("pre-compact");
     // 方案5 数值 pass(Phase B v2 游标版):dense 行数据驱动窗口直写终态
     int *d_smap = nullptr, *d_smap_off = nullptr;
-    if (k7_nr > 0) {
-        prof("k7_direct", [&]{
-        int *d_k7err2 = decltype(d_k7err2)(dev_alloc(sizeof(int)));
-        CHECK_CUDA(cudaMemset(d_k7err2, 0, sizeof(int)));
-        k7_numeric_kernel<<<k7_nr, K7_BLOCK, (size_t)K7_SMEM_W * 4>>>(
-            dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, A_rows, k7_rows, d_span_lo,
-            dC_rp, dC_ci, d_val_ip, nullptr, d_k7err2);
-        int herr2 = 0; CHECK_CUDA(cudaMemcpy(&herr2, d_k7err2, sizeof(int), cudaMemcpyDeviceToHost));
-        if (herr2) fprintf(stderr, "[hash] k7_numeric 防御带 %d 产品(值门必查)\n", herr2);        dev_free(d_k7err2);
-        });
-        dbg("[%s] k7_direct: %d 行(BIN_K7)rank 直写 dC(免表/免值原子/免 compact+sort)\n", tag, k7_nr);
-    }
 
     if (dense_nr > 0) {
         prof("dense_direct", [&]{
@@ -6774,7 +6769,76 @@ static void hash_product(
             dbg("[%s] dd_rowtime → %s\n", tag, dd_path);
         }
     }
-    // D5H 数值 pass:bins 1-10 MODE=2 直写 dC(小行 count-sort 有序;大行无序 → 原地 csort)
+    // ── DCEST V3 修正链(study/39 Phase 1b):溢出证书 + 二次 scan + 双 buffer 紧凑拷贝 ──
+    // 位置:dense_direct 之后、k7/D5H/compact 之前 —— 此刻 dC 里【只有 dense 行】有数据
+    // (k7/D5H 在链后写 exact 基址,免搬;hash 行仍在 tmp)→ 拷贝只覆盖 dense 行。
+    // V3 要点:证书先行(梯子核踩邻行后无原地自愈,只能判废);读写分离根除 V2 in-place
+    // shift 的行内/跨行两类竞态。
+    // ⚠ 插入位必须在 D5H 块之前:D5H 若在链前发射会写 gapped 基址,而拷贝只搬 dense 行
+    //   → D5H 行数据滞留旧位 = 丢失(首版落点错误,D5H 默认关所以守门没踩到)。
+    if (g_dcest && dense_nr > 0 && dense_rows && !g_cnf) {
+        prof("dcest_fixup", [&]() -> void {
+            // ① 溢出证书:actual > alloc → 数据已损 → 判废(-1),caller 见负值回退 merge3
+            int *d_ovf = decltype(d_ovf)(dev_alloc((2 + 8) * sizeof(int)));
+            CHECK_CUDA(cudaMemset(d_ovf, 0, (2 + 8) * sizeof(int)));
+            dcest_ovf_check_kernel<<<(dense_nr + HASH_BLOCK_STRUCT - 1) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
+                dense_rows, dense_nr, dC_rp, d_row_nnz, d_ovf, d_ovf + 2);
+            CHECK_CUDA(cudaGetLastError());
+            int h_ovf[2 + 8];
+            CHECK_CUDA(cudaMemcpy(h_ovf, d_ovf, sizeof(h_ovf), cudaMemcpyDeviceToHost));
+            dev_free(d_ovf);
+            dbg("[%s] DCEST 证书: ovf=%d/%d ratio直方图[<0.25:%d <0.5:%d <0.75:%d <1.0:%d <1.25:%d <1.5:%d <2:%d ≥2:%d]\n",
+                tag, h_ovf[0], dense_nr, h_ovf[2], h_ovf[3], h_ovf[4], h_ovf[5], h_ovf[6], h_ovf[7], h_ovf[8], h_ovf[9]);
+            if (h_ovf[0] > 0 && !g_dcest_ovf) {
+                fprintf(stderr, "[hash] DCEST overflow: %d/%d 行 alloc 不足(margin=%d%%)→ 判废回退 merge3\n",
+                        h_ovf[0], dense_nr, g_dcest_margin);
+                C_nnz_result = -1;   // 尾部 d2h 按分配期 C_total 有界下载,caller 见 -1 即弃
+                return;              // 跳过修正链(k7/D5H/compact 照跑无害:输出已判废)
+            }
+            // ② 保存 gapped 旧 rp → 二次 scan(exact row_nnz)覆写 dC_rp
+            int *dC_rp_old = decltype(dC_rp_old)(dev_alloc((size_t)(A_rows + 1) * sizeof(int)));
+            CHECK_CUDA(cudaMemcpy(dC_rp_old, dC_rp, (size_t)(A_rows + 1) * sizeof(int), cudaMemcpyDeviceToDevice));
+            CHECK_CUDA(cudaMemset(dC_rp, 0, sizeof(int)));
+            if (A_rows <= MAX_BLOCK_THREADS) {
+                int b = 1; while (b < A_rows) b <<= 1;
+                scan_inclusive_kernel<int><<<1, b, b * sizeof(int)>>>(d_row_nnz, dC_rp + 1, A_rows);
+            } else {
+                thrust::inclusive_scan(thrust::device_ptr<int>(d_row_nnz),
+                                       thrust::device_ptr<int>(d_row_nnz + A_rows),
+                                       thrust::device_ptr<int>(dC_rp + 1));
+            }
+            CHECK_CUDA(cudaMemcpy(&C_nnz_result, dC_rp + A_rows, sizeof(int), cudaMemcpyDeviceToHost));
+            // ③ 双 buffer 紧凑拷贝(仅 dense 行):gapped dC → exact dC2;C 总量收正(d2h 只下 exact)
+            C_ci_sz = (size_t)C_nnz_result * sizeof(int);
+            C_v_sz  = (size_t)C_nnz_result * sizeof(double);
+            C_ci_al = ALIGN8(C_ci_sz);
+            C_total = C_rp_al + C_ci_al + C_v_sz;
+            void *dC2 = dev_alloc(C_total);
+            int    *dC2_ci  = (int *)((char *)dC2 + C_rp_al);
+            double *dC2_val = (double *)((char *)dC2 + C_rp_al + C_ci_al);
+            dcest_compact_copy_kernel<<<dense_nr, 256>>>(
+                dense_rows, dense_nr, dC_rp_old, dC_rp, d_row_nnz, dC_ci, d_val_ip, dC2_ci, dC2_val);
+            CHECK_CUDA(cudaGetLastError());
+            dev_free(dC_rp_old);
+            dev_free(dC);                              // gapped 大 buffer 退役
+            dC = dC2; dC_ci = dC2_ci; d_val_ip = dC2_val; d_val = d_val_ip;   // 指针切换(k7/D5H/compact/d2h 消费新布局)
+            dbg("[%s] DCEST fixup: C_nnz=%d(exact,紧凑拷贝完成)\n", tag, C_nnz_result);
+        });
+    }
+    // k7 数值:DCEST 链之后发射 → 写 exact 基址(链前写会落在 gapped 位置被拷贝链漏掉)
+    if (k7_nr > 0) {
+        prof("k7_direct", [&]{
+        int *d_k7err2 = decltype(d_k7err2)(dev_alloc(sizeof(int)));
+        CHECK_CUDA(cudaMemset(d_k7err2, 0, sizeof(int)));
+        k7_numeric_kernel<<<k7_nr, K7_BLOCK, (size_t)K7_SMEM_W * 4>>>(
+            dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, A_rows, k7_rows, d_span_lo,
+            dC_rp, dC_ci, d_val_ip, nullptr, d_k7err2);
+        int herr2 = 0; CHECK_CUDA(cudaMemcpy(&herr2, d_k7err2, sizeof(int), cudaMemcpyDeviceToHost));
+        if (herr2) fprintf(stderr, "[hash] k7_numeric 防御带 %d 产品(值门必查)\n", herr2);        dev_free(d_k7err2);
+        });
+        dbg("[%s] k7_direct: %d 行(BIN_K7)rank 直写 dC(免表/免值原子/免 compact+sort)\n", tag, k7_nr);
+    }
+        // D5H 数值 pass:bins 1-10 MODE=2 直写 dC(小行 count-sort 有序;大行无序 → 原地 csort)
     if (g_d5h_on) {
         prof("hash_direct", [&]{
             for (int bi = 1; bi <= HASH_LADDER_MAX_BIN; bi++) {
@@ -6859,41 +6923,6 @@ static void hash_product(
             diter_gapped_copy_kernel<<<(h_big_off + 255) / 256, 256>>>(
                 d_rows_sorted, h_big_off, d_off, d_row_nnz, d_dtmp_col, d_dtmp_val, dC_rp, dC_ci, d_val);
         }
-    }
-    // ── DCEST V2 修正链(study/39 Phase 1b):sentinel 扫描 + 实际计数 + 二次 scan + 全局紧凑 ──
-    // 位置:dense_numeric 之后、hash compact 之前(此时 dC 里 dense 数据在 padding 位置)
-    if (g_dcest && dense_nr > 0 && dense_rows) {
-        prof("dcest_fixup", [&]{
-            // ① 修正 dense 行的 row_nnz(扫描 -1 sentinel)
-            dcest_fixup_kernel<<<dense_nr, 1>>>(
-                dense_rows, dense_nr, dC_rp, dC_ci, d_val, d_row_nnz);
-            CHECK_CUDA(cudaGetLastError());
-            // ② 二次 cnnz_scan(用实际计数,得到正确 dC_rp)
-            // 保存旧偏移(供全局 shift 用)
-            int *dC_rp_old = decltype(dC_rp_old)(dev_alloc((size_t)(A_rows + 1) * sizeof(int)));
-            CHECK_CUDA(cudaMemcpy(dC_rp_old, dC_rp, (size_t)(A_rows + 1) * sizeof(int), cudaMemcpyDeviceToDevice));
-            CHECK_CUDA(cudaMemset(dC_rp, 0, sizeof(int)));
-            if (A_rows <= MAX_BLOCK_THREADS) {
-                int b = 1; while (b < A_rows) b <<= 1;
-                scan_inclusive_kernel<int><<<1, b, b * sizeof(int)>>>(d_row_nnz, dC_rp + 1, A_rows);
-            } else {
-                thrust::inclusive_scan(thrust::device_ptr<int>(d_row_nnz),
-                                       thrust::device_ptr<int>(d_row_nnz + A_rows),
-                                       thrust::device_ptr<int>(dC_rp + 1));
-            }
-            CHECK_CUDA(cudaMemcpy(&C_nnz_result, dC_rp + A_rows, sizeof(int), cudaMemcpyDeviceToHost));
-            // ③ 全局 shift:所有行从 padding 位置搬到紧凑位置
-            dcest_global_shift_kernel<<<A_rows, 256>>>(
-                A_rows, dC_rp_old, dC_rp, d_row_nnz, dC_ci, d_val);
-            CHECK_CUDA(cudaGetLastError());
-            dev_free(dC_rp_old);
-            dbg("[%s] DCEST fixup: C_nnz=%d(修正后)\n", tag, C_nnz_result);
-            // 修正 C_total(over-allocated → 实际):d2h 只下载有效数据
-            C_ci_sz = (size_t)C_nnz_result * sizeof(int);
-            C_v_sz = (size_t)C_nnz_result * sizeof(double);
-            C_ci_al = ALIGN8(C_ci_sz);
-            C_total = C_rp_al + C_ci_al + C_v_sz;
-        });
     }
     prof("compact+sort", [&]{
         static int g_cs_v2 = -1;   // CSORT_LADDER:默认 v2 开(×5 电池 geomean −6.4%,study/07);=legacy 回旧

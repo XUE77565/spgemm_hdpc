@@ -48,15 +48,24 @@ if (estimated_avg_dup < 1.5) {
 
 ### 1b. 消灭 dense_count
 
+> **10-12 已落地 = DCEST V3(study/40)**,实测修正了本节两个纸面预期:
+> ①margin 不是越小越好——它时间中立(只放大 allocation 间距),按"溢出证书零触发"实测
+>   定 200(MinHash 左尾到 0.5,in-2004 2 行结构性欠估);证书+判废回退是 <2.16 margin
+>   的安全前提,已从 3c 提前落地。
+> ②数值核行内连续直写+自报精确 row_nnz → V2 的 fixup/sentinel/shift 全是死代码或带竞态,
+>   V3 = 双 buffer 紧凑拷贝(仅 dense 行,k7/D5H 挪到链后写 exact 基址)。
+> 电池:nd24k −14.8% / in-2004 −10.4% / Ga3As3H12 −4.1%;c-64 +14%(dense_count 本来
+> 便宜)/ pre2 +11.9%(4 行巨鲸)——赢亏判据(dense_count vs 链费)是 L0 特征维度。
+
 ```cpp
 // 旧路径:est(近似) → dense_count(精确,O(flop)) → dense_direct(写)
-// 新路径:est × safety_margin(1.2) → dense_direct(直接写) → 溢出走 retry
-
-// dense kernel 改动:允许行写到 est×1.2 上限,溢出行标记 → retry 兜底
+// 新路径(V3):alloc = (est==flop ? est : est/expand) × margin → dense_direct(gapped 直写)
+//   → 证书(actual>alloc → 判废回退)→ 二次 scan → 双 buffer 紧凑拷贝 → k7/D5H 写 exact 基址
 ```
 
-- 效果:dense 启动税从 82ms→≈0 → 更多阵受益于 diter
-- 与 hash 的 retry 机制对称(hash 也是 est+retry)
+- 效果:dense 启动税从 82ms→≈0 → 更多阵受益于 diter(L0 择阵)
+- 与 hash 的 retry 机制对称(hash 也是 est+retry;dense 溢出走整阵判废,cursor 核已有
+  rank≥cap 截断同语义)
 
 ### 1c. 相位融合
 

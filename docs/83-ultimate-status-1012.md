@@ -276,7 +276,7 @@ GBT 逐行预测 → 行级 85.7% 精度 → **部署后净负 4.5%**。
 
 | 债 | 量级 | 修法 | 难度 |
 |---|---|---|---|
-| **dense_count 启动税** | ~10% | 用原始估计(去掉 1.8 hash 边际)× 1.1 | ✅ 低 |
+| **dense_count 启动税** | ~10% | ✅ DCEST V3 已落地(study/40):est 还原+flop 封顶守卫+溢出证书+双 buffer 紧凑;L0 按阵开 | ✅ 已落地 |
 | **估计器税(MinHash 链)** | ~5-8% | 双估计器(HLL/MinHash 按 L0 切换) | ✅ 低 |
 | **相位太多(17→8)** | ~5% | 融合 kernel | 中 |
 | 路由错配 | ~4% | ✅ L0 已验证 | ✅ 已解 |
@@ -289,14 +289,21 @@ GBT 逐行预测 → 行级 85.7% 精度 → **部署后净负 4.5%**。
 ## 第七部分:下一步计划(含教训修正)
 
 ```
-第一步: 修 est_expand 的 dense 行泄漏(半小时)
-  dense 行用原始估计(est/1.8)×1.1 替代 est×1.2
-  → over-allocation 从 216% → 10%
-  → 零 kernel 改动,零 fixup
+第一步: 修 est_expand 的 dense 行泄漏 ✅(10-12 完成 = DCEST V3,study/40)
+  dense 行用原始估计(est/1.8)×margin 替代 est×1.2;flop 封顶行不除(精确上界)
+  → V2 复盘三连:fixup 是 no-op(数值核行内连续直写+自报精确 row_nnz)已删;
+    in-place shift 有行内/跨行两类竞态 → 双 buffer 紧凑拷贝(仅 dense 行)根除;
+    溢出证书落地(actual>alloc → 判废回退 merge3)
+  → margin 时间中立(只影响内存),按证书零触发实测定 200(c-64/pre2 125 即零,
+    in-2004 有 2 行结构性欠估尾巴)
+  → 电池:nd24k −14.8% / in-2004 −10.4% / Ga3As3H12 −4.1%;
+    c-64 +14%(dense_count 本来只 2.7ms)/ pre2 +11.9%(4 行巨鲸)
+  → 赢亏判据 = dense_count(O·flop) vs 链费(O·dense_nnz + O·A_rows)= L0 特征维度
 
 第二步: 双估计器(Phase 1a,1-2天)
   低 dup 阵换 HLL(1ms),高 dup 阵保留 MinHash(5ms)
   → 估计器从 9.5ms → 1ms(60%+ 的阵)
+  (+in-2004 那 2 行结构性欠估的 DDUMP_ROW 看一眼 = 双估计器的输入证据)
 
 第三步: 相位融合(Phase 1c,2-3天)
   count_flop + 估计器 + 路由 → 一个融合 kernel
@@ -304,6 +311,7 @@ GBT 逐行预测 → 行级 85.7% 精度 → **部署后净负 4.5%**。
 
 第四步: L0 部署(Phase 2,3天)
   用精简后的管线跑 337(不能用现在被税扭曲的数据)
+  → DCEST=1 按阵开(L0 维度:dense_count 成本 vs 链费)+ per-matrix DCEST_MARGIN
   → 预期 GM ~1.15-1.20
 
 第五步: L1/L2 尝试(Phase 3,1周)
