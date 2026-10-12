@@ -32,27 +32,30 @@
 - `est_fill_kernel`(est=min(flop,n) 直填)现成(MHSAMP 路径遗产);
 - retry 基础设施:欠估行的兜底经济学已验证(docs/47)。
 
-## 四、设计:两刀
+## 四、设计(10-12 晚二次修正:对账发现闸门已存在)
 
-### 1a-1 矩阵级估计器跳过闸门(主刀,吸收 ocean 的跳过机理)
+> ⚠ 勘误:初版本文把"矩阵级跳过闸门"当缺失主刀——**对账证明它 8 月起就是默认行为**
+> (hash.cu:4622 `avg_product ≤ AVG_FLOP_THR(64)` → est=flop D2D 直填,MinHash 整段
+> 跳过;c-64 相位表里没有 construct/merge 的低均度阵就是命中者)。结论稳定纪律:
+> 宣布"X 缺失"前先对账既有实现。ocean 的 decideMatrixType(expansion<8)与我们是
+> 同机理异形态——他们的分母是 A_nnz(=平均 B 行长),我们的是 A_rows(=平均每行
+> flop,含 a_len),阈值家族不同但哲学同源。**"数学白给"的部分 8 月已经入账。**
 
-```cpp
-// count_flop 后(设备侧 avg_product 已有,零成本判定):
-if (avg_product <= EST_SKIP_THR) {          // 默认 64(沿 AVG_FLOP_THR 哲学;电池标定)
-    est_fill_kernel<<<...>>>(d_flop, A_cols, d_est, A_rows);   // est=min(flop,n)
-    goto est_scan;                           // construct+merge 整段消失
-}
+真战场 = **不命中闸门的"真需估计"阵**(avg_product>64:web/重 dup 类)。其税的解剖
+(c-64 相位实测):
+
 ```
-- 物理出处:est=flop 是精确上界,零低估;高估代价 = 表内存+retry 经济学
-  (P(retry)×cost vs 省掉的 construct+merge)——沿 docs/47 的 1.15/1.4 扫描裁决法标定阈值;
-- 与 ocean 的形态差异(不抄之点):他们 threshold=8 打在输入膨胀上,我们打在
-  avg_product 上且走自己的 est_fill/retry 体系;
-- 顺手兑现 1c 的一部分:命中阵直接少 2 个 launch。
+merge 1.69ms,带宽账 = A_nnz×128B ≈ 320MB → 屋顶 ~0.1ms
+→ 实测 = 屋顶的 17 倍 =【延迟受限,非流量受限】(1 warp/行,散射读 B sketch 冷数据)
+construct 0.14ms(B 侧写满 MH_M=128 partition,而 merge 只读 K=32 → 写读比 4:1)
+```
 
-### 1a-2 HLL A/B(次刀,只对仍需估计的高 dup 阵)
-
-机理上不预设胜负(我们的 K=32 sketch 更小);构造侧 uint8 vs uint32 有 4× 流量差,
-merge 侧 SIMD 打平的假说要 A/B。**先跑 1a-1 的电池看剩余税量再决定要不要做**。
+修正后的刀序:
+- **1a-1'(主刀)merge 占用/流水线**:17× 屋顶差距的延迟病——多行/warp 或大块发射
+  让在飞读增多。需 ncu 实证瓶颈位(L1 miss?冷 TLB?),GPU 空后做;
+- **1a-2'(次刀)construct 写侧砍到 K partition**:4× 写流量(它本来便宜,顺手);
+- HLL A/B 降级为备选(机理对偶+我们 sketch 更小,只在上面两刀不够时再议);
+- 闸门本身不动(已存在;阈值 64 的重标定视 1a-1' 后的剩余税再议)。
 
 ## 五、开放取证(GPU 空时补)
 
