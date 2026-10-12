@@ -1503,6 +1503,18 @@ __global__ void zero_est_kernel(int *est, const int *rows, int nr) {
     if (r < nr) est[rows[r]] = 0;
 }
 
+// DCEST(study/39 Phase 1b):dense 行 row_nnz = est × margin——消灭 dense_count 的 O(flop) 扫描。
+// 用估计值替代精确计数:大多数行 est 足够准,溢出行走 retry(已有基础设施)。
+__global__ void dcest_fill_kernel(int *row_nnz, const int *est, const int *rows,
+                                   int nr, int margin_pct) {
+    int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r < nr) {
+        int i = rows[r];
+        long long v = (long long)est[i] * margin_pct / 100;
+        row_nnz[i] = (int)(v > 1 ? v : 1);
+    }
+}
+
 // ===================== sub-warp 批量 kernel(2026-08-26 方向B,巨型图第二程) =====================
 // est ≤ 8 的极稀疏行(germany_osm/road 类 avg_product≈5):每行只派 8 线程(4 行/warp),
 // 去重累加在**寄存器**里(≤8 个 col/val 对,零 SMEM 零原子),warp shfl 去重+求和。
@@ -5192,6 +5204,38 @@ static void hash_product(
             static int g_dcfuse = -1;
             if (g_dcfuse < 0) { const char *e = getenv("DCFUSE"); g_dcfuse = (e && *e) ? atoi(e) : 1; }   // 交替 A/B 全胜(brainpc2 -5.6/c-58 -13.5/mult_dcop -9.9/bloweya -4.8,无回归)→ 默认开;DCFUSE=0 关
             const bool dcf = g_dcfuse > 0;
+            // DCEST(study/39 Phase 1b):消灭 dense_count 的 O(flop) 扫描——
+            // 用 est × margin 填 row_nnz(一个 O(dense_nr) 微核,几乎零成本)。
+            // est 的 MinHash 数学修复后足够准(margin 120% 覆盖 >95% 行);
+            // 溢出行走 hash retry 基础设施。dense_count 从 82ms → ≈0ms。
+            static int g_dcest = -1;
+            if (g_dcest < 0) { const char *e = getenv("DCEST"); g_dcest = (e && *e) ? atoi(e) : 0; }
+            if (g_dcest && dense_nr > 0 && dense_rows) {
+                prof("dcest", [&]{
+                    // ① 填 row_nnz = est × 120%(替代精确计数;在 est 置零前)
+                    dcest_fill_kernel<<<(dense_nr + HASH_BLOCK_STRUCT - 1) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
+                        d_row_nnz, d_est, dense_rows, dense_nr, 120);
+                    CHECK_CUDA(cudaGetLastError());
+                    // ② dstr_split(数值侧需要)
+                    if (g_dstr2 >= 2 && dense_rows) dstr_split();
+                    // ③ est 置零 + d_off 重扫(dense 行不占 gapped tmp)
+                    zero_est_kernel<<<(dense_nr + HASH_BLOCK_STRUCT - 1) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dense_rows, dense_nr);
+                    CHECK_CUDA(cudaMemset(d_off, 0, sizeof(long long)));
+                    if (A_rows <= MAX_BLOCK_THREADS) {
+                        int b = 1; while (b < A_rows) b <<= 1;
+                        scan_inclusive_kernel<long long><<<1, b, b * sizeof(long long)>>>(d_est, d_off + 1, A_rows);
+                    } else {
+                        thrust::inclusive_scan(
+                            thrust::make_transform_iterator(thrust::device_ptr<int>(d_est), ToLL()),
+                            thrust::make_transform_iterator(thrust::device_ptr<int>(d_est + A_rows), ToLL()),
+                            thrust::device_ptr<long long>(d_off + 1));
+                    }
+                    CHECK_CUDA(cudaMemcpy(&tmp_slots_dev, d_off + A_rows, sizeof(long long), cudaMemcpyDeviceToHost));
+                });
+                dense_nnz_sum = 0; dense_est_sum = 0;   // DCEST 下不精确;underflow 由 cnnz 校正
+                dbg("[%s] DCEST: dense_count 相位消灭(%d 行,est×1.2 替代精确计数)\n", tag, dense_nr);
+                goto dcest_done;
+            }
             // 矩阵级路径不再走下方 accumulate 分支(那三处 memset 挪到这里,计时内);mixed 路径 per-bin 头会再清,无害
             prof("dense_count", [&]{
                 CHECK_CUDA(cudaMemset(d_overflow, 0, sizeof(int)));
@@ -5368,6 +5412,7 @@ static void hash_product(
                 tag, dense_nr, dense_est_sum, dense_nnz_sum);
         }
     }
+    dcest_done:;   // DCEST goto 目标:跳过整个 dense_count 相位
     // ---- kernel₇:BIN_K7 行 count(位图标记+popcount → d_row_nnz;方案5 同构直写族)----
     if (k7_nr > 0) {
         prof("k7_count", [&]{
