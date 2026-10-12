@@ -51,11 +51,20 @@ construct 0.14ms(B 侧写满 MH_M=128 partition,而 merge 只读 K=32 → 写读
 ```
 
 修正后的刀序:
-- **1a-1'(主刀)merge 占用/流水线**:17× 屋顶差距的延迟病——多行/warp 或大块发射
-  让在飞读增多。需 ncu 实证瓶颈位(L1 miss?冷 TLB?),GPU 空后做;
+- **1a-1'(主刀)merge 占用/流水线——病根已 ncu 确诊(10-12 晚,c-64)**:
+  Memory 3.95% / Compute 2.15% 双贴地(纯延迟空转,印证 17× 屋顶差);
+  Theoretical Occ 50%(1 warp/block 形态上限)vs **Achieved 10.4%**。
+  病 = 每 block 1 warp 串行追 a_len 个 128B 散射读,无邻居 warp 藏延迟。
+  药 = 行并行 block(4 warp/块,每 warp 一行;merge 行独立天然安全),
+  理论上限 50→100%,预期 2.6ms → <1ms。只动发射几何+行索引,不动数学。
 - **1a-2'(次刀)construct 写侧砍到 K partition**:4× 写流量(它本来便宜,顺手);
 - HLL A/B 降级为备选(机理对偶+我们 sketch 更小,只在上面两刀不够时再议);
 - 闸门本身不动(已存在;阈值 64 的重标定视 1a-1' 后的剩余税再议)。
+
+## 七、解毒屏关联数据(10-12 晚,study/40 附录)
+
+20 中毒阵净赢 18;wb-edu −45.3%(dc 98.8ms 级的重税阵是 DCEST 主场);
+SiO2 on 超过全 hash A(L0 最优解翻面首证)→ Phase 2 重跑的动机已实证。
 
 ## 五、开放取证(GPU 空时补)
 
