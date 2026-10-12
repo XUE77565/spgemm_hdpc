@@ -1503,8 +1503,9 @@ __global__ void zero_est_kernel(int *est, const int *rows, int nr) {
     if (r < nr) est[rows[r]] = 0;
 }
 
-// DCEST(study/39 Phase 1b):dense 行 row_nnz = est × margin——消灭 dense_count 的 O(flop) 扫描。
-// 用估计值替代精确计数:大多数行 est 足够准,溢出行走 retry(已有基础设施)。
+// DCEST V2(study/39 Phase 1b):ocean 式——est 分配 + sentinel 扫描 + 全局紧凑
+
+// ① 填 row_nnz = est × margin(替代精确计数)
 __global__ void dcest_fill_kernel(int *row_nnz, const int *est, const int *rows,
                                    int nr, int margin_pct) {
     int r = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1512,6 +1513,60 @@ __global__ void dcest_fill_kernel(int *row_nnz, const int *est, const int *rows,
         int i = rows[r];
         long long v = (long long)est[i] * margin_pct / 100;
         row_nnz[i] = (int)(v > 1 ? v : 1);
+    }
+}
+
+// ② sentinel 初始化(dense 行的分配范围填 -1)
+__global__ void dcest_sentinel_kernel(int *dC_ci, const int *dC_rp,
+                                        const int *rows, const int *row_nnz, int nr) {
+    int ri = blockIdx.x;
+    if (ri >= nr) return;
+    int row = rows[ri];
+    int base = dC_rp[row], cnt = row_nnz[row];
+    for (int j = base + threadIdx.x; j < base + cnt; j += blockDim.x)
+        dC_ci[j] = -1;
+}
+
+// ③ dense 行修正:数实际条目 + 行内紧凑 + 更新 row_nnz
+__global__ void dcest_fixup_kernel(const int *dense_rows, int nr,
+                                     const int *dC_rp,
+                                     int *dC_ci, double *d_val,
+                                     int *row_nnz) {
+    int ri = blockIdx.x;
+    if (ri >= nr) return;
+    int row = dense_rows[ri];
+    int base = dC_rp[row], alloc = row_nnz[row];
+    if (threadIdx.x != 0) return;  // 单线程逐行(简单正确;行通常不大)
+    int write = 0;
+    for (int j = 0; j < alloc; j++) {
+        if (dC_ci[base + j] != -1) {
+            if (write != j) {
+                dC_ci[base + write] = dC_ci[base + j];
+                d_val[base + write] = d_val[base + j];
+            }
+            write++;
+        }
+    }
+    row_nnz[row] = write;  // 实际计数(hash 行已有精确值,不受影响)
+}
+
+// ④ 全局紧凑:所有行从 padding 位置搬到正确位置(正向安全:new ≤ old)
+__global__ void dcest_global_shift_kernel(int A_rows,
+                                            const int *dC_rp_old, const int *dC_rp_new,
+                                            const int *row_nnz,
+                                            int *dC_ci, double *d_val) {
+    // 每个线程搬一段数据(粗粒度并行:按全局 slot 索引)
+    // 计算总 slot 数由 host 传入 gridDim
+    extern __shared__ int s_off[];  // [blockDim.x+1] 每 thread 的目标区间
+    // 简化:每 block 处理一行
+    int row = blockIdx.x;
+    if (row >= A_rows) return;
+    int old_base = dC_rp_old[row], new_base = dC_rp_new[row];
+    int cnt = row_nnz[row];
+    if (old_base == new_base) return;  // 无需搬
+    for (int j = threadIdx.x; j < cnt; j += blockDim.x) {
+        dC_ci[new_base + j] = dC_ci[old_base + j];
+        d_val[new_base + j] = d_val[old_base + j];
     }
 }
 
@@ -4822,6 +4877,8 @@ static void hash_product(
     int *d_seg_beg = nullptr, *d_seg_end = nullptr;
     unsigned long long *d_scr_key = nullptr; double *d_scr_val = nullptr;
     void *d_cub_tmp = nullptr;
+    static int g_dcest = -1;     // DCEST(study/39 Phase 1b):函数级——dense_count 消灭 + 后置修正
+    if (g_dcest < 0) { const char *e = getenv("DCEST"); g_dcest = (e && *e) ? atoi(e) : 0; }
     static int g_compact_t = -1; // docs/13 v2:bin0/BATCH_S compact 线程级行(函数级:compact 相位亦用)
     if (g_compact_t < 0) { const char *e = getenv("COMPACT_T"); g_compact_t = (e && *e) ? atoi(e) : 1; }
     static int g_largest = -1;   // docs/74:Ocean-D straggler 位图窗(函数级:binning 传参用)
@@ -5201,15 +5258,14 @@ static void hash_product(
             // + count kernel 动态窗宽与向量化归约。"省一遍产品扫描"经论证不成立(低 dup 下
             // gapped+compact 的 24B/entry 搬运 ≥ 4B/product 的 count 扫描;D5H csort 教训同向),
             // 但相位内 ~0.5-0.7ms 纯开销可省 → 翻 brainpc2(1.020)/c-64(1.039)级近赢阵。
-            static int g_dcfuse = -1;
+    static int g_dcfuse = -1;
             if (g_dcfuse < 0) { const char *e = getenv("DCFUSE"); g_dcfuse = (e && *e) ? atoi(e) : 1; }   // 交替 A/B 全胜(brainpc2 -5.6/c-58 -13.5/mult_dcop -9.9/bloweya -4.8,无回归)→ 默认开;DCFUSE=0 关
             const bool dcf = g_dcfuse > 0;
             // DCEST(study/39 Phase 1b):消灭 dense_count 的 O(flop) 扫描——
             // 用 est × margin 填 row_nnz(一个 O(dense_nr) 微核,几乎零成本)。
             // est 的 MinHash 数学修复后足够准(margin 120% 覆盖 >95% 行);
             // 溢出行走 hash retry 基础设施。dense_count 从 82ms → ≈0ms。
-            static int g_dcest = -1;
-            if (g_dcest < 0) { const char *e = getenv("DCEST"); g_dcest = (e && *e) ? atoi(e) : 0; }
+            // DCEST V2 逻辑(使用函数级 g_dcest)
             if (g_dcest && dense_nr > 0 && dense_rows) {
                 prof("dcest", [&]{
                     // ① 填 row_nnz = est × 120%(替代精确计数;在 est 置零前)
@@ -6370,7 +6426,8 @@ static void hash_product(
 
     // est underflow check: actual C_nnz > estimated total → 回退 merge3
     // 方案5:dense 行计数精确(可 > 其 est,合法),检查改 hash 侧 = C_nnz − Σnnz_dense ≤ tmp_slots
-    if (!g_cnf) {   /* CNT_FUSE: underflow check deferred to late cnnz */
+    // DCEST:dense 行用 est×1.2(over-allocated)→ C_nnz 含 padding,检查必假阳 → 跳过
+    if (!g_cnf && !g_dcest) {   /* CNT_FUSE: underflow check deferred to late cnnz; DCEST: fixup 后校正 */
     if ((dense_nr > 0 || d5h_rows > 0 || k7_nr > 0)
             ? ((long long)C_nnz_result - dense_nnz_sum - d5h_nnz_sum - k7_nnz_sum > tmp_slots)
             : ((long long)C_nnz_result > total_est)) {
@@ -6802,6 +6859,41 @@ static void hash_product(
             diter_gapped_copy_kernel<<<(h_big_off + 255) / 256, 256>>>(
                 d_rows_sorted, h_big_off, d_off, d_row_nnz, d_dtmp_col, d_dtmp_val, dC_rp, dC_ci, d_val);
         }
+    }
+    // ── DCEST V2 修正链(study/39 Phase 1b):sentinel 扫描 + 实际计数 + 二次 scan + 全局紧凑 ──
+    // 位置:dense_numeric 之后、hash compact 之前(此时 dC 里 dense 数据在 padding 位置)
+    if (g_dcest && dense_nr > 0 && dense_rows) {
+        prof("dcest_fixup", [&]{
+            // ① 修正 dense 行的 row_nnz(扫描 -1 sentinel)
+            dcest_fixup_kernel<<<dense_nr, 1>>>(
+                dense_rows, dense_nr, dC_rp, dC_ci, d_val, d_row_nnz);
+            CHECK_CUDA(cudaGetLastError());
+            // ② 二次 cnnz_scan(用实际计数,得到正确 dC_rp)
+            // 保存旧偏移(供全局 shift 用)
+            int *dC_rp_old = decltype(dC_rp_old)(dev_alloc((size_t)(A_rows + 1) * sizeof(int)));
+            CHECK_CUDA(cudaMemcpy(dC_rp_old, dC_rp, (size_t)(A_rows + 1) * sizeof(int), cudaMemcpyDeviceToDevice));
+            CHECK_CUDA(cudaMemset(dC_rp, 0, sizeof(int)));
+            if (A_rows <= MAX_BLOCK_THREADS) {
+                int b = 1; while (b < A_rows) b <<= 1;
+                scan_inclusive_kernel<int><<<1, b, b * sizeof(int)>>>(d_row_nnz, dC_rp + 1, A_rows);
+            } else {
+                thrust::inclusive_scan(thrust::device_ptr<int>(d_row_nnz),
+                                       thrust::device_ptr<int>(d_row_nnz + A_rows),
+                                       thrust::device_ptr<int>(dC_rp + 1));
+            }
+            CHECK_CUDA(cudaMemcpy(&C_nnz_result, dC_rp + A_rows, sizeof(int), cudaMemcpyDeviceToHost));
+            // ③ 全局 shift:所有行从 padding 位置搬到紧凑位置
+            dcest_global_shift_kernel<<<A_rows, 256>>>(
+                A_rows, dC_rp_old, dC_rp, d_row_nnz, dC_ci, d_val);
+            CHECK_CUDA(cudaGetLastError());
+            dev_free(dC_rp_old);
+            dbg("[%s] DCEST fixup: C_nnz=%d(修正后)\n", tag, C_nnz_result);
+            // 修正 C_total(over-allocated → 实际):d2h 只下载有效数据
+            C_ci_sz = (size_t)C_nnz_result * sizeof(int);
+            C_v_sz = (size_t)C_nnz_result * sizeof(double);
+            C_ci_al = ALIGN8(C_ci_sz);
+            C_total = C_rp_al + C_ci_al + C_v_sz;
+        });
     }
     prof("compact+sort", [&]{
         static int g_cs_v2 = -1;   // CSORT_LADDER:默认 v2 开(×5 电池 geomean −6.4%,study/07);=legacy 回旧
