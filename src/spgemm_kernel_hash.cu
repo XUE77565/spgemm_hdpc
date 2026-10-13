@@ -343,136 +343,117 @@ __global__ void mh_construct_kernel(
 }
 
 // Phase 2:对 A 每行逐 partition min 合并(单 warp,vectorized uint4 merge)
+// 1a-1'(10-13 取证终报后重写):PPT×EST_CONT 双模板 + running min 全程寄存器化。
+// 取证账本(578 warp指令/行):循环区 229/行 = 19条/元素 —— 真凶 = min 经 smem 往返
+// (每元素 8 次 LDS/STS,1warp/block 时代遗产);est 尾部 188/行 = 双路径 DP + FSEL
+// (est_cont 运行时参数 → snap/连续两路全编;DP 在 1:64 单元)。修法:①min 入寄存器,
+// smem 与两处 __syncthreads 整体消失;②EST_CONT 模板特化(生产恒 1 → snap 死码);
+// ③尾部降 SP(估计器固有 CV 9%,float 1e-7 误差零风险)。数学(逐 partition min、
+// linear counting / 算术均值公式、flop 封顶)与 legacy 逐位同源。
+template <int PPT, bool EST_CONT>
 __global__ void mh_merge_kernel(
     const int *A_row_ptr, const int *A_col_ind,
     int A_rows,
     const unsigned int *b_mh,           // [B_rows * MH_M] uint32 from Phase 1
     const int *row_flop,                // [A_rows] 每行精确乘积数(精确上界,封顶 MinHash 高估)
-    double expand,                      // EST_EXPAND(运行时:小阵 1.4 免重试 / 大阵 1.15 省内存)
-    int est_cont,                       // EST_CONT=1:est 连续不 snap 2 幂(study/12;配 HASH_TGT_ALPHA<200 单次吸附)
-    int *est_nnz,                       // [A_rows] output
-    int sample_stride = 0,              // MHSAMP:>1 时紧凑采样 grid(S 块,块→行 = bid×stride;实测
-                                        // 28k 空块早退仍收全价 = dispatch/延迟限制,mod-skip 无效)
-    int mh_k = MH_M,                    // MH_K(docs/57 续):merge 只读每行 sketch 前 mh_k 个 partition
-                                        // —— DVFS toll ∝ 冷数据量,128→32 = 散射读 512→128B/行(÷4);
-                                        // 构造侧仍写满 128;估计器 m 同步缩(CV 9%→18%,须 A/B retry)
-    const int *avg_gate = nullptr,      // PIPEFUSE:门命中 → est=flop 直填(与 memcpy 路径逐位同值)
-    double rexp_lo = 0.0, double rexp_hi = 0.0,   // 行级 expand(study/22 新第一刀):expand=f(E) 而非全阵标量。
-    int rexp_elo = 0, int rexp_ehi = 0,           // σ=1.04/√m_eff——轻行 sketch 误差大保余量,重行 σ 收敛敢压;
-                                                  // E≤elo→lo / E≥ehi→hi / 中间 log 线性。ehi=0 = 关(legacy 标量)
-    int n_work = 0)                     // 1a-1':grid 的工作项数(全量=A_rows;MHSAMP=S 个采样行)。
-                                        // 行并行化后 block 内各 warp 的 rid 越界判定用它,防采样投影被尾块污染。
+    double expand,                      // EST_EXPAND(运行时)
+    int *est_nnz,                       // [A_rows] output(est_cont 语义由模板承担)
+    int sample_stride = 0,              // MHSAMP:>1 时紧凑采样 grid(rid=bid*R+w → row=rid*stride)
+    const int *avg_gate = nullptr,      // PIPEFUSE:门命中 → est=flop 直填
+    double rexp_lo = 0.0, double rexp_hi = 0.0,   // 行级 expand(study/22):E 域两锚点 log 插值
+    int rexp_elo = 0, int rexp_ehi = 0,
+    int n_work = 0)                     // grid 工作项数(全量=A_rows;MHSAMP=S)
 {
-    // 1a-1'(10-13):行并行 block —— R=blockDim.x/32 个 warp 各领一行(legacy:1 warp/block,
-    // ncu 实测占用 10.4% vs 形态上限 50%:单 warp 等 600-800ns 散射读时 SM 无邻居遮蔽
-    // [Mem 3.95%/Comp 2.15% 双贴地 = 纯延迟空转];4 warp/块 → 在飞 warp ×4。
-    // 数学/访存序列/结果逐位不变;唯一语义新增:无效 warp 也必须到达两处 __syncthreads)。
+    constexpr int K = PPT * WARP_SIZE;                 // mh_k 编译期(32/64/128)
+    constexpr float K_SCALE = (float)((double)MH_M / (double)(PPT * WARP_SIZE));
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int rows_per_blk = blockDim.x >> 5;
     const int rid = (int)blockIdx.x * rows_per_blk + warp;
     const int row = (sample_stride > 1) ? rid * sample_stride : rid;
     const bool valid = (rid < n_work) && (row < A_rows);
 
-    if (avg_gate && *avg_gate == 1) {          // device 门(PIPEFUSE):grid 一致早退(先于任何 sync,全体 return 安全)
+    if (avg_gate && *avg_gate == 1) {          // device 门(PIPEFUSE):grid 一致,先于一切
         if (valid && lane == 0) est_nnz[row] = row_flop[row];
         return;
     }
+    if (!valid) return;                        // 零 smem/零 syncthreads → 早退安全
 
-    extern __shared__ int smem_merge_raw[];
-    unsigned int *smem_merge = (unsigned int*)smem_merge_raw + (size_t)warp * mh_k;   // 每 warp 独立 [mh_k] 切片
-    const int ppt = mh_k >> 5;                                   // partitions/thread(32 线程;mh_k≥32)
-    int base_i = lane * ppt;                                     // 每线程 owning [base_i..base_i+ppt)
-    for (int k = 0; k < ppt; k++) smem_merge[base_i + k] = MH_EMPTY;
-    __syncthreads();                            // ★ 无效 warp 也必须到达(多 warp 化的同步不变式)
+    // ★ running min 寄存器化:每 lane 自持 PPT 个 partition(模板常量,完全展开)
+    unsigned int rmin[PPT];
+    #pragma unroll
+    for (int k = 0; k < PPT; k++) rmin[k] = MH_EMPTY;
 
-    if (valid) {
-    int start_elem = A_row_ptr[row];
-    int end_elem = A_row_ptr[row + 1];
-    if (ppt == 4) {
-    // 逐引用 B 行,vectorized uint4 min-merge(每线程固定 owning 4 个 partition → 无 race、无需内 sync)
-    // (= MH_K=128 默认路径,与历史逐位一致)
+    const int start_elem = A_row_ptr[row];
+    const int end_elem = A_row_ptr[row + 1];
+    if (PPT == 4) {
+    // 逐引用 B 行,vectorized uint4 min-merge(与 legacy 逐位一致;min 全程在寄存器)
     for (int e = start_elem; e < end_elem; e++) {
         int row_b = A_col_ind[e];
-        const uint4 *bsk4 = (const uint4*)(b_mh + (size_t)row_b * MH_M);   // 行首 16B 对齐(512B/行)
-        uint4 v = bsk4[lane];                                               // 16B coalesced
-        unsigned int *sm = smem_merge + base_i;
-        if (v.x < sm[0]) sm[0] = v.x;
-        if (v.y < sm[1]) sm[1] = v.y;
-        if (v.z < sm[2]) sm[2] = v.z;
-        if (v.w < sm[3]) sm[3] = v.w;
+        const uint4 *bsk4 = (const uint4*)(b_mh + (size_t)row_b * MH_M);
+        uint4 v = bsk4[lane];
+        if (v.x < rmin[0]) rmin[0] = v.x;
+        if (v.y < rmin[1]) rmin[1] = v.y;
+        if (v.z < rmin[2]) rmin[2] = v.z;
+        if (v.w < rmin[3]) rmin[3] = v.w;
     }
     } else {
-    // MH_K<128 通用路径:每线程 owning ppt 个 partition,标量 loads(ppt=1 时 32 线程 × 4B = 128B/行)
     for (int e = start_elem; e < end_elem; e++) {
         int row_b = A_col_ind[e];
-        const unsigned int *bsk = b_mh + (size_t)row_b * MH_M;   // 跨距仍 MH_M(构造写满 128)
-        unsigned int *sm = smem_merge + base_i;
-        for (int k = 0; k < ppt; k++) {
-            unsigned int v = bsk[base_i + k];
-            if (v < sm[k]) sm[k] = v;
+        const unsigned int *bsk = b_mh + (size_t)row_b * MH_M;
+        #pragma unroll
+        for (int k = 0; k < PPT; k++) {
+            unsigned int v = bsk[lane * PPT + k];
+            if (v < rmin[k]) rmin[k] = v;
         }
     }
     }
-    }
-    __syncthreads();                            // 同上:无条件(每线程只读自己写的槽,同步本身是保守位)
 
-    // 估计 reduce(单 warp):sum_min = Σ min_j(非空);V = 非空 partition 数(m = mh_k)
-    if (valid) {
-    double sum_min = 0.0;
+    // 归约+估计(零 smem:直接从寄存器读;SP 数学)
+    float sum_min = 0.f;
     int V = 0;
-    for (int k = 0; k < ppt; k++) {
-        unsigned int mv = smem_merge[base_i + k];
-        if (mv != MH_EMPTY) { sum_min += (double)mv; V++; }
-    }
+    #pragma unroll
+    for (int k = 0; k < PPT; k++)
+        if (rmin[k] != MH_EMPTY) { sum_min += (float)rmin[k]; V++; }
     for (int off = WARP_SIZE / 2; off > 0; off >>= 1) {
         sum_min += __shfl_down_sync(0xFFFFFFFF, sum_min, off);
         V += __shfl_down_sync(0xFFFFFFFF, V, off);
     }
 
-    if (lane == 0) {   // 1a-1':block→warp(warp 首lane 写本行 est)
-        double E;
+    if (lane == 0) {
+        float E;
         int v = V;
-        // MH_K<128 时读的是 distinct 的 K/MH_M 均匀子集(构造按 hash 派 128 partition)→ 估计后
-        // 乘 MH_M/mh_k 放回全集(首版漏乘 = 4× 系统性低估:TSOPF Σest 58M vs 真值 231.7M 实锤)。
-        const double k_scale = (double)MH_M / (double)mh_k;
         if (v == 0) {
-            E = 0.0;                                                      // 空行
-        } else if (v < mh_k) {
-            E = (double)mh_k * log((double)mh_k / (double)(mh_k - v)) * k_scale;   // linear counting(小范围)
+            E = 0.f;
+        } else if (v < K) {
+            E = (float)K * logf((float)K / (float)(K - v)) * K_SCALE;   // linear counting(小范围)
         } else {
-            // min_j/2^32 ~ Exp(1/(D/m)) ⇒ E[min_j] = m·2^32/D ⇒ D ≈ m²·2^32/Σmin_j(算术均值,无偏)。
-            // 旧式 2^32·Σ(1/min_j) 是调和均值,Jensen 高估 ~ln 倍(exdata_1 17.85×/TSOPF 20× 根因);
-            // 首版修正漏了因子 m(低 EST 128 倍,exdata_1 est 254k vs C 11.3M)——都已修(2026-08-26)。
-            E = (double)mh_k * mh_k * 0x100000000LL / sum_min * k_scale;
+            // min_j/2^32 ~ Exp(1/(D/m)) ⇒ D ≈ m²·2^32/Σmin(算术均值,无偏;2026-08-26 修
+            // 调和均值 Jensen 与漏因子 m 双 bug —— 公式不动,仅精度降 SP)
+            E = (float)K * K * 4294967296.f / sum_min * K_SCALE;
         }
-        double ex = expand;
-        if (rexp_ehi > 0) {   // 行级 expand:两锚点 log 线性插值(sweep2 梯度实证:重行 1.4× 赢/轻行 1.8× 保命)
-            double t = (E <= (double)rexp_elo) ? 0.0
-                     : (E >= (double)rexp_ehi) ? 1.0
-                     : (log(E) - log((double)rexp_elo)) / (log((double)rexp_ehi) - log((double)rexp_elo));
-            ex = rexp_lo + (rexp_hi - rexp_lo) * t;
+        float ex = (float)expand;
+        if (rexp_ehi > 0) {   // 行级 expand:两锚点 log 线性插值
+            float t = (E <= (float)rexp_elo) ? 0.0f
+                   : (E >= (float)rexp_ehi) ? 1.0f
+                   : (logf(E) - logf((float)rexp_elo)) / (logf((float)rexp_ehi) - logf((float)rexp_elo));
+            ex = (float)rexp_lo + ((float)rexp_hi - (float)rexp_lo) * t;
         }
         int temp = (int)(E * ex);
         if (temp < 1) temp = 1;
         int est;
-        if (temp <= EST_ULTRA_THR || est_cont) {                          // ultra / EST_CONT:连续 temp(study/12:
-            est = temp;                                                   //  双重 pow2 吸附 2.3-4.6× 的根源)
-        } else {                                                          // snap 到 next_pow2 × 2 余量
-            int ht = WARP_SIZE;                                                  // (2× 余量治小/中行低估表满;>HASH_CAP 交 heavy)
+        if (EST_CONT || temp <= EST_ULTRA_THR) {   // 模板特化:生产 EST_CONT=true → snap 死码
+            est = temp;
+        } else {
+            int ht = WARP_SIZE;
             while (ht < temp && ht < GLOBAL_HT_MAX_SLOTS) ht <<= 1;
             est = ht;
         }
-        // flop = 每行乘积数 = distinct 的【精确上界】→ 封顶 MinHash 高估(TSOPF:Σest 从 147亿 → ≤Σflop,
-        // 兼治 int 前缀和溢出)。min() 不引入新低估:flop ≥ distinct 恒真,低估风险仅剩原 2×snap 自身。
         int fl = row_flop[row];
         if (fl > 0 && est > fl) est = fl;
         est_nnz[row] = est;
     }
-    }   // 1a-1':if (valid) 收口
 }
 
-// MHSAMP:dense-注定阵的 est 门专用填充(min(flop,n) 上界;布局消费者不存在 —— d_off 随 est
-// 置零重扫,tmp 只按坍缩后 hash 侧定容,total_est 由投影值在 binning 后覆写)
 __global__ void est_fill_kernel(const int *row_flop, int n, int *est, int A_rows) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < A_rows) { int f = row_flop[i]; est[i] = f < n ? f : n; }
@@ -4667,21 +4648,6 @@ static void hash_product(
             g_mh_k = v;
         }
         const int mh_k = g_mh_k;
-        // 1a-1'(10-13):merge 行并行 R warp/块(MH_MERGE_R=1 = legacy 单 warp/块,A/B 用)。
-        // ncu 病根:legacy 形态占用上限 50%(blocks/SM=32×1warp)、实测 10.4% —— 单 warp 的
-        // 600-800ns 散射读无邻居遮蔽,SM 空转(Mem 3.95%/Comp 2.15% 双贴地);R=4 → 在飞 ×4。
-        static int g_merge_r = -1;
-        if (g_merge_r < 0) {
-            const char *e = getenv("MH_MERGE_R");
-            g_merge_r = (e && *e) ? atoi(e) : 4;
-            if (g_merge_r < 1 || g_merge_r > 8) g_merge_r = 4;
-        }
-        const int merge_r = g_merge_r;
-        int p2_block = WARP_SIZE * merge_r;
-        size_t smem_p2 = (size_t)merge_r * mh_k * sizeof(unsigned int);   // 每 warp 独立 [mh_k] 切片
-        // 自适应 EXPAND(2026-08-26):小计算量矩阵是延迟域 —— retry 的 ~0.7ms 固定延迟占比大,
-        // 保留 1.4 松弛让欠估尾部消失;大矩阵是内存域 —— 1.15 紧 est,retry 摊薄可忽略。
-        // (bcsstk30 教训:1.15 下 143 行欠估 → retry 0.74ms = 总预算 30%,1.76× 落后主因)
         double est_expand = EST_EXPAND_STRUCT;   // EXPAND 扫描裁决(1.15/1.20/1.25/1.30/1.40 → 9.03/9.46/9.50/10.44/9.64ms):紧 est 完胜,retry-vs-compact 零和
         // docs/47:小阵(est 1.15 的 retry 固定开销 ~0.8ms 占比大)→ 1.4 宽松免重试
         if (A_nnz < STREAMLINE_NNZ_STRUCT) est_expand = EST_EXPAND_SMALL;
@@ -4729,15 +4695,43 @@ static void hash_product(
         // est_d×20<total_est 恒假),d_est 膨胀值不会漏进任何布局消费者。
         static int g_mhsamp = -1;
         if (g_mhsamp < 0) { const char *e = getenv("MHSAMP"); g_mhsamp = (e && *e) ? atoi(e) : 0; }
+        // 1a-1'(10-13):merge 行并行 R warp/块(MH_MERGE_R=1 = legacy 单 warp/块,A/B 用)。
+        // ncu 病根:legacy 形态占用上限 50%(blocks/SM=32×1warp)、实测 10.4% —— 单 warp 的
+        // 600-800ns 散射读无邻居遮蔽,SM 空转(Mem 3.95%/Comp 2.15% 双贴地);R=4 → 在飞 ×4。
+        static int g_merge_r = -1;
+        if (g_merge_r < 0) {
+            const char *e = getenv("MH_MERGE_R");
+            g_merge_r = (e && *e) ? atoi(e) : 4;
+            if (g_merge_r < 1 || g_merge_r > 8) g_merge_r = 4;
+        }
+        const int merge_r = g_merge_r;
+        int p2_block = WARP_SIZE * merge_r;
+        // 1a-1' 模板派发:ppt=mh_k/32 × est_cont;smem=0(min 全程寄存器化后无共享内存)
+        auto mh_merge_launch = [&](int grid, int stride, const int *ag,
+                                   double rlo, double rhi, int relo, int rehi, int nwork) {
+            dim3 g(grid), b((unsigned)p2_block);
+            if (g_est_cont) {
+                if (mh_k == 32)       mh_merge_kernel<1, true ><<<g, b, 0>>>(dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, d_est, stride, ag, rlo, rhi, relo, rehi, nwork);
+                else if (mh_k == 64)  mh_merge_kernel<2, true ><<<g, b, 0>>>(dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, d_est, stride, ag, rlo, rhi, relo, rehi, nwork);
+                else                  mh_merge_kernel<4, true ><<<g, b, 0>>>(dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, d_est, stride, ag, rlo, rhi, relo, rehi, nwork);
+            } else {
+                if (mh_k == 32)       mh_merge_kernel<1, false><<<g, b, 0>>>(dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, d_est, stride, ag, rlo, rhi, relo, rehi, nwork);
+                else if (mh_k == 64)  mh_merge_kernel<2, false><<<g, b, 0>>>(dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, d_est, stride, ag, rlo, rhi, relo, rehi, nwork);
+                else                  mh_merge_kernel<4, false><<<g, b, 0>>>(dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, d_est, stride, ag, rlo, rhi, relo, rehi, nwork);
+            }
+        };
+        // 自适应 EXPAND(2026-08-26):小计算量矩阵是延迟域 —— retry 的 ~0.7ms 固定延迟占比大,
+        // 保留 1.4 松弛让欠估尾部消失;大矩阵是内存域 —— 1.15 紧 est,retry 摊薄可忽略。
+        // (bcsstk30 教训:1.15 下 143 行欠估 → retry 0.74ms = 总预算 30%,1.76× 落后主因)
         int samp_stride = 0;
         if (g_mhsamp && !pfuse && !att && A_rows >= MHSAMP_MIN_ROWS && A_cols > DENSE_MAX_N && A_cols <= DENSE_WIN_MAX_N_STRUCT) {
             samp_stride = (A_rows + MHSAMP_SAMPLES - 1) / MHSAMP_SAMPLES;
             int S = (A_rows + samp_stride - 1) / samp_stride;
             prof("mh_merge", [&]{   // 采样 pass(紧凑 grid = S 块;计入 mh_merge 相位)
                 CHECK_CUDA(cudaMemset(d_est, 0, (size_t)A_rows * sizeof(int)));
-                mh_merge_kernel<<<(S + merge_r - 1) / merge_r, p2_block, smem_p2>>>(
-                    dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, g_est_cont, d_est, samp_stride, mh_k,
-                    nullptr, g_rexp == 1 ? rexp_lo : 0.0, g_rexp == 1 ? rexp_hi : 0.0, g_rexp == 1 ? rexp_elo : 0, g_rexp == 1 ? rexp_ehi : 0, S);
+                mh_merge_launch((S + merge_r - 1) / merge_r, samp_stride, nullptr,
+                                g_rexp == 1 ? rexp_lo : 0.0, g_rexp == 1 ? rexp_hi : 0.0,
+                                g_rexp == 1 ? rexp_elo : 0, g_rexp == 1 ? rexp_ehi : 0, S);
                 CHECK_CUDA(cudaGetLastError());
             });
             long long s_sum = thrust::reduce(
@@ -4760,10 +4754,9 @@ static void hash_product(
         }
         if (samp_stride == 0) {
             prof("mh_merge", [&]{
-                mh_merge_kernel<<<(A_rows + merge_r - 1) / merge_r, p2_block, smem_p2>>>(
-                    dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, g_est_cont, d_est, 0, mh_k,
-                    pfuse ? d_avg_gate : nullptr,
-                    g_rexp == 1 ? rexp_lo : 0.0, g_rexp == 1 ? rexp_hi : 0.0, g_rexp == 1 ? rexp_elo : 0, g_rexp == 1 ? rexp_ehi : 0, A_rows);
+                mh_merge_launch((A_rows + merge_r - 1) / merge_r, 0, pfuse ? d_avg_gate : nullptr,
+                                g_rexp == 1 ? rexp_lo : 0.0, g_rexp == 1 ? rexp_hi : 0.0,
+                                g_rexp == 1 ? rexp_elo : 0, g_rexp == 1 ? rexp_ehi : 0, A_rows);
                 CHECK_CUDA(cudaGetLastError());
             });
         }
