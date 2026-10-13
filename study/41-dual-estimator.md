@@ -78,9 +78,12 @@ construct 0.14ms(B 侧写满 MH_M=128 partition,而 merge 只读 K=32 → 写读
 LDG 全量 2.8M(9%);循环 4 路展开槽各 157,770 次恰与对称展开后的 a_len 吻合(c-64.mtx
 对称存储,展开后行均 ~14)。四个备选理论(带宽/行尾/DVFS/占用)全部证伪存档。
 
-**修法(设计就绪)**:①循环 min 全程寄存器化 + 删 smem 与两处 syncthreads(每元素
--10 条);②est_cont 模板特化(生产恒 1 → snap 分支死码)+ est 数学降 SP(CV 9% 下
-float 的 1e-7 误差零风险)+ 常量 host 预计算。预期 578→~200/行 → merge ~0.6ms(≈3×)。
+**修法(✅ 10-13 落地,commit d5c76f5)**:①循环 min 全程寄存器化 + 删 smem 与两处
+syncthreads;②PPT×EST_CONT 双模板(snap 死码);③est 尾部降 SP + K/K_SCALE 编译期。
+**实测:c-64 merge 1.856→1.058ms(−43%),nd24k 0.843ms;值门对改造前基线
+col_mismatch=0 / worst 1.4e-16;memcheck 0 err;c-64/pre2 nnz 精确;est 总量漂移
+不可见(over-alloc 1.80x 不变)。** 未达 0.6ms 目标——残余 = 入口 161/行(LDC 参数
+装载类,结构性)+ SP 尾部;进一步压缩需参数打包/常量内存化,收益递减,停刀。
 - **1a-2'(次刀)construct 写侧砍到 K partition**:4× 写流量(它本来便宜,顺手);
 - HLL A/B 降级为备选(机理对偶+我们 sketch 更小,只在上面两刀不够时再议);
 - 闸门本身不动(已存在;阈值 64 的重标定视 1a-1' 后的剩余税再议)。
