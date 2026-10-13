@@ -358,27 +358,34 @@ __global__ void mh_merge_kernel(
                                         // 构造侧仍写满 128;估计器 m 同步缩(CV 9%→18%,须 A/B retry)
     const int *avg_gate = nullptr,      // PIPEFUSE:门命中 → est=flop 直填(与 memcpy 路径逐位同值)
     double rexp_lo = 0.0, double rexp_hi = 0.0,   // 行级 expand(study/22 新第一刀):expand=f(E) 而非全阵标量。
-    int rexp_elo = 0, int rexp_ehi = 0)           // σ=1.04/√m_eff——轻行 sketch 误差大保余量,重行 σ 收敛敢压;
+    int rexp_elo = 0, int rexp_ehi = 0,           // σ=1.04/√m_eff——轻行 sketch 误差大保余量,重行 σ 收敛敢压;
                                                   // E≤elo→lo / E≥ehi→hi / 中间 log 线性。ehi=0 = 关(legacy 标量)
+    int n_work = 0)                     // 1a-1':grid 的工作项数(全量=A_rows;MHSAMP=S 个采样行)。
+                                        // 行并行化后 block 内各 warp 的 rid 越界判定用它,防采样投影被尾块污染。
 {
-    if (avg_gate && *avg_gate == 1) {          // device 门(PIPEFUSE):block 一致早退
-        if ((sample_stride <= 1 || (int)blockIdx.x * sample_stride < A_rows) && threadIdx.x == 0) {
-            int row0 = (sample_stride > 1) ? (int)blockIdx.x * sample_stride : (int)blockIdx.x;
-            if (row0 < A_rows) est_nnz[row0] = row_flop[row0];
-        }
+    // 1a-1'(10-13):行并行 block —— R=blockDim.x/32 个 warp 各领一行(legacy:1 warp/block,
+    // ncu 实测占用 10.4% vs 形态上限 50%:单 warp 等 600-800ns 散射读时 SM 无邻居遮蔽
+    // [Mem 3.95%/Comp 2.15% 双贴地 = 纯延迟空转];4 warp/块 → 在飞 warp ×4。
+    // 数学/访存序列/结果逐位不变;唯一语义新增:无效 warp 也必须到达两处 __syncthreads)。
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int rows_per_blk = blockDim.x >> 5;
+    const int rid = (int)blockIdx.x * rows_per_blk + warp;
+    const int row = (sample_stride > 1) ? rid * sample_stride : rid;
+    const bool valid = (rid < n_work) && (row < A_rows);
+
+    if (avg_gate && *avg_gate == 1) {          // device 门(PIPEFUSE):grid 一致早退(先于任何 sync,全体 return 安全)
+        if (valid && lane == 0) est_nnz[row] = row_flop[row];
         return;
     }
-    int row = (sample_stride > 1) ? (int)blockIdx.x * sample_stride : (int)blockIdx.x;
-    if (row >= A_rows) return;
-    int tid = threadIdx.x;
 
     extern __shared__ int smem_merge_raw[];
-    unsigned int *smem_merge = (unsigned int*)smem_merge_raw;   // [mh_k] uint32(smem 由 host 按 mh_k 配)
+    unsigned int *smem_merge = (unsigned int*)smem_merge_raw + (size_t)warp * mh_k;   // 每 warp 独立 [mh_k] 切片
     const int ppt = mh_k >> 5;                                   // partitions/thread(32 线程;mh_k≥32)
-    int base_i = tid * ppt;                                      // 每线程 owning [base_i..base_i+ppt)
+    int base_i = lane * ppt;                                     // 每线程 owning [base_i..base_i+ppt)
     for (int k = 0; k < ppt; k++) smem_merge[base_i + k] = MH_EMPTY;
-    __syncthreads();
+    __syncthreads();                            // ★ 无效 warp 也必须到达(多 warp 化的同步不变式)
 
+    if (valid) {
     int start_elem = A_row_ptr[row];
     int end_elem = A_row_ptr[row + 1];
     if (ppt == 4) {
@@ -387,7 +394,7 @@ __global__ void mh_merge_kernel(
     for (int e = start_elem; e < end_elem; e++) {
         int row_b = A_col_ind[e];
         const uint4 *bsk4 = (const uint4*)(b_mh + (size_t)row_b * MH_M);   // 行首 16B 对齐(512B/行)
-        uint4 v = bsk4[tid];                                               // 16B coalesced
+        uint4 v = bsk4[lane];                                               // 16B coalesced
         unsigned int *sm = smem_merge + base_i;
         if (v.x < sm[0]) sm[0] = v.x;
         if (v.y < sm[1]) sm[1] = v.y;
@@ -406,9 +413,11 @@ __global__ void mh_merge_kernel(
         }
     }
     }
-    __syncthreads();
+    }
+    __syncthreads();                            // 同上:无条件(每线程只读自己写的槽,同步本身是保守位)
 
     // 估计 reduce(单 warp):sum_min = Σ min_j(非空);V = 非空 partition 数(m = mh_k)
+    if (valid) {
     double sum_min = 0.0;
     int V = 0;
     for (int k = 0; k < ppt; k++) {
@@ -420,7 +429,7 @@ __global__ void mh_merge_kernel(
         V += __shfl_down_sync(0xFFFFFFFF, V, off);
     }
 
-    if (tid == 0) {
+    if (lane == 0) {   // 1a-1':block→warp(warp 首lane 写本行 est)
         double E;
         int v = V;
         // MH_K<128 时读的是 distinct 的 K/MH_M 均匀子集(构造按 hash 派 128 partition)→ 估计后
@@ -459,6 +468,7 @@ __global__ void mh_merge_kernel(
         if (fl > 0 && est > fl) est = fl;
         est_nnz[row] = est;
     }
+    }   // 1a-1':if (valid) 收口
 }
 
 // MHSAMP:dense-注定阵的 est 门专用填充(min(flop,n) 上界;布局消费者不存在 —— d_off 随 est
@@ -4646,7 +4656,7 @@ static void hash_product(
                 dB_rp, dB_ci, A_rows, A_nnz, d_mh, rows_per_block, pfuse ? d_avg_gate : nullptr);
             CHECK_CUDA(cudaGetLastError());
         });
-        int p2_block = MH_M / 4;                      // 单 warp(32):每线程 owning 4 partitions,vectorized uint4 merge
+        // (1a-1':p2_block 定义移至下方 merge_r 处 —— 32×R 线程 = R warp/块)
         // MH_K(docs/57 续):merge 只读前 K 个 partition —— DVFS toll ∝ 冷数据量,128B/行(K=32)
         // vs 512B/行(K=128)。估计器 CV 9%→18%,风险 = est 噪声改变 binning/retry,须 A/B 验证。
         static int g_mh_k = -1;
@@ -4657,7 +4667,18 @@ static void hash_product(
             g_mh_k = v;
         }
         const int mh_k = g_mh_k;
-        int smem_p2 = mh_k * sizeof(unsigned int);   // [mh_k] uint32(smem_merge;host 按 K 配)
+        // 1a-1'(10-13):merge 行并行 R warp/块(MH_MERGE_R=1 = legacy 单 warp/块,A/B 用)。
+        // ncu 病根:legacy 形态占用上限 50%(blocks/SM=32×1warp)、实测 10.4% —— 单 warp 的
+        // 600-800ns 散射读无邻居遮蔽,SM 空转(Mem 3.95%/Comp 2.15% 双贴地);R=4 → 在飞 ×4。
+        static int g_merge_r = -1;
+        if (g_merge_r < 0) {
+            const char *e = getenv("MH_MERGE_R");
+            g_merge_r = (e && *e) ? atoi(e) : 4;
+            if (g_merge_r < 1 || g_merge_r > 8) g_merge_r = 4;
+        }
+        const int merge_r = g_merge_r;
+        int p2_block = WARP_SIZE * merge_r;
+        size_t smem_p2 = (size_t)merge_r * mh_k * sizeof(unsigned int);   // 每 warp 独立 [mh_k] 切片
         // 自适应 EXPAND(2026-08-26):小计算量矩阵是延迟域 —— retry 的 ~0.7ms 固定延迟占比大,
         // 保留 1.4 松弛让欠估尾部消失;大矩阵是内存域 —— 1.15 紧 est,retry 摊薄可忽略。
         // (bcsstk30 教训:1.15 下 143 行欠估 → retry 0.74ms = 总预算 30%,1.76× 落后主因)
@@ -4714,9 +4735,9 @@ static void hash_product(
             int S = (A_rows + samp_stride - 1) / samp_stride;
             prof("mh_merge", [&]{   // 采样 pass(紧凑 grid = S 块;计入 mh_merge 相位)
                 CHECK_CUDA(cudaMemset(d_est, 0, (size_t)A_rows * sizeof(int)));
-                mh_merge_kernel<<<S, p2_block, smem_p2>>>(
+                mh_merge_kernel<<<(S + merge_r - 1) / merge_r, p2_block, smem_p2>>>(
                     dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, g_est_cont, d_est, samp_stride, mh_k,
-                    nullptr, g_rexp == 1 ? rexp_lo : 0.0, g_rexp == 1 ? rexp_hi : 0.0, g_rexp == 1 ? rexp_elo : 0, g_rexp == 1 ? rexp_ehi : 0);
+                    nullptr, g_rexp == 1 ? rexp_lo : 0.0, g_rexp == 1 ? rexp_hi : 0.0, g_rexp == 1 ? rexp_elo : 0, g_rexp == 1 ? rexp_ehi : 0, S);
                 CHECK_CUDA(cudaGetLastError());
             });
             long long s_sum = thrust::reduce(
@@ -4739,10 +4760,10 @@ static void hash_product(
         }
         if (samp_stride == 0) {
             prof("mh_merge", [&]{
-                mh_merge_kernel<<<A_rows, p2_block, smem_p2>>>(
+                mh_merge_kernel<<<(A_rows + merge_r - 1) / merge_r, p2_block, smem_p2>>>(
                     dA_rp, dA_ci, A_rows, d_mh, d_flop, est_expand, g_est_cont, d_est, 0, mh_k,
                     pfuse ? d_avg_gate : nullptr,
-                    g_rexp == 1 ? rexp_lo : 0.0, g_rexp == 1 ? rexp_hi : 0.0, g_rexp == 1 ? rexp_elo : 0, g_rexp == 1 ? rexp_ehi : 0);
+                    g_rexp == 1 ? rexp_lo : 0.0, g_rexp == 1 ? rexp_hi : 0.0, g_rexp == 1 ? rexp_elo : 0, g_rexp == 1 ? rexp_ehi : 0, A_rows);
                 CHECK_CUDA(cudaGetLastError());
             });
         }

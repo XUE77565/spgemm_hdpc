@@ -51,12 +51,18 @@ construct 0.14ms(B 侧写满 MH_M=128 partition,而 merge 只读 K=32 → 写读
 ```
 
 修正后的刀序:
-- **1a-1'(主刀)merge 占用/流水线——病根已 ncu 确诊(10-12 晚,c-64)**:
-  Memory 3.95% / Compute 2.15% 双贴地(纯延迟空转,印证 17× 屋顶差);
-  Theoretical Occ 50%(1 warp/block 形态上限)vs **Achieved 10.4%**。
-  病 = 每 block 1 warp 串行追 a_len 个 128B 散射读,无邻居 warp 藏延迟。
-  药 = 行并行 block(4 warp/块,每 warp 一行;merge 行独立天然安全),
-  理论上限 50→100%,预期 2.6ms → <1ms。只动发射几何+行索引,不动数学。
+- **1a-1' merge 行并行——已实施,但诊断被修正(10-13)**:
+  - 实施:R warp/块各领一行(MH_MERGE_R,默认 4;=1 legacy),无效 warp 保同步到达,
+    MHSAMP 边界经 n_work 精确保持;值门 R=1 vs R=4 col_mismatch=0/worst 1.4e-16 ✅,
+    memcheck 0 err ✅,占用 10.4%→27.6%(理论上限 50→75%)。
+  - **但 wall-clock 不动(c-64 merge 仍 ~1.7-1.9ms)——占用论被证伪为因果**(症状非病因)。
+    四连毙:带宽(DRAM 仅 31MB 全量)/尾效应(max a_len=238)/DVFS(核内 1.12GHz)/占用。
+  - **现行定谳(绝对计数器自洽)**:29.5M warp 指令 ≈ **578/行 = 算法所需的 3-4 倍**,
+    × 22 cycles/issue 延迟 = 全部时间。病 = 指令数×延迟,疑点:SASS 里 est 数学
+    (DP log/除法 1:64 单元)/smem 往返未被寄存器化/迭代内依赖链。
+  - 下一步取证(时间盒):`-lineinfo` + ncu 源码行停顿图,直接看 578 条花在哪;
+    若 est 数学是主凶 → 定点修(如 est 尾部改 SP 或查表)可 2-3×。
+  - R=4 改动本身:正确、必要(后续任何占用修复的地基)、时序中立性由电池定。
 - **1a-2'(次刀)construct 写侧砍到 K partition**:4× 写流量(它本来便宜,顺手);
 - HLL A/B 降级为备选(机理对偶+我们 sketch 更小,只在上面两刀不够时再议);
 - 闸门本身不动(已存在;阈值 64 的重标定视 1a-1' 后的剩余税再议)。
