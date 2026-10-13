@@ -47,3 +47,24 @@
 
 批跑完成后按 1→2→9→(3,5)→(4,6,7,8,10) 顺序修,每条过守门;
 #10 与 1c 融合同场处理。
+
+## 主文件篇(代理①,15 条;P0-1 已行级亲验,P0-2 行号属实待深验)
+
+**P0**:①3612-3613 FORCE_DITER_EST 强制改判在 bucket_id 写入之后(counts/scatter
+错位→段溢出;✅亲验:写入序实锤,触发=该旋钮>0);②3776 dense_largest 对
+d_tmp_val 无清零 atomicAdd(首触零页掩盖,warmup 多轮值翻倍;LARGEST 默认开
+——**批后第一优先深验+修**)。
+**P1**:RETRY2 SMEM 车 cap 读陈旧 d_roff;CNT_FUSE static d_tmp 首次定容永不扩容
+(多阵同进程必中);retry 免排序路 CAP=16384 截尾大行;SEGRTS scan int 回绕
+(ToLL 漏修第三处)。
+**P1 优化**:in_place 判据全趟白跑(FIX2 默认 0,~30MB/轮);k7 调试残留 printf+死码。
+**P2**:batched 行粒度早退后全掩码 syncwarp UB;heavy_prep 疑似条件反写;两条回退
+路径漏释 5 buffer+FILE*;死代码五段(subwarp8/hkv/hybrid/check_sorted 等);
+compact 循环内 pageable 同步双停摆;**17→8 融合弹药清单**(binning 5→2 发、
+k7_count 6→2 发、尾声三重复抽公共核、dense_sum 门合一)。
+
+## 总处置序(批后)
+
+1. P0-2 深验+修(LARGEST 默认开)→ 2. P0-1 换序 → 3. 周边篇 #1(#endif)→
+4. 周边篇 #2(回退泄漏)→ 5. P1 群(env 门控类)→ 6. 死代码下线与融合弹药(与 1c 同场)。
+代理总评:老 core 纪律扎实,雷集中在"后加旋钮/边路 + static 跨调用假设"。
