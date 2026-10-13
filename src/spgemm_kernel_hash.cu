@@ -1531,16 +1531,27 @@ __global__ void dcest_fill_kernel(int *row_nnz, const int *est, const int *flop,
 //   → 分配不足。梯子核写位无界已踩邻行(数据损),唯一安全出口 = 判废(-1)回退;
 //   cursor 核 rank≥cap 截断(drop_cnt 同语义)。附带 alloc/actual 比值直方图 —— margin
 //   选择的实测依据(桶界 = ×8 后 2/4/6/8/10/12/16 → ratio <0.25/<0.5/<0.75/<1.0/<1.25/<1.5/<2/≥2)。
+//   ovf_dbg[5*8](取证探针 10-13):前 8 个溢出行各 {row,alloc,act,flop,a_len}。
 __global__ void dcest_ovf_check_kernel(const int *dense_rows, int nr,
                                         const int *dC_rp, const int *row_nnz,
-                                        int *n_ovf, int *hist8) {
+                                        const int *row_flop, const int *A_rp,
+                                        int *n_ovf, int *hist8, int *ovf_dbg) {
     int r = blockIdx.x * blockDim.x + threadIdx.x;
     if (r >= nr) return;
     int i = dense_rows[r];
     int slot = dC_rp[i + 1] - dC_rp[i];   // scan-1 槽宽 = alloc
     int act  = row_nnz[i];                 // 数值核自报实际
     if (act <= 0) return;                  // 空行无风险不入桶
-    if (act > slot) atomicAdd(n_ovf, 1);
+    if (act > slot) {
+        int k = atomicAdd(n_ovf, 1);       // atomicAdd 返回旧值 = 判废计数不受取证影响
+        if (k < 8) {                       // 取证:溢出行结构(flop/a_len 判估计器盲区形态)
+            atomicExch(&ovf_dbg[5 * k], i);
+            atomicExch(&ovf_dbg[5 * k + 1], slot);
+            atomicExch(&ovf_dbg[5 * k + 2], act);
+            atomicExch(&ovf_dbg[5 * k + 3], row_flop ? row_flop[i] : 0);
+            atomicExch(&ovf_dbg[5 * k + 4], A_rp ? A_rp[i + 1] - A_rp[i] : 0);
+        }
+    }
     int r8 = (int)((long long)slot * 8 / act);
     int b = r8 < 2 ? 0 : r8 < 4 ? 1 : r8 < 6 ? 2 : r8 < 8 ? 3 : r8 < 10 ? 4 : r8 < 12 ? 5 : r8 < 16 ? 6 : 7;
     atomicAdd(&hist8[b], 1);
@@ -6779,16 +6790,20 @@ static void hash_product(
     if (g_dcest && dense_nr > 0 && dense_rows && !g_cnf) {
         prof("dcest_fixup", [&]() -> void {
             // ① 溢出证书:actual > alloc → 数据已损 → 判废(-1),caller 见负值回退 merge3
-            int *d_ovf = decltype(d_ovf)(dev_alloc((2 + 8) * sizeof(int)));
-            CHECK_CUDA(cudaMemset(d_ovf, 0, (2 + 8) * sizeof(int)));
+            int *d_ovf = decltype(d_ovf)(dev_alloc((2 + 8 + 40) * sizeof(int)));
+            CHECK_CUDA(cudaMemset(d_ovf, 0, (2 + 8 + 40) * sizeof(int)));
             dcest_ovf_check_kernel<<<(dense_nr + HASH_BLOCK_STRUCT - 1) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(
-                dense_rows, dense_nr, dC_rp, d_row_nnz, d_ovf, d_ovf + 2);
+                dense_rows, dense_nr, dC_rp, d_row_nnz, d_flop, dA_rp, d_ovf, d_ovf + 2, d_ovf + 10);
             CHECK_CUDA(cudaGetLastError());
-            int h_ovf[2 + 8];
+            int h_ovf[2 + 8 + 40];
             CHECK_CUDA(cudaMemcpy(h_ovf, d_ovf, sizeof(h_ovf), cudaMemcpyDeviceToHost));
             dev_free(d_ovf);
             dbg("[%s] DCEST 证书: ovf=%d/%d ratio直方图[<0.25:%d <0.5:%d <0.75:%d <1.0:%d <1.25:%d <1.5:%d <2:%d ≥2:%d]\n",
                 tag, h_ovf[0], dense_nr, h_ovf[2], h_ovf[3], h_ovf[4], h_ovf[5], h_ovf[6], h_ovf[7], h_ovf[8], h_ovf[9]);
+            if (h_ovf[0] > 0)   // 取证:溢出行结构(估计器盲区标本)
+                for (int k = 0; k < 8 && k < h_ovf[0]; k++)
+                    dbg("[%s] DCEST ovf行#%d: row=%d alloc=%d act=%d flop=%d a_len=%d(est≈alloc×expand/margin)\n",
+                        tag, k, h_ovf[10 + 5 * k], h_ovf[11 + 5 * k], h_ovf[12 + 5 * k], h_ovf[13 + 5 * k], h_ovf[14 + 5 * k]);
             if (h_ovf[0] > 0 && !g_dcest_ovf) {
                 fprintf(stderr, "[hash] DCEST overflow: %d/%d 行 alloc 不足(margin=%d%%)→ 判废回退 merge3\n",
                         h_ovf[0], dense_nr, g_dcest_margin);
