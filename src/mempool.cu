@@ -20,14 +20,26 @@ static size_t g_dev_cap = 0;
 static size_t g_dev_off = 0;
 
 // 内部:从 arena bump 切一块(16 字节对齐)。调用前需保证已 reset 到合适起点
+// 溢出回退(审计#4,10-14):不再 exit 自杀——逐次直接分配并登记,free/destroy 对应处理。
+// (昨天 WRITE_MTX 雷即此路径:鲸鱼阵 C 超池即杀进程。benchmark 一矩阵一进程,16 槽足够。)
+static void* g_fb_host[16]; static int g_fb_host_n = 0;
+static void* g_fb_dev[16];  static int g_fb_dev_n = 0;
+static void fb_track(void** lst, int* n, void* p) { if (p && *n < 16) lst[(*n)++] = p; }
+static bool fb_is(void** lst, int n, void* p) { for (int i = 0; i < n; i++) if (lst[i] == p) return true; return false; }
 static void* arena_alloc(size_t bytes) {
     if (bytes == 0) bytes = 1;
     size_t aligned = (g_off + 15) & ~((size_t)15);
     if (aligned + bytes > g_cap) {
         fprintf(stderr,
                 "[mempool] HOST arena overflow: need %zu B, cap %zu B, used %zu B "
-                "(bump MP_HOST_MB)\n", bytes, g_cap, g_off);
-        exit(EXIT_FAILURE);
+                "→ 回退直接分配(审计#4;原为 exit)\n", bytes, g_cap, g_off);
+        void* p = nullptr;
+        if (cudaMallocHost(&p, bytes) == cudaSuccess && p) {
+            fb_track(g_fb_host, &g_fb_host_n, p);
+            return p;
+        }
+        fprintf(stderr, "[mempool] 回退 cudaMallocHost(%zu B) 也失败\n", bytes);
+        return nullptr;
     }
     g_off = aligned + bytes;
     return g_base + aligned;
@@ -77,6 +89,10 @@ bool mempool_init(size_t cap_bytes) {
 }
 
 void mempool_destroy() {
+    for (int i = 0; i < g_fb_host_n; i++) cudaFreeHost(g_fb_host[i]);   // 溢出回退块
+    g_fb_host_n = 0;
+    for (int i = 0; i < g_fb_dev_n; i++) cudaFree(g_fb_dev[i]);
+    g_fb_dev_n = 0;
     if (g_base) {
         cudaFreeHost(g_base);  // arena 本身的锁页内存用 cudaFreeHost 释放(合法)
         g_base = nullptr;
@@ -132,8 +148,14 @@ void* dev_alloc(size_t bytes) {
     if (aligned + bytes > g_dev_cap) {
         fprintf(stderr,
                 "[mempool] DEV arena overflow: need %zu B, cap %zu MB, used %zu MB "
-                "(bump MP_DEV_MB)\n", bytes, g_dev_cap >> 20, g_dev_off >> 20);
-        exit(EXIT_FAILURE);
+                "→ 回退直接分配(审计#4;原为 exit)\n", bytes, g_dev_cap >> 20, g_dev_off >> 20);
+        void* p = nullptr;
+        if (cudaMalloc(&p, bytes) == cudaSuccess && p) {
+            fb_track(g_fb_dev, &g_fb_dev_n, p);
+            return p;
+        }
+        fprintf(stderr, "[mempool] 回退 cudaMalloc(%zu B) 也失败\n", bytes);
+        return nullptr;
     }
     g_dev_off = aligned + bytes;
     return g_dev + aligned;
@@ -142,27 +164,33 @@ void* dev_alloc(size_t bytes) {
 void dev_free(void* p) {
     if (!g_use_dev_pool) {
         if (g_malloc_async) cudaFreeAsync(p, (cudaStream_t)0);
-        else cudaFree(p);                   // 池模式:no-op,arena 由 dev_pool_reset 回收
+        else cudaFree(p);
+        return;
     }
+    if (fb_is(g_fb_dev, g_fb_dev_n, p)) cudaFree(p);   // 溢出回退块;池内块 no-op(reset 回收)
 }
 
 size_t dev_pool_used() { return g_dev_off; }
 
 cudaError_t pinned_d2h_alloc(void** out, size_t bytes) {
     if (g_use_mempool) {
-        if (!g_base) {
-            fprintf(stderr, "[mempool] pool used before mempool_init\n");
-            return cudaErrorInitializationError;
+        if (!g_base) {   // init 失败残留态(审计#5):flag 保持 true(A_buffer 已 pinned),
+                         // 逐次直接分配并登记,host_free/pinned_free 走 cudaFreeHost 语义不破
+            void* p = arena_alloc(bytes);   // g_cap=0 → 必走溢出回退路径
+            if (!p) return cudaErrorMemoryAllocation;
+            *out = p;
+            return cudaSuccess;
         }
         g_off = 0;            // reset:上一方法的 C 已被调用者消费,arena 从头复用
         *out = arena_alloc(bytes);
-        return cudaSuccess;
+        return (*out) ? cudaSuccess : cudaErrorMemoryAllocation;
     }
     return cudaMallocHost(out, bytes);  // 原路径
 }
 
 void pinned_free(void* p) {
-    if (!g_use_mempool) cudaFreeHost(p);  // 池模式:noop,arena 由 reset 回收
+    if (!g_use_mempool) { cudaFreeHost(p); return; }
+    if (fb_is(g_fb_host, g_fb_host_n, p)) cudaFreeHost(p);   // 溢出/残留态回退块;池内块 no-op
 }
 
 void host_free(void* p) {

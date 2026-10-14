@@ -3609,8 +3609,10 @@ __global__ void compute_bucket_kernel(
             // else:pick 0/1 但静态已在 hash(梯 0-10)→ 保持;micro bin 不改判
         }
     }
-    bucket_id[i] = bid;
+    // P0-1 修复(10-14,study/43 审计):强制改判必须在 bucket_id 写入【之前】——
+    // 原序 counts 按 BIN_DITER 计数而 scatter 按原 bid 落位,两套口径错位 → 段溢出。
     if (force_est_min > 0 && est[i] >= force_est_min) bid = BIN_DITER;   // 真强制(决赛 v2):终判处覆盖一切门与 BATCH/HEAVY 拦截层
+    bucket_id[i] = bid;
     // warp 聚合:同 warp 内同 bin 的行由 leader 一次 atomicAdd(3.7M 行×12 计数器争用 → 333SP 2.9ms 教训)
     unsigned mask = __activemask();
     unsigned peers = __match_any_sync(mask, (unsigned)bid);
@@ -5627,10 +5629,11 @@ static void hash_product(
     const long long tmp_slots = (dense_nr > 0 || d5h_rows > 0) ? tmp_slots_dev : total_est;
     d_tmp_key = decltype(d_tmp_key)(dev_alloc((size_t)tmp_slots * sizeof(unsigned long long)));
     d_tmp_val = decltype(d_tmp_val)(dev_alloc((size_t)tmp_slots * sizeof(double)));
-    {   // INITDBG=1:值区清零分叉实验(study/18 残余雷定位:denormal 垃圾=未写槽 or 主动写垃圾)
-        static int g_initdbg = -1;
-        if (g_initdbg < 0) { const char *e = getenv("INITDBG"); g_initdbg = (e && *e) ? atoi(e) : 0; }
-        if (g_initdbg) CHECK_CUDA(cudaMemset(d_tmp_val, 0, (size_t)tmp_slots * sizeof(double)));
+    {   // P0-2 修复(10-14,study/43 审计):tmp_val 的消费者含 atomicAdd 累加路径
+        // (dense_largest pass3:3776、batched:1779)——依赖零起点;此前靠 cudaMalloc 新页
+        // 恰为零的运气,池模式/内存复用下=垃圾起加的错值。清零改无条件(鲸鱼 ~0.3ms)。
+        // INITDBG 历史注释保留:study/18 曾用此分叉定位 denormal 垃圾来源。
+        CHECK_CUDA(cudaMemset(d_tmp_val, 0, (size_t)tmp_slots * sizeof(double)));
     }
     if (dense_nr > 0 && (dense_mode || dense_win_mode)) {
         // 方案5 矩阵级:count 已出精确 row_nnz,数值 pass 在 cnnz_scan 后直写(此分支无 accumulate)

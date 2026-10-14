@@ -96,10 +96,12 @@ int main(int argc, char **argv) {
         return 0;//先测试读入函数是否正确
     }
 
-    // 初始化 pinned host 内存池(USE_MEMPOOL=1 时生效;失败则退回原路径)
+    // 初始化 pinned host 内存池(USE_MEMPOOL=1 时生效)
+    // 审计#5 修复(10-14):失败不再翻 g_use_mempool——A_buffer 已按 pinned 分配(读矩阵
+    // 在 init 之前),翻 false 会让退出路径 host_free 走 free() 释放 cudaMallocHost 指针=UB;
+    // 现改为保持 flag,pinned_d2h_alloc 对无 arena 态逐次直接分配(见 mempool.cu 回退表)。
     if (!mempool_init()) {
-        fprintf(stderr, "[main] mempool_init failed, falling back to legacy cudaMallocHost\n");
-        g_use_mempool = false;
+        fprintf(stderr, "[main] mempool_init failed → 逐次直接分配模式(语义不变,仅失池收益)\n");
     }
 
 
@@ -434,7 +436,8 @@ int main(int argc, char **argv) {
                 write_matrix_market(op.c_str(), rp, ci, val, C_rows, C_cols, C_nnz);
                 LOG_BOTH("Saved to  %s\n", op.c_str());
             }
-            #endif            LOG_BOTH("Time: %.3f ms\n", elapsed.count());
+            #endif
+            LOG_BOTH("Time: %.3f ms\n", elapsed.count());   // P1 修复(10-14,study/43):原与 #endif 同行被预处理器静默吞掉,adaptive 的 Time 行从未打印
         }
 
         if (C_buffer) pinned_free(C_buffer);

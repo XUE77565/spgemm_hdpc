@@ -68,3 +68,14 @@ k7_count 6→2 发、尾声三重复抽公共核、dense_sum 门合一)。
 1. P0-2 深验+修(LARGEST 默认开)→ 2. P0-1 换序 → 3. 周边篇 #1(#endif)→
 4. 周边篇 #2(回退泄漏)→ 5. P1 群(env 门控类)→ 6. 死代码下线与融合弹药(与 1c 同场)。
 代理总评:老 core 纪律扎实,雷集中在"后加旋钮/边路 + static 跨调用假设"。
+
+## 修雷四连 ✅(10-14 午后全部落地+守门)
+
+| # | 修复 | 守门 |
+|---|---|---|
+| P0-2 | tmp_val 清零改无条件(原 INITDBG 门着,LARGEST/batched 的 atomicAdd 靠零页运气) | 双跑值门 col_mismatch=0 worst 1.4e-16;memcheck 0err |
+| P0-1 | FORCE_DITER_EST 强制改判移到 bucket_id 写入前(counts/scatter 口径归一) | FORCE=100000 跑通 nnz 精确 |
+| 周边#1 | #endif 同行吞行修复 | adaptive Time 行复活 |
+| 周边#4+#5 | mempool 溢出 exit→回退登记表(16槽,destroy 统一释放);init 失败不再翻 flag(A_buffer pinned/free 错配) | MP_HOST_MB=16 强制溢出:回退路径存活,nnz 精确 |
+
+残留 P1/P2 队列不变(RETRY2/CNT_FUSE/SEGRTS 等 env 门控类,与 1c 同场)。
