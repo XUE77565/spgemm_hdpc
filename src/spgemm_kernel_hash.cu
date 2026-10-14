@@ -3621,6 +3621,13 @@ __global__ void compute_bucket_kernel(
 }
 
 // scatter:把行号按 bucket 写到预分配大 buffer 的对应位置
+// 1c-②a(10-14,审计弹药①安全面):binning 链双计数器(d_cnt/d_pos)清零合一
+// (原为两次 cudaMemset,每次一个 driver 往返;N_BINS=16×2 个 int,单线程一发足够)。
+__global__ void binning_zero2_kernel(int *cnt, int *pos, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) { cnt[i] = 0; pos[i] = 0; }
+}
+
 __global__ void scatter_rows_kernel(
     const int *bucket_id, int A_rows,
     const int *offsets, int *pos, int *sorted_rows)
@@ -4924,7 +4931,7 @@ static void hash_product(
     prof("binning", [&]{
         static int g_tgt_alpha = -1;   // HASH_TGT_ALPHA(表配 target=α%×est;连续 est 下默认 150 单次吸附,study/13)
         if (g_tgt_alpha < 0) { const char *e = getenv("HASH_TGT_ALPHA"); g_tgt_alpha = (e && *e) ? atoi(e) : (g_est_cont ? 150 : 200); }
-        CHECK_CUDA(cudaMemset(d_cnt, 0, N_BINS * sizeof(int)));   // 先清零(fused kernel 内 atomicAdd 累加)
+        binning_zero2_kernel<<<1, N_BINS>>>(d_cnt, d_pos, N_BINS);   // 1c-②a:双计数器合一清零(d_pos 原在 scan 后 memset,提前无依赖)
         static int g_diter = -1; static bool g_diter_env = false;   // dense-iter 重行阈值(DITER_MIN_FLOP,默认 4096;0=关)
         if (g_diter < 0) { const char *e = getenv("DITER_MIN_FLOP"); if (e && *e) { g_diter = atoi(e); g_diter_env = true; } else g_diter = DITER_FLOP_TIER; }   // v33d 默认 2048 复归:数值相 docs/46 前缀第三遍缺失已修(study/18:
                                                                                                                                  // woff46 漏 warp 内偏移 → rank 撞车 → msc 3261 垃圾行;修复后 diter 开 17 位 PASS);g_diter_env=显式实验值,小阵守卫不改写
@@ -4996,7 +5003,7 @@ static void hash_product(
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),
                                thrust::device_ptr<int>(d_offb));
-        CHECK_CUDA(cudaMemset(d_pos, 0, N_BINS * sizeof(int)));   // scatter 计数器从 0 起(非 offsets)
+        // (d_pos 清零已前移并入 binning_zero2 —— 1c-②a)
         scatter_rows_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_bkid, A_rows, d_offb, d_pos, d_sort);
         // 3 个 D2H 合并:async + 单 sync(省 2 同步点;total_est 从 est_scan 延后到此)
         CHECK_CUDA(cudaMemcpyAsync(h_cnt, d_cnt,  N_BINS * sizeof(int), cudaMemcpyDeviceToHost));
