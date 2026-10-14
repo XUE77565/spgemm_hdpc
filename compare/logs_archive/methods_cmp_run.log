@@ -1,0 +1,54 @@
+对比 100 阵 × ['cu', 'Auto', 'Ocean', 'opSparse', 'HSMU', 'dense', 'cublas'] → compare/methods_cmp.csv  (resume: 100 已存,跳过;FRESH=1 全重跑)
+
+
+完成 → compare/methods_cmp.csv
+
+=== 几何均值(ms) ===
+  cu           0.434
+  Auto         0.202
+  Ocean        0.313
+  opSparse     0.955
+  HSMU         0.448
+  dense        1.435
+  cublas       1.049
+
+=== Auto 选择(共 100 阵)===  hash 23 / merge3 77
+
+=== Auto vs cuSPARSE:赢 91 / 输 9,几何均值(Auto/cuSPARSE) 0.467× ===
+  name                   n       C_nnz  cuSPARSE      Auto    ratio
+  bp_1400              822       23154     0.314     0.370    1.18×
+  bp_1600              822       23625     0.315     0.369    1.17×
+  bp_1000              822       21373     0.314     0.365    1.16×
+  bp_1200              822       22313     0.349     0.380    1.09×
+  bp_600               822       16464     0.317     0.335    1.06×
+  bp_0                 822        9384     0.294     0.304    1.03×
+  bp_400               822       15238     0.317     0.325    1.03×
+  bp_200               822       13197     0.307     0.311    1.01×
+  bp_800               822       20224     0.340     0.342    1.01×
+
+=== Auto vs Ocean:赢 85 / 输 15,几何均值(Auto/Ocean) 0.646× ===
+  name                   n       C_nnz     Ocean      Auto    ratio
+  bcsstm25           15439       15439     0.189     0.284    1.50×
+  bp_1200              822       22313     0.262     0.380    1.45×
+  bp_1000              822       21373     0.258     0.365    1.41×
+  bp_1400              822       23154     0.265     0.370    1.40×
+  bp_1600              822       23625     0.267     0.369    1.38×
+  bcsstk08            1074      305612     0.423     0.571    1.35×
+  bp_800               822       20224     0.256     0.342    1.34×
+  bp_600               822       16464     0.256     0.335    1.31×
+  bcsstk30           28924     8946070     2.417     3.104    1.28×
+  bcsstk32           44609     6819653     1.660     2.116    1.27×
+  bp_400               822       15238     0.256     0.325    1.27×
+  bp_0                 822        9384     0.243     0.304    1.25×
+  bp_200               822       13197     0.256     0.311    1.21×
+  bcsstk13            2003      396773     0.704     0.833    1.18×
+  bcsstk31           35588     4713580     1.287     1.367    1.06×
+
+=== Auto vs opSparse:赢 100 / 输 0,几何均值(Auto/opSparse) 0.212× ===
+  name                   n       C_nnz  opSparse      Auto    ratio
+
+=== Auto vs HSMU:赢 100 / 输 0,几何均值(Auto/HSMU) 0.452× ===
+  name                   n       C_nnz      HSMU      Auto    ratio
+
+=== Auto vs cuBLAS:赢 100 / 输 0,几何均值(Auto/cuBLAS) 0.193× ===
+  name                   n       C_nnz    cuBLAS      Auto    ratio
