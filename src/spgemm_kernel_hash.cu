@@ -5127,6 +5127,25 @@ static void hash_product(
     if (g_d5h < 0) { const char *e = getenv("D5H"); g_d5h = (e && *e && atoi(e) > 0) ? 1 : 0; }
     int dense_nr = 0; const int *dense_rows = nullptr;   // dense 行集合(null = 全体行)
     long long dense_est_sum = 0, dense_nnz_sum = 0, tmp_slots_dev = 0;
+    // 1c-③(10-14,审计弹药):est 坍缩尾声公共化 —— 原三处原样重复(DCEST/方案5/D5H);
+    // rows=null 时全量清零(矩阵级 dense 语义)。D5H 调用方借 d_sort 段连续性单发置零(原 ≤11 发)。
+    auto est_collapse_tail = [&](const int *rows, int nr) {
+        if (rows && nr > 0)
+            zero_est_kernel<<<(nr + HASH_BLOCK_STRUCT - 1) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, rows, nr);
+        else
+            CHECK_CUDA(cudaMemset(d_est, 0, (size_t)A_rows * sizeof(int)));
+        CHECK_CUDA(cudaMemset(d_off, 0, sizeof(long long)));
+        if (A_rows <= MAX_BLOCK_THREADS) {
+            int b = 1; while (b < A_rows) b <<= 1;
+            scan_inclusive_kernel<long long><<<1, b, b * sizeof(long long)>>>(d_est, d_off + 1, A_rows);
+        } else {
+            thrust::inclusive_scan(
+                thrust::make_transform_iterator(thrust::device_ptr<int>(d_est), ToLL()),
+                thrust::make_transform_iterator(thrust::device_ptr<int>(d_est + A_rows), ToLL()),
+                thrust::device_ptr<long long>(d_off + 1));
+        }
+        CHECK_CUDA(cudaMemcpy(&tmp_slots_dev, d_off + A_rows, sizeof(long long), cudaMemcpyDeviceToHost));
+    };
     // §22d span 分流(count 前算好,count/numeric 两阶段共用):DSTRUCT≥2 时 dense 行按自身
     // span 排序分两段 —— 档内段(≤DENSE_TIER_SPAN_MAX)走档位梯;超档段走老窗口内核。
     // (count 侧同分:c-64 定谳 —— 50K 全幅行在位图结构 count 里多窗重扫乘积,1.8→8.8ms 主凶)
@@ -5307,19 +5326,8 @@ static void hash_product(
                     CHECK_CUDA(cudaGetLastError());
                     // ② dstr_split(数值侧需要)
                     if (g_dstr2 >= 2 && dense_rows) dstr_split();
-                    // ③ est 置零 + d_off 重扫(dense 行不占 gapped tmp)
-                    zero_est_kernel<<<(dense_nr + HASH_BLOCK_STRUCT - 1) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dense_rows, dense_nr);
-                    CHECK_CUDA(cudaMemset(d_off, 0, sizeof(long long)));
-                    if (A_rows <= MAX_BLOCK_THREADS) {
-                        int b = 1; while (b < A_rows) b <<= 1;
-                        scan_inclusive_kernel<long long><<<1, b, b * sizeof(long long)>>>(d_est, d_off + 1, A_rows);
-                    } else {
-                        thrust::inclusive_scan(
-                            thrust::make_transform_iterator(thrust::device_ptr<int>(d_est), ToLL()),
-                            thrust::make_transform_iterator(thrust::device_ptr<int>(d_est + A_rows), ToLL()),
-                            thrust::device_ptr<long long>(d_off + 1));
-                    }
-                    CHECK_CUDA(cudaMemcpy(&tmp_slots_dev, d_off + A_rows, sizeof(long long), cudaMemcpyDeviceToHost));
+                    // ③ est 置零 + d_off 重扫(dense 行不占 gapped tmp)—— 1c-③ 公共尾
+                    est_collapse_tail(dense_rows, dense_nr);
                 });
                 dense_nnz_sum = 0; dense_est_sum = 0;   // DCEST 下不精确;underflow 由 cnnz 校正
                 dbg("[%s] DCEST V3: dense_count 相位消灭(%d 行,est/%.2f×%.2f 替代精确计数)\n",
@@ -5481,21 +5489,7 @@ static void hash_product(
                 if (no_collapse) {
                     tmp_slots_dev = total_est;
                 } else {
-                if (dense_rows)
-                    zero_est_kernel<<<(dense_nr + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dense_rows, dense_nr);
-                else
-                    CHECK_CUDA(cudaMemset(d_est, 0, (size_t)A_rows * sizeof(int)));
-                CHECK_CUDA(cudaMemset(d_off, 0, sizeof(long long)));
-                if (A_rows <= MAX_BLOCK_THREADS) {
-                    int b = 1; while (b < A_rows) b <<= 1;
-                    scan_inclusive_kernel<long long><<<1, b, b * sizeof(long long)>>>(d_est, d_off + 1, A_rows);
-                } else {
-                    thrust::inclusive_scan(
-                        thrust::make_transform_iterator(thrust::device_ptr<int>(d_est), ToLL()),
-                        thrust::make_transform_iterator(thrust::device_ptr<int>(d_est + A_rows), ToLL()),
-                        thrust::device_ptr<long long>(d_off + 1));
-                }
-                CHECK_CUDA(cudaMemcpy(&tmp_slots_dev, d_off + A_rows, sizeof(long long), cudaMemcpyDeviceToHost));
+                est_collapse_tail(dense_rows, dense_nr);   // 1c-③ 公共尾(原方案5 内联副本)
                 }
             });
             dbg("[%s] 方案5:count pass %d dense 行(Σest=%lld Σnnz=%lld)→ cnnz_scan 后直写终态\n",
@@ -5605,22 +5599,8 @@ static void hash_product(
                 dev_free(d_s3);
             }
             if (d5h_rows > 0) {   // 置零 bins 1-10 行的 est + d_off 重扫(与 dense 共用机制)
-                for (int bi = 1; bi <= HASH_LADDER_MAX_BIN; bi++) {
-                    int n = h_cnt[bi];
-                    if (n == 0) continue;
-                    zero_est_kernel<<<(n + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, d_sort + h_off[bi], n);
-                }
-                CHECK_CUDA(cudaMemset(d_off, 0, sizeof(long long)));
-                if (A_rows <= MAX_BLOCK_THREADS) {
-                    int b = 1; while (b < A_rows) b <<= 1;
-                    scan_inclusive_kernel<long long><<<1, b, b * sizeof(long long)>>>(d_est, d_off + 1, A_rows);
-                } else {
-                    thrust::inclusive_scan(
-                        thrust::make_transform_iterator(thrust::device_ptr<int>(d_est), ToLL()),
-                        thrust::make_transform_iterator(thrust::device_ptr<int>(d_est + A_rows), ToLL()),
-                        thrust::device_ptr<long long>(d_off + 1));
-                }
-                CHECK_CUDA(cudaMemcpy(&tmp_slots_dev, d_off + A_rows, sizeof(long long), cudaMemcpyDeviceToHost));
+                // 1c-③:bins 1-10 在 d_sort 段连续 → 单发置零(原逐 bin ≤11 发)
+                est_collapse_tail(d_sort + h_off[1], h_off[HASH_LADDER_MAX_BIN + 1] - h_off[1]);
             }
         });
         dbg("[%s] D5H:bins1-10 count-only %d 行 → MODE=2 直写\n", tag, d5h_rows);
