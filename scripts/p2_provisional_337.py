@@ -54,7 +54,8 @@ def run(m, arm):
 done = 0
 for i, m in enumerate(mats):
     for arm in ARMS:
-        if (m, arm) in rows and rows[(m, arm)][1] != "TIMEOUT":
+        cur = rows.get((m, arm))
+        if cur and cur[0] is not None:   # 有数值才跳过(NOPROF/TIMEOUT 必须重试)
             continue
         net, note = run(m, arm)
         rows[(m, arm)] = (net, note)
