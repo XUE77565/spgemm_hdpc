@@ -54,3 +54,8 @@ Auto 相对基线胜场:cuSPARSE **91/100**、Ocean **84/100**、opSparse/HSMU/d
 - A·Aᵀ tiered 实现的实测 bench 未跑(现有 `compare/aa(best1)/aat_projected_*` 为投影值,
   实测脚本 `scripts/bench_aat_first100.py` + `gen_aat_measured_deliverables.py` 已就位)。
 - `compare/paper_cmp.csv` 为 stale(device-pool 旧值),以 `methods_cmp.csv` 为准。
+
+## 分支约定(10-14)
+- paper = 实际主干(守门后逐刀提交);master 已 745 提交落后,名存实亡不再使用
+- 计时里程碑打 timed-* tag,测量二进制只从 tag 冻结
+- Phase 3 L1 线将开 l1 分支(长周期实验态)
