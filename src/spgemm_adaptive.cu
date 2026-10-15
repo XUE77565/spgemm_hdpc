@@ -67,8 +67,28 @@ void spgemm_self_product_adaptive(
     } else {
         use_hash = (score < 0.0) ? 1 : 0;
     }
+    // A2' 预门(10-17,L0 解析层落地):n≥L0_PREGATE_N → 强制 hash + A 等效配置(跳过 diter 决策机器)。
+    // 依据批437:337 侧 dispatcher 从不路由 merge3 但自税 4%(diter 机器照跑);n≥5000 全体 A 优于 ADPT
+    // (规则版 GM 0.9968 vs 现状 1.0331);bcsstm25(n=15439)类 score 误送 merge3 的 5.5× 爆点同修。
+    // 注意:DITER_MIN_FLOP 在 hash 管线内为惰性静态缓存(首调用读 env)——本 setenv 先于调用故生效;
+    // 若同进程先跑过裸 hash 方法再跑 adaptive,缓存已定,预门配置不生效(多方法连跑边缘场景,已知局限)。
+    static int g_pregate = -1, g_pregate_n = -1;
+    if (g_pregate < 0) {
+        const char *e = std::getenv("L0_PREGATE");
+        g_pregate = (e && *e) ? (std::atoi(e) > 0 ? 1 : 0) : 1;
+        const char *e2 = std::getenv("L0_PREGATE_N");
+        g_pregate_n = (e2 && *e2) ? std::atoi(e2) : 5000;
+    }
+    int pregated = 0;
+    if (g_pregate && A_rows >= g_pregate_n) {
+        use_hash = 1;
+        pregated = 1;
+        if (!std::getenv("DITER_MIN_FLOP"))
+            setenv("DITER_MIN_FLOP", "999999999", 1);   // 未被用户显式设置才接管(A 等效)
+    }
     char why_buf[128];
-    snprintf(why_buf, sizeof(why_buf), "score=%.2f fp=%.0f mr=%d sk=%.1f", score, flop_proxy, max_row_nnz, skew);
+    snprintf(why_buf, sizeof(why_buf), "%s%.2f fp=%.0f mr=%d sk=%.1f",
+             pregated ? "pregate " : "", score, flop_proxy, max_row_nnz, skew);
     const char *why = why_buf;
     dbg("[adapt] n=%d maxrow=%d skew=%.1f → %s (%s)\n", A_rows, max_row_nnz, skew, use_hash ? "hash" : "merge3", why);
     printf("[adapt] n=%d maxrow=%d skew=%.1f → %s (%s)\n", A_rows, max_row_nnz, skew, use_hash ? "hash" : "merge3", why);
