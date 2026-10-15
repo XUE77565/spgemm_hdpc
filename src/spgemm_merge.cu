@@ -702,8 +702,8 @@ __global__ void bucket_merge_kernel(
         bool eligible = (L >= MRG3_DENSE_MIN_SPAN && L <= dcap);
         if (eligible && dmode == 0) return;   // 归 dense launch(双 launch 各司其职,防双跑)
         if (eligible) {
-            unsigned char *dfl = (unsigned char*)(smem + 2 * num_k);
-            double *dval = (double*)(((uintptr_t)(smem + 2 * num_k) + L + 7) & ~(uintptr_t)7);
+            unsigned char *dfl = (unsigned char*)(smem + 4 * num_k);   // weight 区之后(2*nk 处与 weight 别名:清零污染权重,08-31 引入,10-15 审计修复)
+            double *dval = (double*)(smem + 4 * num_k + (((L + 7) >> 3) << 1));   // 纯 int 算术保 smem 出处:uintptr_t 遮罩会令编译器误发全局原子(片上→L2 往返,复现实测)
             for (int c = lane; c < L; c += 32) { dfl[c] = 0; dval[c] = 0.0; }
             __syncwarp();
             for (int p = lane; p < num_k; p += 32) {
@@ -828,8 +828,8 @@ __global__ void bucket_merge_flop_kernel(
         bool eligible = (L >= MRG3_DENSE_MIN_SPAN && L <= dcap);
         if (eligible && dmode == 0) return;   // 归 dense launch(双 launch 各司其职,防双跑)
         if (eligible) {
-            unsigned char *dfl = (unsigned char*)(smem + 2 * num_k);
-            double *dval = (double*)(((uintptr_t)(smem + 2 * num_k) + L + 7) & ~(uintptr_t)7);
+            unsigned char *dfl = (unsigned char*)(smem + 4 * num_k);   // weight 区之后(别名修复同 bucket_merge_kernel,10-15)
+            double *dval = (double*)(smem + 4 * num_k + (((L + 7) >> 3) << 1));   // int 算术保 smem 出处(同上)
             for (int c = lane; c < L; c += 32) { dfl[c] = 0; dval[c] = 0.0; }
             __syncwarp();
             for (int p = lane; p < num_k; p += 32) {
