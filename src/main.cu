@@ -358,6 +358,19 @@ int main(int argc, char **argv) {
         LOG_BOTH("Result C: %d x %d, nnz = %d, sparsity = %.2f%%\n",
                  C_rows, C_cols, C_nnz, C_sparsity);
         LOG_BOTH("Time: %.3f ms\n", elapsed.count());
+        #if WRITE_MTX
+        {   // dump merge3 C for value gate(study/45:dense 分支修复守门;镜像 T4e 模式)
+            char *Cb = (char*)C_buffer;
+            size_t rp_sz = (C_rows + 1) * sizeof(int);
+            size_t ci_sz = (size_t)C_nnz * sizeof(int);
+            int *rp = (int*)Cb;
+            int *ci = (int*)(Cb + ALIGN8(rp_sz));
+            double *val = (double*)(Cb + ALIGN8(rp_sz) + ALIGN8(ci_sz));
+            std::string op = result_dir + "/self_product_merge3.mtx";
+            write_matrix_market(op.c_str(), rp, ci, val, C_rows, C_cols, C_nnz);
+            LOG_BOTH("Saved to  %s\n", op.c_str());
+        }
+        #endif
 
         pinned_free(C_buffer);
     }

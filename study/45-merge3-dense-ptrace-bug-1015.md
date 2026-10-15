@@ -50,15 +50,21 @@ bucket_count_kernel 的 flags 分支:无 weight 数组、纯写无原子 → 无
 | merge3 dense 直写战报(count 5.2×/numeric 2.26×,08-31) | **计时成立且是带税跑的** | 修复后 dense 分支预期更快(隐藏利好) |
 | **437 权威批(未跑)** | **必须带本修复跑** | merge3 路由臂在批内;带病跑=权威数据作废——**此雷在权威批之前被抓纯属侥幸** |
 
-## 五、验证清单(GPU 释放即跑,承 study/42 10-15 队列)
+## 五、验证清单(✅ 10-15 15:35-16:00 GPU0 释放窗口全部完成)
 
-- [ ] 值级门:dense-eligible 矩阵(L≥128 桶存在)修复前后 out_val 逐位对比 +
-  与真值(A·A 参考实现)对比;预期修复前**值错模式必现**(全零/部分零贡献);
-- [ ] nnz 门:修复前后模式逐桶一致(应零差异——bug 不影响模式);
-- [ ] memcheck 0 err(新 smem 布局);
-- [ ] first100 小电池计时:merge3 dense-eligible 阵的 numeric 相位预期可观下降
-  (全局原子→片上);0.614 有机会再降;
-- [ ] 权威批前置条件:本修复进 timed tag。
+- [x] **值级门① dense-off vs dense-on(修复后)**:bloweybq/vsp_befref/bloweya 三阵
+  **逐位一致**(col_mismatch=0,unordered=0,worst_rel=0.000e+00);
+- [x] **值级门② merge3 vs hash 交叉真值**:三阵**逐位一致**(同上);
+- [x] memcheck(compute-sanitizer,12.8 注入库补 LD_LIBRARY_PATH):**0 errors**;
+- [x] **dense 开火证据(防空对照)**:SPAN=1 端到端比 SPAN=0 快
+  bloweybq −14.9% / vsp −17.4% / bloweya −13.4% —— 分支真执行且修复后净赢;
+- [x] dump 实体核:比对文件 1237MB×4 非空(顺带逮住并修掉两个门工具自身雷:
+  T4d 无 WRITE_MTX 块已补镜像 T4e 模式;G() 二进制位次 $X 雷第二次复发);
+- [ ] ~~修复前值错演示~~:旧二进制已重建覆盖,以机理记录+编译期对照代替(复现见 §一);
+- [ ] first100 正式计时:并入 437 权威批(修复已进主干,批必含)。
+
+**附**:本窗口顺带完成 = 门脚本 scripts/gate_merge3_dense_fix.sh(可复用)+
+T4d dump 块(main.cu)。
 
 ## 六、方法论入账
 
