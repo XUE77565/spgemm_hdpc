@@ -1,0 +1,113 @@
+[dbg     0.000 ms] main entry, initializing CUDA context...
+[dbg   274.354 ms] CUDA context ready
+[dbg   274.487 ms] start read_matrix_market: /home/xueyizhou/spgemm-challenge/data/ocean/square/msc10848.mtx
+[dbg   510.864 ms] read done: 10848 x 10848, nnz=1229778
+[mempool] host pinned arena ready: 8192 MB (USE_MEMPOOL=ON)
+[mempool] device arena OFF (USE_DEV_POOL unset; compute-only 友好)
+[dbg  4323.983 ms] [adapt] n=10848 maxrow=723 skew=6.4 → hash (score=-2.10 fp=139413157 mr=723 sk=6.4)
+[dbg  4323.993 ms] [hash] start (HASH_CAP=16384)
+[dbg  4324.824 ms] [hash-prof] h2d                0.561 ms
+[dbg  4324.828 ms] [hash] h2d
+[dbg  4344.184 ms] [hash] HASH_BI: B16 交织 1229778 项(+18.8MB)
+[dbg  4344.395 ms] [hash-prof] count_flop         0.177 ms
+[dbg  4344.399 ms] [hash] avg_product=15164.5 (total_flop=164504790)
+[dbg  4344.568 ms] [hash-prof] mh_construct       0.033 ms
+[dbg  4344.573 ms] [hash] est_expand=1.80(total_flop=164504790)
+[dbg  4344.706 ms] [hash-prof] mh_merge           0.123 ms
+[dbg  4344.874 ms] [hash-prof] est_scan           0.091 ms
+[dbg  4345.072 ms] [hash] diter bin=330 行 / 10848
+[dbg  4345.075 ms] [hash] k7 bin=0 行 / 10848
+[dbg  4345.078 ms] [hash] bins: 4:81 5:1941 6:7140 7:1356 13:330 
+[dbg  4345.087 ms] [hash-prof] binning            0.164 ms
+[dbg  4345.978 ms] [hash] 方案5 规模门:跳过(dense_nr=330 Σest=746376/11031390, flop=8953362)
+[dbg  4345.992 ms] [hash-prof] dense_count        0.058 ms
+[dbg  4345.993 ms] [hash] 方案5:count pass 0 dense 行(Σest=0 Σnnz=0)→ cnnz_scan 后直写终态
+[dbg  4348.065 ms] [hash-prof] accumulate         1.884 ms
+[dbg  4348.078 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  4348.168 ms] [hash-prof] cnnz_scan          0.068 ms
+[dbg  4348.171 ms] [hash] C_nnz=6185646 (est=11031390, 1.78x over-alloc)
+[dbg  4348.337 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  4348.678 ms] [hash-prof] compact+sort       0.249 ms
+[dbg  4352.027 ms] [hash-prof] d2h                3.337 ms
+[dbg  4352.479 ms] [hash-prof] TOTAL(GPU)        6.743 ms
+[dbg  4352.499 ms] [adapt] n=10848 maxrow=723 skew=6.4 → hash (score=-2.10 fp=139413157 mr=723 sk=6.4)
+[dbg  4352.502 ms] [hash] start (HASH_CAP=16384)
+[dbg  4353.475 ms] [hash-prof] h2d                0.854 ms
+[dbg  4353.479 ms] [hash] h2d
+[dbg  4353.563 ms] [hash] HASH_BI: B16 交织 1229778 项(+18.8MB)
+[dbg  4353.626 ms] [hash-prof] count_flop         0.043 ms
+[dbg  4353.629 ms] [hash] avg_product=15164.5 (total_flop=164504790)
+[dbg  4353.710 ms] [hash-prof] mh_construct       0.019 ms
+[dbg  4353.713 ms] [hash] est_expand=1.80(total_flop=164504790)
+[dbg  4353.823 ms] [hash-prof] mh_merge           0.102 ms
+[dbg  4353.919 ms] [hash-prof] est_scan           0.027 ms
+[dbg  4354.000 ms] [hash] diter bin=330 行 / 10848
+[dbg  4354.002 ms] [hash] k7 bin=0 行 / 10848
+[dbg  4354.004 ms] [hash] bins: 4:81 5:1941 6:7140 7:1356 13:330 
+[dbg  4354.014 ms] [hash-prof] binning            0.059 ms
+[dbg  4354.056 ms] [hash] 方案5 规模门:跳过(dense_nr=330 Σest=746376/11031390, flop=8953362)
+[dbg  4354.065 ms] [hash-prof] dense_count        0.039 ms
+[dbg  4354.067 ms] [hash] 方案5:count pass 0 dense 行(Σest=0 Σnnz=0)→ cnnz_scan 后直写终态
+[dbg  4355.692 ms] [hash-prof] accumulate         1.463 ms
+[dbg  4355.703 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  4355.755 ms] [hash-prof] cnnz_scan          0.035 ms
+[dbg  4355.758 ms] [hash] C_nnz=6185646 (est=11031390, 1.78x over-alloc)
+[dbg  4355.835 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  4356.130 ms] [hash-prof] compact+sort       0.223 ms
+[dbg  4359.465 ms] [hash-prof] d2h                3.323 ms
+[dbg  4359.873 ms] [hash-prof] TOTAL(GPU)        6.188 ms
+[dbg  4359.890 ms] [adapt] n=10848 maxrow=723 skew=6.4 → hash (score=-2.10 fp=139413157 mr=723 sk=6.4)
+[dbg  4359.892 ms] [hash] start (HASH_CAP=16384)
+[dbg  4360.887 ms] [hash-prof] h2d                0.885 ms
+[dbg  4360.891 ms] [hash] h2d
+[dbg  4360.973 ms] [hash] HASH_BI: B16 交织 1229778 项(+18.8MB)
+[dbg  4361.035 ms] [hash-prof] count_flop         0.043 ms
+[dbg  4361.038 ms] [hash] avg_product=15164.5 (total_flop=164504790)
+[dbg  4361.117 ms] [hash-prof] mh_construct       0.018 ms
+[dbg  4361.120 ms] [hash] est_expand=1.80(total_flop=164504790)
+[dbg  4361.231 ms] [hash-prof] mh_merge           0.103 ms
+[dbg  4361.314 ms] [hash-prof] est_scan           0.025 ms
+[dbg  4361.390 ms] [hash] diter bin=330 行 / 10848
+[dbg  4361.393 ms] [hash] k7 bin=0 行 / 10848
+[dbg  4361.395 ms] [hash] bins: 4:81 5:1941 6:7140 7:1356 13:330 
+[dbg  4361.404 ms] [hash-prof] binning            0.056 ms
+[dbg  4361.441 ms] [hash] 方案5 规模门:跳过(dense_nr=330 Σest=746376/11031390, flop=8953362)
+[dbg  4361.450 ms] [hash-prof] dense_count        0.036 ms
+[dbg  4361.452 ms] [hash] 方案5:count pass 0 dense 行(Σest=0 Σnnz=0)→ cnnz_scan 后直写终态
+[dbg  4363.063 ms] [hash-prof] accumulate         1.456 ms
+[dbg  4363.074 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  4363.123 ms] [hash-prof] cnnz_scan          0.032 ms
+[dbg  4363.126 ms] [hash] C_nnz=6185646 (est=11031390, 1.78x over-alloc)
+[dbg  4363.200 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  4363.485 ms] [hash-prof] compact+sort       0.219 ms
+[dbg  4366.824 ms] [hash-prof] d2h                3.325 ms
+[dbg  4367.228 ms] [hash-prof] TOTAL(GPU)        6.197 ms
+[dbg  4367.232 ms] warmup done
+[dbg  4367.249 ms] T4f adaptive self_product: start
+[dbg  4367.260 ms] [adapt] n=10848 maxrow=723 skew=6.4 → hash (score=-2.10 fp=139413157 mr=723 sk=6.4)
+[dbg  4367.262 ms] [hash] start (HASH_CAP=16384)
+[dbg  4368.250 ms] [hash-prof] h2d                0.877 ms
+[dbg  4368.254 ms] [hash] h2d
+[dbg  4368.334 ms] [hash] HASH_BI: B16 交织 1229778 项(+18.8MB)
+[dbg  4368.396 ms] [hash-prof] count_flop         0.044 ms
+[dbg  4368.399 ms] [hash] avg_product=15164.5 (total_flop=164504790)
+[dbg  4368.477 ms] [hash-prof] mh_construct       0.018 ms
+[dbg  4368.481 ms] [hash] est_expand=1.80(total_flop=164504790)
+[dbg  4368.590 ms] [hash-prof] mh_merge           0.102 ms
+[dbg  4368.673 ms] [hash-prof] est_scan           0.025 ms
+[dbg  4368.749 ms] [hash] diter bin=330 行 / 10848
+[dbg  4368.752 ms] [hash] k7 bin=0 行 / 10848
+[dbg  4368.754 ms] [hash] bins: 4:81 5:1941 6:7140 7:1356 13:330 
+[dbg  4368.763 ms] [hash-prof] binning            0.056 ms
+[dbg  4368.800 ms] [hash] 方案5 规模门:跳过(dense_nr=330 Σest=746376/11031390, flop=8953362)
+[dbg  4368.809 ms] [hash-prof] dense_count        0.035 ms
+[dbg  4368.810 ms] [hash] 方案5:count pass 0 dense 行(Σest=0 Σnnz=0)→ cnnz_scan 后直写终态
+[dbg  4370.434 ms] [hash-prof] accumulate         1.469 ms
+[dbg  4370.445 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  4370.498 ms] [hash-prof] cnnz_scan          0.036 ms
+[dbg  4370.501 ms] [hash] C_nnz=6185646 (est=11031390, 1.78x over-alloc)
+[dbg  4370.573 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  4370.860 ms] [hash-prof] compact+sort       0.217 ms
+[dbg  4374.186 ms] [hash-prof] d2h                3.314 ms
+[dbg  4374.566 ms] [hash-prof] TOTAL(GPU)        6.193 ms
+[dbg  4374.569 ms] T4f adaptive self_product: done (C_nnz=6185646)

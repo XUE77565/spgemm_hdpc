@@ -1,0 +1,133 @@
+[dbg     0.001 ms] main entry, initializing CUDA context...
+[dbg   274.233 ms] CUDA context ready
+[dbg   274.372 ms] start read_matrix_market: /home/xueyizhou/spgemm-challenge/data/ocean/square/consph.mtx
+[dbg  1389.390 ms] read done: 83334 x 83334, nnz=6010480
+[mempool] host pinned arena ready: 8192 MB (USE_MEMPOOL=ON)
+[mempool] device arena OFF (USE_DEV_POOL unset; compute-only 友好)
+[dbg  5938.957 ms] [hash] start (HASH_CAP=16384)
+[dbg  5942.072 ms] [hash-prof] h2d                2.633 ms
+[dbg  5942.078 ms] [hash] h2d
+[dbg  5957.759 ms] [hash] HASH_BI: B16 交织 6010480 项(+91.7MB)
+[dbg  5958.126 ms] [hash-prof] count_flop         0.187 ms
+[dbg  5958.131 ms] [hash] avg_product=5566.1 (total_flop=463845030)
+[dbg  5958.281 ms] [hash-prof] mh_construct       0.059 ms
+[dbg  5958.286 ms] [hash] est_expand=1.80(total_flop=463845030)
+[dbg  5958.517 ms] [hash-prof] mh_merge           0.219 ms
+[dbg  5958.696 ms] [hash-prof] est_scan           0.084 ms
+[dbg  5958.905 ms] [hash] diter bin=165 行 / 83334
+[dbg  5958.908 ms] [hash] k7 bin=0 行 / 83334
+[dbg  5958.911 ms] [hash] bins: 3:47 4:3130 5:50981 6:25356 13:165 21:3655 
+[dbg  5958.920 ms] [hash-prof] binning            0.173 ms
+[dbg  5959.794 ms] [hash] dstr_split 调用#1(dense_nr=165)
+[dbg  5959.855 ms] [hash] §28 矩阵级判据:档内中位密度 0.11 → 老内核
+[dbg  5959.865 ms] [hash] §22d 分流:档内 0 行(每档 0/0/0/0/0/0,hmax=11985)+ 超档 165 行
+[dbg  5959.919 ms] [hash-prof] dcest              0.143 ms
+[dbg  5959.922 ms] [hash] DCEST V3: dense_count 相位消灭(165 行,est/1.80×2.00 替代精确计数)
+[dbg  5965.046 ms] [hash-prof] accumulate         4.741 ms
+[dbg  5965.059 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  5965.225 ms] [hash-prof] cnnz_scan          0.076 ms
+[dbg  5965.228 ms] [hash] C_nnz=26683076 (est=48969057, 1.84x over-alloc)
+[dbg  5965.395 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  5968.626 ms] [hash-prof] dense_direct       3.130 ms
+[dbg  5968.694 ms] [hash] DCEST 证书: ovf=0/165 ratio直方图[<0.25:0 <0.5:0 <0.75:0 <1.0:0 <1.25:0 <1.5:0 <2:0 ≥2:165]
+[dbg  5969.049 ms] [hash] DCEST fixup: C_nnz=26539736(exact,紧凑拷贝完成)
+[dbg  5969.061 ms] [hash-prof] dcest_fixup        0.422 ms
+[dbg  5969.937 ms] [hash-prof] compact+sort       0.867 ms
+[dbg  5984.237 ms] [hash-prof] d2h               14.288 ms
+[dbg  5985.110 ms] [hash-prof] TOTAL(GPU)       27.022 ms
+[dbg  5985.117 ms] [hash] start (HASH_CAP=16384)
+[dbg  5990.372 ms] [hash-prof] h2d                5.125 ms
+[dbg  5990.376 ms] [hash] h2d
+[dbg  5990.614 ms] [hash] HASH_BI: B16 交织 6010480 项(+91.7MB)
+[dbg  5990.786 ms] [hash-prof] count_flop         0.083 ms
+[dbg  5990.790 ms] [hash] avg_product=5566.1 (total_flop=463845030)
+[dbg  5990.897 ms] [hash-prof] mh_construct       0.044 ms
+[dbg  5990.901 ms] [hash] est_expand=1.80(total_flop=463845030)
+[dbg  5991.100 ms] [hash-prof] mh_merge           0.191 ms
+[dbg  5991.199 ms] [hash-prof] est_scan           0.029 ms
+[dbg  5991.296 ms] [hash] diter bin=165 行 / 83334
+[dbg  5991.298 ms] [hash] k7 bin=0 行 / 83334
+[dbg  5991.300 ms] [hash] bins: 3:47 4:3130 5:50981 6:25356 13:165 21:3655 
+[dbg  5991.310 ms] [hash-prof] binning            0.069 ms
+[dbg  5991.320 ms] [hash] dstr_split 调用#2(dense_nr=165)
+[dbg  5991.360 ms] [hash] §28 矩阵级判据:档内中位密度 0.11 → 老内核
+[dbg  5991.368 ms] [hash] §22d 分流:档内 0 行(每档 0/0/0/0/0/0,hmax=11985)+ 超档 165 行
+[dbg  5991.408 ms] [hash-prof] dcest              0.087 ms
+[dbg  5991.411 ms] [hash] DCEST V3: dense_count 相位消灭(165 行,est/1.80×2.00 替代精确计数)
+[dbg  5996.433 ms] [hash-prof] accumulate         4.635 ms
+[dbg  5996.445 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  5996.555 ms] [hash-prof] cnnz_scan          0.037 ms
+[dbg  5996.559 ms] [hash] C_nnz=26683076 (est=48969057, 1.84x over-alloc)
+[dbg  5996.635 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  5996.816 ms] [hash-prof] dense_direct       0.102 ms
+[dbg  5996.849 ms] [hash] DCEST 证书: ovf=0/165 ratio直方图[<0.25:0 <0.5:0 <0.75:0 <1.0:0 <1.25:0 <1.5:0 <2:0 ≥2:165]
+[dbg  5997.136 ms] [hash] DCEST fixup: C_nnz=26539736(exact,紧凑拷贝完成)
+[dbg  5997.147 ms] [hash-prof] dcest_fixup        0.321 ms
+[dbg  5998.005 ms] [hash-prof] compact+sort       0.850 ms
+[dbg  6012.241 ms] [hash-prof] d2h               14.222 ms
+[dbg  6013.065 ms] [hash-prof] TOTAL(GPU)       25.795 ms
+[dbg  6013.071 ms] [hash] start (HASH_CAP=16384)
+[dbg  6018.365 ms] [hash-prof] h2d                5.174 ms
+[dbg  6018.369 ms] [hash] h2d
+[dbg  6018.604 ms] [hash] HASH_BI: B16 交织 6010480 项(+91.7MB)
+[dbg  6018.776 ms] [hash-prof] count_flop         0.084 ms
+[dbg  6018.780 ms] [hash] avg_product=5566.1 (total_flop=463845030)
+[dbg  6018.885 ms] [hash-prof] mh_construct       0.045 ms
+[dbg  6018.889 ms] [hash] est_expand=1.80(total_flop=463845030)
+[dbg  6019.086 ms] [hash-prof] mh_merge           0.190 ms
+[dbg  6019.185 ms] [hash-prof] est_scan           0.029 ms
+[dbg  6019.278 ms] [hash] diter bin=165 行 / 83334
+[dbg  6019.281 ms] [hash] k7 bin=0 行 / 83334
+[dbg  6019.283 ms] [hash] bins: 3:47 4:3130 5:50981 6:25356 13:165 21:3655 
+[dbg  6019.292 ms] [hash-prof] binning            0.070 ms
+[dbg  6019.302 ms] [hash] dstr_split 调用#3(dense_nr=165)
+[dbg  6019.339 ms] [hash] §28 矩阵级判据:档内中位密度 0.11 → 老内核
+[dbg  6019.347 ms] [hash] §22d 分流:档内 0 行(每档 0/0/0/0/0/0,hmax=11985)+ 超档 165 行
+[dbg  6019.387 ms] [hash-prof] dcest              0.084 ms
+[dbg  6019.390 ms] [hash] DCEST V3: dense_count 相位消灭(165 行,est/1.80×2.00 替代精确计数)
+[dbg  6024.408 ms] [hash-prof] accumulate         4.634 ms
+[dbg  6024.421 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  6024.534 ms] [hash-prof] cnnz_scan          0.037 ms
+[dbg  6024.538 ms] [hash] C_nnz=26683076 (est=48969057, 1.84x over-alloc)
+[dbg  6024.615 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  6024.793 ms] [hash-prof] dense_direct       0.101 ms
+[dbg  6024.825 ms] [hash] DCEST 证书: ovf=0/165 ratio直方图[<0.25:0 <0.5:0 <0.75:0 <1.0:0 <1.25:0 <1.5:0 <2:0 ≥2:165]
+[dbg  6025.113 ms] [hash] DCEST fixup: C_nnz=26539736(exact,紧凑拷贝完成)
+[dbg  6025.124 ms] [hash-prof] dcest_fixup        0.320 ms
+[dbg  6025.976 ms] [hash-prof] compact+sort       0.844 ms
+[dbg  6040.192 ms] [hash-prof] d2h               14.204 ms
+[dbg  6041.009 ms] [hash-prof] TOTAL(GPU)       25.818 ms
+[dbg  6041.013 ms] warmup done
+[dbg  6041.033 ms] T4e hash self_product: start
+[dbg  6041.035 ms] [hash] start (HASH_CAP=16384)
+[dbg  6046.319 ms] [hash-prof] h2d                5.165 ms
+[dbg  6046.323 ms] [hash] h2d
+[dbg  6046.556 ms] [hash] HASH_BI: B16 交织 6010480 项(+91.7MB)
+[dbg  6046.727 ms] [hash-prof] count_flop         0.083 ms
+[dbg  6046.730 ms] [hash] avg_product=5566.1 (total_flop=463845030)
+[dbg  6046.835 ms] [hash-prof] mh_construct       0.044 ms
+[dbg  6046.839 ms] [hash] est_expand=1.80(total_flop=463845030)
+[dbg  6047.037 ms] [hash-prof] mh_merge           0.189 ms
+[dbg  6047.135 ms] [hash-prof] est_scan           0.028 ms
+[dbg  6047.223 ms] [hash] diter bin=165 行 / 83334
+[dbg  6047.226 ms] [hash] k7 bin=0 行 / 83334
+[dbg  6047.228 ms] [hash] bins: 3:47 4:3130 5:50981 6:25356 13:165 21:3655 
+[dbg  6047.237 ms] [hash-prof] binning            0.065 ms
+[dbg  6047.246 ms] [hash] dstr_split 调用#4(dense_nr=165)
+[dbg  6047.279 ms] [hash] §28 矩阵级判据:档内中位密度 0.11 → 老内核
+[dbg  6047.287 ms] [hash] §22d 分流:档内 0 行(每档 0/0/0/0/0/0,hmax=11985)+ 超档 165 行
+[dbg  6047.327 ms] [hash-prof] dcest              0.079 ms
+[dbg  6047.330 ms] [hash] DCEST V3: dense_count 相位消灭(165 行,est/1.80×2.00 替代精确计数)
+[dbg  6052.331 ms] [hash-prof] accumulate         4.620 ms
+[dbg  6052.342 ms] [hash] dbg: overflow=0 ovf_cnt=0
+[dbg  6052.445 ms] [hash-prof] cnnz_scan          0.035 ms
+[dbg  6052.448 ms] [hash] C_nnz=26683076 (est=48969057, 1.84x over-alloc)
+[dbg  6052.526 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  6052.699 ms] [hash-prof] dense_direct       0.098 ms
+[dbg  6052.731 ms] [hash] DCEST 证书: ovf=0/165 ratio直方图[<0.25:0 <0.5:0 <0.75:0 <1.0:0 <1.25:0 <1.5:0 <2:0 ≥2:165]
+[dbg  6053.008 ms] [hash] DCEST fixup: C_nnz=26539736(exact,紧凑拷贝完成)
+[dbg  6053.020 ms] [hash-prof] dcest_fixup        0.310 ms
+[dbg  6053.876 ms] [hash-prof] compact+sort       0.849 ms
+[dbg  6068.095 ms] [hash-prof] d2h               14.207 ms
+[dbg  6068.935 ms] [hash-prof] TOTAL(GPU)       25.774 ms
+[dbg  6068.940 ms] T4e hash self_product: done (C_nnz=26539736)

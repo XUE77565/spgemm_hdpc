@@ -7,8 +7,9 @@
 
 | 数据 | 位置 | 测量日 | 口径 |
 |---|---|---|---|
-| **ocean 基线** | `ocean_337/ocean_337.csv`(列 `ocean_ms`) | 10-11 专测(run.log 同目录) | ocean 二进制逐阵,与 l0 同日配对 |
-| **我方三臂** | `p2_provisional/p2_337.csv` | 10-13/14(CD/C/A 三臂) | compute-only=TOTAL−h2d−d2h,WARMUP_N=1,**含 ~1% 满载税,待校准** |
+| **ocean 基线** | `ocean_337/ocean_337.csv`(列 `ocean_ms`) | 10-11 专测(run.log 同目录) | ocean 二进制逐阵,与 l0 同日配对(**已被 batch437 取代为首选**) |
+| **我方三臂** | `p2_provisional/p2_337.csv` | 10-13/14(CD/C/A 三臂) | WARMUP_N=1,含 ~1% 满载税(**已被 batch437 取代为首选**) |
+| **⭐ 437 权威批** | `batch437/batch_437.csv`(+prof/与 ocn_stats/ 全相位 sidecar+CALIBRATION.md 口径表) | **10-15/16 干净 GPU0,WARMUP_N=3,timed-437batch** | 428 阵×5 列(C/CD/A/ADPT/OCN 同日同机同口径);**L0/L1 训练与论文记分唯一来源**;oracle/OCN=0.9684 首过 1.0;红旗 8 面全定谳(ash 长方形×5/wb-edu OCN DNF/c-73×2 CD 溢出雷 study/47);8 个 can* 待补 |
 
 权威记分牌命令(逐阵配对,几何平均):
 `.venv/bin/python scripts/p2_provisional_337.py` 的汇总段,或手工配对上述两 CSV。

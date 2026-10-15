@@ -1,0 +1,153 @@
+[dbg     0.000 ms] main entry, initializing CUDA context...
+[dbg   252.676 ms] CUDA context ready
+[dbg   252.780 ms] start read_matrix_market: /home/xueyizhou/spgemm-challenge/data/ocean/square/webbase-1M.mtx
+[dbg  1285.373 ms] read done: 1000005 x 1000005, nnz=3105536
+[mempool] host pinned arena ready: 8192 MB (USE_MEMPOOL=ON)
+[mempool] device arena OFF (USE_DEV_POOL unset; compute-only 友好)
+[dbg  5194.271 ms] [adapt] n=1000005 maxrow=4700 skew=1513.4 → hash (score=-4.48 fp=9644306 mr=4700 sk=1513.4)
+[dbg  5194.289 ms] [hash] start (HASH_CAP=16384)
+[dbg  5214.913 ms] [hash-prof] h2d               19.035 ms
+[dbg  5214.922 ms] [hash] h2d
+[dbg  5215.098 ms] [hash] HASH_BI: B16 交织 3105536 项(+47.4MB)
+[dbg  5216.161 ms] [hash-prof] count_flop         0.847 ms
+[dbg  5216.167 ms] [hash] avg_product=69.5 (total_flop=69524195)
+[dbg  5216.612 ms] [hash-prof] mh_construct       0.341 ms
+[dbg  5216.618 ms] [hash] est_expand=1.80(total_flop=69524195)
+[dbg  5217.910 ms] [hash-prof] mh_merge           1.282 ms
+[dbg  5218.319 ms] [hash-prof] est_scan           0.186 ms
+[dbg  5218.861 ms] [hash] diter bin=1 行 / 1000005
+[dbg  5218.866 ms] [hash] k7 bin=0 行 / 1000005
+[dbg  5218.869 ms] [hash] bins: 0:47328 2:15247 3:31207 4:12235 5:6176 6:3650 7:16687 8:1596 13:1 19:4356 21:686799 22:114140 23:60583 
+[dbg  5218.881 ms] [hash-prof] binning            0.214 ms
+[dbg  5219.800 ms] [hash] 方案5 规模门:跳过(dense_nr=1 Σest=20699/56709273, flop=44514)
+[dbg  5219.813 ms] [hash-prof] dense_count        0.061 ms
+[dbg  5219.815 ms] [hash] 方案5:count pass 0 dense 行(Σest=0 Σnnz=0)→ cnnz_scan 后直写终态
+[dbg  5237.192 ms] [hash-prof] accumulate        16.869 ms
+[dbg  5237.206 ms] [hash] dbg: overflow=1 ovf_cnt=1354
+[dbg  5237.208 ms] [hash] row-retry: 1354 行 → flop 定表重跑
+[dbg  5237.213 ms] [rtprof] 2 memset_overflow
+[dbg  5237.403 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 1000005)
+[dbg  5237.510 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  5237.782 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=44367872 槽
+[dbg  5237.830 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  5238.187 ms] [hash] v40 SMEM 重试车: 1139/1354 行 ht=16384(SMEM=192KB);鲸鱼全局路 215 行
+[dbg  5238.245 ms] [rtprof] 7 车发射+全局路完成
+[dbg  5238.592 ms] [rtprof] 8 retry排序段完成
+[dbg  5239.203 ms] [hash-prof] retry              1.987 ms
+[dbg  5239.361 ms] [hash-prof] cnnz_scan          0.077 ms
+[dbg  5239.365 ms] [hash] C_nnz=51111996 (est=56709273, 1.11x over-alloc)
+[dbg  5239.780 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  5243.899 ms] [hash-prof] compact+sort       4.004 ms
+[dbg  5271.622 ms] [hash-prof] d2h               27.077 ms
+[dbg  5273.020 ms] [hash-prof] TOTAL(GPU)       71.982 ms
+[dbg  5273.939 ms] [adapt] n=1000005 maxrow=4700 skew=1513.4 → hash (score=-4.48 fp=9644306 mr=4700 sk=1513.4)
+[dbg  5273.944 ms] [hash] start (HASH_CAP=16384)
+[dbg  5278.007 ms] [hash-prof] h2d                3.791 ms
+[dbg  5278.012 ms] [hash] h2d
+[dbg  5278.236 ms] [hash] HASH_BI: B16 交织 3105536 项(+47.4MB)
+[dbg  5279.183 ms] [hash-prof] count_flop         0.745 ms
+[dbg  5279.187 ms] [hash] avg_product=69.5 (total_flop=69524195)
+[dbg  5279.606 ms] [hash-prof] mh_construct       0.309 ms
+[dbg  5279.610 ms] [hash] est_expand=1.80(total_flop=69524195)
+[dbg  5280.877 ms] [hash-prof] mh_merge           1.258 ms
+[dbg  5281.138 ms] [hash-prof] est_scan           0.040 ms
+[dbg  5281.523 ms] [hash] diter bin=1 行 / 1000005
+[dbg  5281.526 ms] [hash] k7 bin=0 行 / 1000005
+[dbg  5281.529 ms] [hash] bins: 0:47328 2:15247 3:31207 4:12235 5:6176 6:3650 7:16687 8:1596 13:1 19:4356 21:686799 22:114140 23:60583 
+[dbg  5281.539 ms] [hash-prof] binning            0.136 ms
+[dbg  5281.575 ms] [hash] 方案5 规模门:跳过(dense_nr=1 Σest=20699/56709273, flop=44514)
+[dbg  5281.584 ms] [hash-prof] dense_count        0.031 ms
+[dbg  5281.586 ms] [hash] 方案5:count pass 0 dense 行(Σest=0 Σnnz=0)→ cnnz_scan 后直写终态
+[dbg  5297.605 ms] [hash-prof] accumulate        15.557 ms
+[dbg  5297.617 ms] [hash] dbg: overflow=1 ovf_cnt=1354
+[dbg  5297.618 ms] [hash] row-retry: 1354 行 → flop 定表重跑
+[dbg  5297.623 ms] [rtprof] 2 memset_overflow
+[dbg  5297.791 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 1000005)
+[dbg  5297.889 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  5298.124 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=44367872 槽
+[dbg  5298.157 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  5298.518 ms] [hash] v40 SMEM 重试车: 1139/1354 行 ht=16384(SMEM=192KB);鲸鱼全局路 215 行
+[dbg  5298.557 ms] [rtprof] 7 车发射+全局路完成
+[dbg  5298.750 ms] [rtprof] 8 retry排序段完成
+[dbg  5299.360 ms] [hash-prof] retry              1.734 ms
+[dbg  5299.481 ms] [hash-prof] cnnz_scan          0.042 ms
+[dbg  5299.484 ms] [hash] C_nnz=51111996 (est=56709273, 1.11x over-alloc)
+[dbg  5299.776 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  5303.870 ms] [hash-prof] compact+sort       3.977 ms
+[dbg  5331.400 ms] [hash-prof] d2h               26.919 ms
+[dbg  5332.773 ms] [hash-prof] TOTAL(GPU)       54.541 ms
+[dbg  5333.683 ms] [adapt] n=1000005 maxrow=4700 skew=1513.4 → hash (score=-4.48 fp=9644306 mr=4700 sk=1513.4)
+[dbg  5333.687 ms] [hash] start (HASH_CAP=16384)
+[dbg  5337.787 ms] [hash-prof] h2d                3.832 ms
+[dbg  5337.792 ms] [hash] h2d
+[dbg  5338.019 ms] [hash] HASH_BI: B16 交织 3105536 项(+47.4MB)
+[dbg  5338.958 ms] [hash-prof] count_flop         0.744 ms
+[dbg  5338.962 ms] [hash] avg_product=69.5 (total_flop=69524195)
+[dbg  5339.399 ms] [hash-prof] mh_construct       0.329 ms
+[dbg  5339.403 ms] [hash] est_expand=1.80(total_flop=69524195)
+[dbg  5340.693 ms] [hash-prof] mh_merge           1.281 ms
+[dbg  5340.958 ms] [hash-prof] est_scan           0.038 ms
+[dbg  5341.340 ms] [hash] diter bin=1 行 / 1000005
+[dbg  5341.344 ms] [hash] k7 bin=0 行 / 1000005
+[dbg  5341.347 ms] [hash] bins: 0:47328 2:15247 3:31207 4:12235 5:6176 6:3650 7:16687 8:1596 13:1 19:4356 21:686799 22:114140 23:60583 
+[dbg  5341.356 ms] [hash-prof] binning            0.136 ms
+[dbg  5341.390 ms] [hash] 方案5 规模门:跳过(dense_nr=1 Σest=20699/56709273, flop=44514)
+[dbg  5341.400 ms] [hash-prof] dense_count        0.031 ms
+[dbg  5341.402 ms] [hash] 方案5:count pass 0 dense 行(Σest=0 Σnnz=0)→ cnnz_scan 后直写终态
+[dbg  5358.441 ms] [hash-prof] accumulate        16.574 ms
+[dbg  5358.453 ms] [hash] dbg: overflow=1 ovf_cnt=1354
+[dbg  5358.455 ms] [hash] row-retry: 1354 行 → flop 定表重跑
+[dbg  5358.459 ms] [rtprof] 2 memset_overflow
+[dbg  5358.638 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 1000005)
+[dbg  5358.734 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  5358.979 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=44367872 槽
+[dbg  5359.015 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  5359.372 ms] [hash] v40 SMEM 重试车: 1139/1354 行 ht=16384(SMEM=192KB);鲸鱼全局路 215 行
+[dbg  5359.414 ms] [rtprof] 7 车发射+全局路完成
+[dbg  5359.608 ms] [rtprof] 8 retry排序段完成
+[dbg  5360.219 ms] [hash-prof] retry              1.755 ms
+[dbg  5360.337 ms] [hash-prof] cnnz_scan          0.042 ms
+[dbg  5360.341 ms] [hash] C_nnz=51111996 (est=56709273, 1.11x over-alloc)
+[dbg  5360.633 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  5364.719 ms] [hash-prof] compact+sort       3.980 ms
+[dbg  5392.419 ms] [hash-prof] d2h               27.091 ms
+[dbg  5393.767 ms] [hash-prof] TOTAL(GPU)       55.835 ms
+[dbg  5393.772 ms] warmup done
+[dbg  5393.791 ms] T4f adaptive self_product: start
+[dbg  5394.683 ms] [adapt] n=1000005 maxrow=4700 skew=1513.4 → hash (score=-4.48 fp=9644306 mr=4700 sk=1513.4)
+[dbg  5394.687 ms] [hash] start (HASH_CAP=16384)
+[dbg  5398.801 ms] [hash-prof] h2d                3.845 ms
+[dbg  5398.805 ms] [hash] h2d
+[dbg  5399.043 ms] [hash] HASH_BI: B16 交织 3105536 项(+47.4MB)
+[dbg  5399.991 ms] [hash-prof] count_flop         0.751 ms
+[dbg  5399.995 ms] [hash] avg_product=69.5 (total_flop=69524195)
+[dbg  5400.420 ms] [hash-prof] mh_construct       0.320 ms
+[dbg  5400.424 ms] [hash] est_expand=1.80(total_flop=69524195)
+[dbg  5401.702 ms] [hash-prof] mh_merge           1.269 ms
+[dbg  5401.968 ms] [hash-prof] est_scan           0.037 ms
+[dbg  5402.358 ms] [hash] diter bin=1 行 / 1000005
+[dbg  5402.362 ms] [hash] k7 bin=0 行 / 1000005
+[dbg  5402.365 ms] [hash] bins: 0:47328 2:15247 3:31207 4:12235 5:6176 6:3650 7:16687 8:1596 13:1 19:4356 21:686799 22:114140 23:60583 
+[dbg  5402.374 ms] [hash-prof] binning            0.137 ms
+[dbg  5402.409 ms] [hash] 方案5 规模门:跳过(dense_nr=1 Σest=20699/56709273, flop=44514)
+[dbg  5402.419 ms] [hash-prof] dense_count        0.032 ms
+[dbg  5402.420 ms] [hash] 方案5:count pass 0 dense 行(Σest=0 Σnnz=0)→ cnnz_scan 后直写终态
+[dbg  5419.495 ms] [hash-prof] accumulate        16.609 ms
+[dbg  5419.507 ms] [hash] dbg: overflow=1 ovf_cnt=1354
+[dbg  5419.509 ms] [hash] row-retry: 1354 行 → flop 定表重跑
+[dbg  5419.513 ms] [rtprof] 2 memset_overflow
+[dbg  5419.680 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 1000005)
+[dbg  5419.771 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  5420.007 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=44367872 槽
+[dbg  5420.046 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  5420.399 ms] [hash] v40 SMEM 重试车: 1139/1354 行 ht=16384(SMEM=192KB);鲸鱼全局路 215 行
+[dbg  5420.440 ms] [rtprof] 7 车发射+全局路完成
+[dbg  5420.633 ms] [rtprof] 8 retry排序段完成
+[dbg  5421.237 ms] [hash-prof] retry              1.720 ms
+[dbg  5421.355 ms] [hash-prof] cnnz_scan          0.043 ms
+[dbg  5421.359 ms] [hash] C_nnz=51111996 (est=56709273, 1.11x over-alloc)
+[dbg  5421.644 ms] [hash] compact in_place=0 (min_margin=0)
+[dbg  5425.711 ms] [hash-prof] compact+sort       3.965 ms
+[dbg  5453.325 ms] [hash-prof] d2h               27.004 ms
+[dbg  5454.668 ms] [hash-prof] TOTAL(GPU)       55.731 ms
+[dbg  5454.672 ms] T4f adaptive self_product: done (C_nnz=51111996)

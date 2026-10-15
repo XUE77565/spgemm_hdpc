@@ -1,0 +1,41 @@
+[dbg     0.001 ms] main entry, initializing CUDA context...
+[dbg   491.135 ms] CUDA context ready
+[dbg   491.290 ms] start read_matrix_market: /home/xueyizhou/spgemm-challenge/data/ocean/square/c-73b.mtx
+[dbg   798.233 ms] read done: 169422 x 169422, nnz=1279274
+[mempool] host pinned arena ready: 8192 MB (USE_MEMPOOL=ON)
+[mempool] device arena OFF (USE_DEV_POOL unset; compute-only 友好)
+[dbg  4907.999 ms] [hash] start (HASH_CAP=16384)
+[dbg  4927.904 ms] [hash-prof] h2d               19.319 ms
+[dbg  4927.913 ms] [hash] h2d
+[dbg  4928.062 ms] [hash] HASH_BI: B16 交织 1279274 项(+19.5MB)
+[dbg  4932.582 ms] [hash-prof] count_flop         4.392 ms
+[dbg  4932.587 ms] [hash] avg_product=23007.4 (total_flop=3897967980)
+[dbg  4932.950 ms] [hash-prof] mh_construct       0.284 ms
+[dbg  4932.955 ms] [hash] est_expand=1.80(total_flop=3897967980)
+[dbg  4938.531 ms] [hash-prof] mh_merge           5.565 ms
+[dbg  4938.726 ms] [hash-prof] est_scan           0.092 ms
+[dbg  4939.006 ms] [hash] diter bin=41456 行 / 169422
+[dbg  4939.010 ms] [hash] k7 bin=0 行 / 169422
+[dbg  4939.013 ms] [hash] bins: 0:1164 3:1600 4:39173 5:1358 6:664 7:369 8:15 13:41456 19:9 21:42924 22:38808 23:1882 
+[dbg  4939.022 ms] [hash-prof] binning            0.183 ms
+[dbg  4939.886 ms] [hash] dstr_split 调用#1(dense_nr=41456)
+[dbg  4941.834 ms] [hash] §22d 分流:档内 0 行(每档 0/0/0/0/0/0,hmax=0)+ 超档 41456 行
+[dbg  4941.911 ms] [hash-prof] dcest              2.037 ms
+[dbg  4941.914 ms] [hash] DCEST V3: dense_count 相位消灭(41456 行,est/1.80×2.00 替代精确计数)
+[dbg  4944.166 ms] [hash-prof] accumulate         2.048 ms
+[dbg  4944.180 ms] [hash] dbg: overflow=1 ovf_cnt=248
+[dbg  4944.182 ms] [hash] row-retry: 248 行 → flop 定表重跑
+[dbg  4944.187 ms] [rtprof] 2 memset_overflow
+[dbg  4944.281 ms] [rtprof] 3 prep_scan+rslot(全A_rows memset 169422)
+[dbg  4944.399 ms] [rtprof] 4 rslot_scan(全A_rows inclusive)+D2H#1
+[dbg  4944.645 ms] [rtprof] 5 D2H#2/3(rtab尾)+arena_alloc=8126464 槽
+[dbg  4944.688 ms] [rtprof] 6 gather_flop+2×D2H(分流)
+[dbg  4944.746 ms] [hash] v40 SMEM 重试车: 18/248 行 ht=16384(SMEM=192KB);鲸鱼全局路 230 行
+[dbg  4944.806 ms] [rtprof] 7 车发射+全局路完成
+[dbg  4944.809 ms] [hash] docs/54 retry 免排序: 248 行(r_slots=3094970)→csort
+[dbg  4944.810 ms] [rtprof] 8 retry排序段完成
+[dbg  4945.135 ms] [hash-prof] retry              0.946 ms
+[dbg  4945.219 ms] [hash-prof] cnnz_scan          0.062 ms
+[dbg  4945.222 ms] [hash] C_nnz=-778955041 (est=3058565145, -3.93x over-alloc)
+[dbg  4945.604 ms] [hash] compact in_place=0 (min_margin=-2131672864)
+[mempool] cudaMalloc(18446744064362768824 B) failed: out of memory
