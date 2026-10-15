@@ -13,7 +13,7 @@
 
 | 前作 | 干了什么 | 与我们主张的关系 |
 |---|---|---|
-| **IA-SpGEMM**(Xie et al., ICS 2019, ~90 引) | SuiteSparse 语料训练,**逐输入选 format+算法**(7 种 SpGEMM 变体),SMAT(SpMV)血统 | **最接近的"input-aware 分发"祖师**,必引;但它选的是**同一两阶段结构内的变体**,非管线形态 |
+| **IA-SpGEMM**(Xie/Tan/Liu/Sun, ICS 2019, ~90 引) | **一手摘要已核(S2 API)**:"automatically determines the best format and algorithm"——深度模型 **MatNet**,**2700+ SuiteSparse 阵训练,预测式**(sparse features + density representations → 直接预测,非试跑自调优);CPU+GPU 评测 | **最接近的"学习型逐阵分发"祖师**,必引;但它选的是**format+算法变体(同一两阶段结构内)**,非管线形态;单层(一个模型),无解析门/证书/回退 |
 | **Wang 2025**(ACM TACO 28(4)? DOI 10.1145/3774654, BIT, Dec 2025) | 一手摘要定谳:"**trains a lightweight ML model to predict the optimal method for estimating the size of result matrix**" + 行分组 kernel 发射 + hash 负载因子启发式 | ML **只用于估计器选择**(symbolic 阶段结果规模估计方法);**单形态 hash 管线内**;正好是我们 L0-③ 估计器维度的最近前作,必引 |
 | **ocean**(arXiv 2604.19004, 2026) | 估计先行+运行时自纠;decideMatrixType = **静态阈值**在两形态间切 | 对手即前作:形态间切换存在,但是**单变量阈值**;我们=多变量+三层 |
 
@@ -58,10 +58,20 @@
 
 ## 五、遗留(投稿前 DDL 项)
 
-- [ ] IA-SpGEMM 机制描述目前来自检索摘要;投稿前下 PDF 复核
-      (ssslab.cn/assets/papers/2019-xie-spgemm.pdf):它是**预测式**(特征→模型→选择)
-      还是**逐输入试跑自调优**(measure-then-cache)——这决定我们"在线学习 vs 离线自调优"
-      划界语言的强度;
+- [x] ~~IA-SpGEMM 是预测式还是试跑式~~ → **已定谳(10-15,一手摘要)**:预测式。
+      MatNet 深度模型、2700+ 阵训练、sparse features + **density representations**
+      (矩阵密度图像类特征,比我们 O(1) 头部特征重得多——这本身是我们可说的差异点)。
+      ssslab.cn PDF 链接已 404,S2 API 摘要为准;全文复核降级为可选项。
 - [ ] ocean arXiv 2604.19004 全文精读(其 related work 可能已引 IA-SpGEMM——若引了,
       我们的三层划界反而更稳);
 - [ ] Wang 2025 全文(是否有除估计器外的第二个学习维度)。
+
+### 追记(10-15,IA-SpGEMM 一手摘要后的划界细化)
+
+- 划界语言可以从"在线学习 vs 离线自调优"改为更硬的三点:①**粒度**(它=format/算法
+  变体,我们=管线形态:相位结构+kernel 家族+估计/证书机制整体切换)②**架构**
+  (它=单层深模型黑盒;我们=按可判定性三层:解析门不学习/证书反馈走状态机/不可约才
+  学习——且学习器只吃 binning 副产品特征,O(1))③**安全网**(它无;我们=判废证书链
+  +merge3 形态兜底)。
+- 泄漏纪律呼应:MatNet 2700 阵训练的 train/test 划分方式论文里值得查一眼——我们的
+  LOO-by-matrix/跨种群/时序外推验证协议若比它严,可作为方法学卖点写一句。
