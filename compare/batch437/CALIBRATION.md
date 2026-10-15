@@ -25,3 +25,16 @@
 - 历史层:docs/76 分相对拍(road_usa,彼 stats.json vs 我方 profiler,同族口径);
 - 权威基线(10-11):compare/ocean_337/(同 bench_detail.json + total_time 字段,与本次同口径);
 - manifest:compare/README.md(批完成后登记)。
+
+## 数据完整性发现(10-15 晚,批运行中抓获)
+
+1. **data/first100 目录漂移**:混入 8 个非挑战集文件(abb313/ash219/ash331/ash608/
+   ash958/beacxc/beaflw/beause——其中 ash* 为**长方形**,A·A 无定义,ocean 正确拒跑
+   "Incompatible matrix dimensions",我方 NOPROF 由此解释);**缺 8 个权威成员**
+   (can_61/62/73/96/445/634/715/838,全机无副本,目录不入 git);
+2. **权威名单改从 July 表加载**(compare/methods_cmp_first100.csv)∩ 现有文件;
+   本批实际 **428 阵**;8 个 can* = 待补(SuiteSparse 三镜像[herokuapp/tamu/cise.ufl.edu]
+   均被本机网络策略拒——403/HTML;补回后续跑仅需分钟级,皆为微阵);
+3. **杂文件的已测行**留在 batch_437.csv 但分析时按权威名单过滤(非记分数据);
+4. can_73 同时在 337 批的 10 缺失阵名单中——**data 目录漂移可能是 337 批部分
+   缺失的共同根因候选**(待 337 批缺失阵文件路径核查)。

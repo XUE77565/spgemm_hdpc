@@ -36,17 +36,26 @@ ARMS = {
 }
 
 def load_mats():
+    # 10-15 定谳:data/first100 目录漂移(混入 8 杂文件/缺 8 个 can*,长方形 ash* 被
+    # ocean 正确拒跑暴露)→ 权威名单 = July 表(methods_cmp_first100.csv)∩ 现有文件。
     mats = []
     o337 = [r["mat"] for r in csv.DictReader(open(os.path.join(REPO, "compare/l0_337/l0_337_results.csv")))]
     for m in o337:
         mats.append((m, os.path.join(REPO, "data", "ocean", "square", m + ".mtx")))
     seen = set(o337)
+    july = [r["matrix"] for r in csv.DictReader(open(os.path.join(REPO, "compare/methods_cmp_first100.csv")))]
     fdir = os.path.join(REPO, "data", "first100")
-    for f in os.listdir(fdir):
-        if f.endswith(".mtx"):
-            m = f[:-4]
-            if m not in seen:                      # 重叠 1 阵去重(保留 337 口径)
-                mats.append((m, os.path.join(fdir, f)))
+    missing = []
+    for m in july:
+        if m in seen:
+            continue
+        p = os.path.join(fdir, m + ".mtx")
+        if os.path.exists(p):
+            mats.append((m, p))
+        else:
+            missing.append(m)
+    if missing:
+        print(f"# ⚠ 权威名单缺文件(待补,SuiteSparse 镜像被网络策略拒): {','.join(missing)}", flush=True)
     return mats
 
 def ours(mtx, arm, m):
