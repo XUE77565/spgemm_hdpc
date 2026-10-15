@@ -62,9 +62,32 @@
       MatNet 深度模型、2700+ 阵训练、sparse features + **density representations**
       (矩阵密度图像类特征,比我们 O(1) 头部特征重得多——这本身是我们可说的差异点)。
       ssslab.cn PDF 链接已 404,S2 API 摘要为准;全文复核降级为可选项。
-- [ ] ocean arXiv 2604.19004 全文精读(其 related work 可能已引 IA-SpGEMM——若引了,
-      我们的三层划界反而更稳);
+- [x] ~~ocean arXiv 2604.19004 全文精读~~ → **已取一手贡献清单(10-15,curl+HTML 解析)**,
+      详见 §六。
 - [ ] Wang 2025 全文(是否有除估计器外的第二个学习维度)。
+
+## 六、ocean 一手贡献清单(10-15 精读,arXiv:2604.19004v1 = ICS'26 正式版)
+
+> Yifan Li & Giulia Guidi(Cornell),ICS 2026(Belfast),DOI 10.1145/3797905.3807868,
+> 开源 github.com/CornellHPC/Ocean-SpGEMM。引言四条贡献(原文顺序):
+
+1. **估计范式**:HyperLogLog 估计替代精确 symbolic pass(动机:symbolic 平均占 28%);
+   自称 "first work to use HyperLogLog to accelerate sparse linear algebra";
+2. **分析步**:用输入统计+采样**预测估计的成本,动态选 estimation-based vs
+   symbolic-based 工作流**(即源码里的 decideMatrixType,单层阈值);
+3. **混合累积器**:三类累积器 + shared/global memory 协作,专攻短行/长行两端;
+4. 实现+评测:vs spECK 1.4× / opSparse 2.6× / TileSpGEMM 3.5× / HSMU 2.0×(A100),
+   337 方阵 + 64 矩形阵,A100/H100。
+
+**对我方定位的含义**:
+- **337 = ocean 自选主场**(A100 评测集),印证并集战场发现的定性;
+- ocean 的"运行时自纠"= 溢出 retry(§3.2 Overflow Handling),**无判废证书链、无形态回退**
+  ——我们的证书+merge3 兜底是清晰差异点;
+- ocean 贡献 2 是**单层静态门**;我们三层裁定(解析/状态机/学习)是在它之上的架构级推进,
+  且他们没有形态家族(单形态 3 相位);
+- 估计器技术不同:HLL(他们)vs minhash+est 双估计器(我们,study/41);
+  DCEST 消灭的是 dense_count(他们的估计消灭 symbolic),同哲学不同靶;
+- 他们的 baseline 是 spECK/opSparse/TileSpGEMM/HSMU,没包含我们(当然)。
 
 ### 追记(10-15,IA-SpGEMM 一手摘要后的划界细化)
 
