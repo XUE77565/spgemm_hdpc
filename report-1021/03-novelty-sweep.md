@@ -16,6 +16,7 @@
 | **IA-SpGEMM**(Xie/Tan/Liu/Sun, ICS 2019, ~90 引) | **一手摘要已核(S2 API)**:"automatically determines the best format and algorithm"——深度模型 **MatNet**,**2700+ SuiteSparse 阵训练,预测式**(sparse features + density representations → 直接预测,非试跑自调优);CPU+GPU 评测 | **最接近的"学习型逐阵分发"祖师**,必引;但它选的是**format+算法变体(同一两阶段结构内)**,非管线形态;单层(一个模型),无解析门/证书/回退 |
 | **Wang 2025**(ACM TACO 28(4)? DOI 10.1145/3774654, BIT, Dec 2025) | 一手摘要定谳:"**trains a lightweight ML model to predict the optimal method for estimating the size of result matrix**" + 行分组 kernel 发射 + hash 负载因子启发式 | ML **只用于估计器选择**(symbolic 阶段结果规模估计方法);**单形态 hash 管线内**;正好是我们 L0-③ 估计器维度的最近前作,必引 |
 | **ocean**(arXiv 2604.19004, 2026) | 估计先行+运行时自纠;decideMatrixType = **静态阈值**在两形态间切 | 对手即前作:形态间切换存在,但是**单变量阈值**;我们=多变量+三层 |
+| **Du et al. 2022b**(Xie 组,arXiv:2207.13848) | 一手摘要(10-15 补核):采样 FLOP/NNZ→**压缩比**→每行输出=FLOP÷压缩比;1.56% 均差 | **我们 dup 维度的最近前作**(压缩比=1/dup),必引;软肋=全局比率对行异质阵失效——in-2004 欠估行是活证据;我们逐行 minhash+margin 状态机+证书是针对性解(详见 study/44 §二) |
 
 **我们仍可主张的 novelty(论文语言按此收窄)**:
 
