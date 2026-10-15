@@ -65,7 +65,8 @@ HSMU 集含大量编号名合成阵)。**修正后的事实更强**:领域不止
 
 | # | 机理 | 出处 | 插进我们哪里 | 价值/成本 | 状态 |
 |---|---|---|---|---|---|
-| **1** | **hash 索引/值分离放置**:索引留 smem(32bit CAS 便宜),**值放 gmem 用原生 FP64 RED 硬件原子**(Listing 1:smem FP64 只能 CAST.SPIN,gmem 有原生 RED.E.ADD.F64);声称行长 3× 无显著惩罚,依据=索引访问(读/比/换)比值访问(仅 atomicAdd)复杂得多,hash 受限的是延迟不是带宽 | **ocean §3.3(一手)** | 我们的大行墙正是 smem double CAS 自旋(docs/79"17 种办法全败"的硬件边界——需先核对当时是否试过值放 gmem);hash_heavy/hash_spa 大行带 | **高**(337 大行带输 1.49-1.57× 的人群)/中 | **GPU-gated**:可先写代码+env 门,卡释放即测;引用 ocean 为机理出处 |
+| **1** | **hash 索引/值分离放置**:索引留 smem(32bit 原子便宜),**值放 gmem 用原生 FP64 RED**(fire-and-forget,不需要返回值→编译器出 RED 单指令;gmem 原子延迟仅 2-4× smem) | **ocean §3.3(一手)** | **与 17 连败对账完成(10-15)**:我方"全局值"判死人群=**高 dup 自旋弹**(dup 23-61,同座 L2 串行化,gmem 不救);ocean 赢的人群=**容量界**行(表超 smem 容量,moderate dup)——**互补边界,非矛盾**。插进点=dense 梯子中带(span 1818-7277,输 1.15×)即此缺口;且仅"最大 hash 档"用 hybrid(他们自己也只这么用) | 中~高/中(需 GPU) | **补边界实验**:中带行 hybrid-hash vs D2 重写,二择一 |
+| **1b** | **fire-and-forget 纪律审计**:凡值累加不需要返回值处,确保编译出 RED 而非带回值的 ATOM——SASS 一查便知 | ocean Listing 1(机理泛化) | **全部 kernel 的 gmem atomicAdd 路径**(不只 hash)——若有热点在用带回值原子,白送性能 | 中/**零 GPU**(nvcc+cuobjdump 即可) | **立即可做**:SASS 审计一遍 |
 | 2 | 压缩比估计(采样 K 行→比率→每行 FLOP÷比率) | Du 2022b | 轻 hash 形态的廉价估计器候选(替代全行 minhash);dup 已是免费 L0 特征 | 中/低 | 并入轻 hash 设计+L0 特征规格 |
 | 3 | 选择器自证协议(被选臂获益 ≥1.05× 比例双向) | ocean §5.3 | L0/L1 验收指标(本文档 §一之 3) | 中/零 | 已记入 |
 | 4 | density representation 粗网格密度 sketch(如 16×16 计数) | MatNet(IA-SpGEMM) | L0/L1 特征:搭现有一遍 scan 顺手 256 计数器 | 中/低 | 并入 L0 特征规格 |
