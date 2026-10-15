@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpGEMM 脉络与三层裁定</title>
+<style>
+  :root{
+    --bg:#f7f6f3; --ink:#1a2332; --muted:#5b6b7f; --accent:#0f5c8c; --accent2:#b3541e;
+    --line:#d8d4cc; --card:#ffffff; --ok:#1c7a43; --bad:#a33b2e; --notebg:#fff8e6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#14181f; --ink:#e8e6e1; --muted:#9aa8b8; --accent:#6db3e8; --accent2:#e8a06b;
+      --line:#333c48; --card:#1d242e; --ok:#7fd0a2; --bad:#e8968a; --notebg:#2b2717;
+    }
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%;}
+  body{font-family:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+       background:var(--bg); color:var(--ink); overflow:hidden;}
+  .slide{display:none; height:100vh; padding:5vh 7vw; flex-direction:column; justify-content:center; position:relative;}
+  .slide.active{display:flex;}
+  .kicker{font-size:.85rem; letter-spacing:.25em; color:var(--accent); text-transform:uppercase; margin-bottom:1.2rem; font-weight:600;}
+  h1{font-size:3.2rem; line-height:1.25; font-weight:700;}
+  h2{font-size:2.2rem; line-height:1.3; margin-bottom:2.2rem; font-weight:700;}
+  h2 .en{color:var(--muted); font-weight:400; font-size:1.4rem;}
+  .sub{color:var(--muted); font-size:1.25rem; margin-top:1.5rem; line-height:1.7;}
+  .big{font-size:1.35rem; line-height:1.85;}
+  .big b{color:var(--accent);}
+  .row{display:flex; gap:2.5vw; align-items:stretch;}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1.3rem 1.5rem; flex:1;}
+  .card h3{font-size:1.15rem; margin-bottom:.6rem; color:var(--accent);}
+  .card p, .card li{font-size:1.02rem; line-height:1.65; color:var(--ink);}
+  ul.tight{list-style:none;} ul.tight li{padding-left:1.2em; position:relative; margin-bottom:.45em;}
+  ul.tight li::before{content:"▸"; position:absolute; left:0; color:var(--accent);}
+  table{border-collapse:collapse; width:100%; font-size:.98rem;}
+  th,td{border-bottom:1px solid var(--line); padding:.5rem .6rem; text-align:left; vertical-align:top; line-height:1.45;}
+  th{color:var(--accent); font-size:.9rem; border-bottom:2px solid var(--accent);}
+  .good{color:var(--ok); font-weight:600;} .bad{color:var(--bad); font-weight:600;}
+  .tag{display:inline-block; font-size:.72rem; border:1px solid var(--line); border-radius:99px; padding:.1rem .6rem; color:var(--muted); margin-right:.3rem;}
+  .footer{position:absolute; bottom:2.5vh; left:7vw; right:7vw; display:flex; justify-content:space-between; font-size:.8rem; color:var(--muted);}
+  .notes{display:none; position:fixed; left:0; right:0; bottom:0; background:var(--notebg); border-top:2px solid var(--accent2);
+         padding:1rem 7vw 1.3rem; font-size:.95rem; line-height:1.6; max-height:34vh; overflow:auto; z-index:10;}
+  body.show-notes .notes{display:block;}
+  .notes b{color:var(--accent2);}
+  .pager{position:fixed; top:2vh; right:3vw; font-size:.85rem; color:var(--muted); z-index:9;}
+  .arrowflow{font-size:1.05rem; line-height:2.1; text-align:center;}
+  .arrowflow .st{background:var(--card); border:1px solid var(--line); border-radius:8px; padding:.25rem .8rem; display:inline-block; margin:.15rem .1rem;}
+  .arrowflow .ar{color:var(--accent2); font-weight:700; margin:0 .3rem;}
+  .arrowflow .us{border:2px solid var(--accent2); color:var(--accent2); font-weight:700;}
+  pre.diagram{font-family:"Menlo","Consolas",monospace; font-size:.92rem; line-height:1.55; background:var(--card);
+              border:1px solid var(--line); border-radius:12px; padding:1.2rem 1.5rem; overflow:auto;}
+  .hint{position:fixed; top:2vh; left:50%; transform:translateX(-50%); font-size:.8rem; color:var(--muted); opacity:.7; z-index:9;}
+  @media print{
+    body{overflow:visible; background:#fff;}
+    .slide{display:flex !important; page-break-after:always; height:100vh; }
+    .pager,.hint{display:none;}
+    .notes{display:block !important; position:static; max-height:none; border:none; page-break-inside:avoid;}
+  }
+</style>
+</head>
+<body>
+<div class="pager" id="pager"></div>
+<div class="hint">←/→ 翻页 · N 讲稿 · P 打印</div>
+
+<!-- P1 封面 -->
+<section class="slide">
+  <div class="kicker">近期工作汇报 · 2026-10-21</div>
+  <h1>SpGEMM on GPU:<br>从"怎么算"到"怎么选"</h1>
+  <p class="sub">领域技术脉络(1978-2026)与我们的三层裁定路线</p>
+  <p class="sub" style="margin-top:3rem; font-size:1.05rem;">领域 16′ 立坐标系 · 我们 12′ 唱主角 · 下一步 2′</p>
+  <div class="notes"><b>P1(1.5′)</b> 开场一句话:"领域从'怎么算'走到'怎么选',我们在'怎么选'的最后一层。"预告三段结构,管理听众预期。</div>
+</section>
+
+<!-- P2 问题 -->
+<section class="slide">
+  <div class="kicker">01 · 问题定义</div>
+  <h2>一切工作都挂在两个矛盾上</h2>
+  <div class="row">
+    <div class="card"><h3>矛盾① 输出未知</h3>
+      <p>C=A·B 的每行 nnz 计算前不可知 → 内存分配与负载均衡都要"预知未来"</p>
+      <p style="margin-top:.6rem;">→ <b>两遍范式</b>(symbolic+numeric,2014 定型)</p>
+      <p style="margin-top:.6rem; color:var(--accent2); font-weight:700;">symbolic 平均吃掉 ~28% 运行时间(ocean ICS'26 实测)</p></div>
+    <div class="card"><h3>矛盾② 行间失衡 × 行内去重</h3>
+      <p>行长跨 4-6 个数量级(巨鲸行 vs 微行);行内去重代价 = 累积器选型,矩阵间差异极大</p>
+      <p style="margin-top:.6rem;">→ <b>累积器谱系</b> + <b>负载均衡技术</b>两军对垒(下一页)</p></div>
+  </div>
+  <p class="sub" style="font-size:1.05rem;">硬件不变量(H100 台账):smem ~228KB/SM · 无 smem double 原子(hash 重行=硬件墙) · launch 间隙 2-5µs/发(小阵 30-50% 仪式税)</p>
+  <div class="notes"><b>P2(3′)</b> 带走:输出未知→28% 税;行间失衡×行内去重。硬件不变量一句带过,是后面一切"为什么不能"的根据。</div>
+</section>
+
+<!-- P3 累积器六谱系 -->
+<section class="slide">
+  <div class="kicker">02 · Kernel 轴 I</div>
+  <h2>累积器六谱系 <span class="en">没有万能累积器 → 所以才有调度问题</span></h2>
+  <table>
+    <tr><th>谱系</th><th>机制</th><th>代表</th><th>我们的对应</th></tr>
+    <tr><td><b>dense SPA/位图</b></td><td>整段列区间直写</td><td>Gustavson 1978</td><td>dense 梯子(巨鲸行 <span class="good">0.46-0.78×</span>)</td></tr>
+    <tr><td><b>smem hash</b></td><td>行内哈希占座累加</td><td>nsparse'17 · Winter'19 自适应表 · spECK'20 可变长</td><td>hash_spa(<span class="good">0.52×</span>)+hash_heavy(<span class="good">0.726×</span>)</td></tr>
+    <tr><td><b>ESC 排序</b></td><td>展开→排序→归并去重</td><td>bhSparse'15</td><td>排序管线</td></tr>
+    <tr><td><b>多路归并</b></td><td>有序链 k 路免排归并</td><td>MMSpGEMM PACT'25</td><td>merge3(<span class="good">0.61×</span>,first100 主场)</td></tr>
+    <tr><td><b>cursor 游标</b></td><td>短行窄区间直滑</td><td>散见短行优化</td><td>cursor(<span class="good">0.83-0.88×</span>)+微行族(<span class="good">0.406×</span>)</td></tr>
+    <tr><td><b>混合分域</b></td><td>短/长行异构+两级显存</td><td>opSparse'22 · HSMU HPCA'25 · ocean'26</td><td>七武器=分域极限形态</td></tr>
+  </table>
+  <p class="sub" style="font-size:1rem; margin-top:1.2rem;">比分为同行集口径(同阵同行各测各的相除)【09-30 层,docs/79】</p>
+  <div class="notes"><b>P3(3′)</b> 不逐行念!指"我们的对应"列讲三例:hash_spa 0.52×、merge3 0.61×、dense 梯子 0.46×。带走:没有万能累积器,六种各有生态位——所以才有调度问题。</div>
+</section>
+
+<!-- P4 均衡+四代 -->
+<section class="slide">
+  <div class="kicker">02 · Kernel 轴 II</div>
+  <h2>负载均衡四板斧 & 四代分期</h2>
+  <div class="row" style="margin-bottom:2rem;">
+    <div class="card"><h3>均衡四板斧</h3><ul class="tight">
+      <li>朴素映射(一行一块,硬件兜底)</li><li>行长 <b>binning</b>(opSparse/我们)</li>
+      <li><b>等大 rank 窗</b>(MMSpGEMM tournament 断点)</li>
+      <li><b>tiling</b>(ASpT'19→TileSpGEMM'22)→分层分裂(gMAGNUS'26)</li></ul></div>
+    <div class="card"><h3>四代分期</h3><ul class="tight">
+      <li><b>Ⅰ 2008-14 能跑</b>:CUDA 开荒,两遍范式定型(Liu&Vinter)</li>
+      <li><b>Ⅱ 2015-20 算得匀</b>:五谱系成军(ESC/hash/tiling/归并)</li>
+      <li><b>Ⅲ 2022-25 榨干</b>:smem/局部性极限,混合分域共识</li>
+      <li><b>Ⅳ 2025-26 换范式</b>:估计替代精确(ocean)</li></ul></div>
+  </div>
+  <p class="big">第四代的宣言:<b>"别数了,估就行了"</b>——但估计错了怎么办,是范式留下的新问题(见调度轴)。</p>
+  <div class="notes"><b>P4(2.5′)</b> 带走:四代走到"换范式"。均衡四板斧如果超时可以整块砍掉,只留四代分期。</div>
+</section>
+
+<!-- P5 调度五级 -->
+<section class="slide">
+  <div class="kicker">03 · 调度轴(核心页)</div>
+  <h2>决策权的迁移史 <span class="en">领域的历史主线</span></h2>
+  <div class="arrowflow" style="margin-bottom:2.2rem;">
+    <span class="st">编译期·选库 cuSPARSE</span><span class="ar">→</span>
+    <span class="st">调优期·逐阵学习 <b>IA-SpGEMM 2019</b>(MatNet,2700 阵)</span><span class="ar">→</span>
+    <span class="st">运行期·选工作流 <b>ocean 2026</b>(分析步,静态阈值)</span><span class="ar">→</span>
+    <span class="st">运行期·子决策 <b>Wang 2025</b>(ML 选估计器)</span><span class="ar">→</span>
+    <span class="st us">形态级分发+三层裁定+证书(我们)</span>
+  </div>
+  <table>
+    <tr><th>级</th><th>代表</th><th>机制</th><th>局限</th></tr>
+    <tr><td>静态阈值</td><td>ocean decideMatrixType</td><td>统计+采样→选 estimation/symbolic 工作流</td><td>单维,边界阵脆</td></tr>
+    <tr><td>离线学习</td><td><b>IA-SpGEMM(ICS'19)</b></td><td>深模型直接预测 format+算法</td><td>单层黑盒;同构管线变体;无安全网</td></tr>
+    <tr><td>管线内 ML</td><td>Wang 2025(TACO)</td><td>ML 选结果规模估计方法</td><td>单决策点</td></tr>
+    <tr><td>运行时自纠</td><td>ocean 溢出 retry</td><td>估错重跑</td><td>只保正确,不保性能边界</td></tr>
+  </table>
+  <div class="notes"><b>P5(3′)不可砍</b>。带走:决策权一路从编译期迁到运行期;IA-SpGEMM 2019 是逐阵学习的祖师(必须承认),ocean 是静态单层门。我们的三层裁定=这条线的终点站。Q&A 若被问"和 IA-SpGEMM 区别"→答:粒度(变体vs形态)/架构(单层黑盒vs三层)/安全网(无vs证书+回退)。</div>
+</section>
+
+<!-- P6 前沿 -->
+<section class="slide">
+  <div class="kicker">04 · 2025-26 前沿</div>
+  <h2>谁在打什么 & 三条观察</h2>
+  <div class="row" style="margin-bottom:1.8rem;">
+    <div class="card"><h3>ocean · ICS'26 ★</h3><p>HLL 估计砍 symbolic(28% 税)+分析步+混合累积器;vs spECK 1.4×/opSparse 2.6×/Tile 3.5×/HSMU 2.0×</p></div>
+    <div class="card"><h3>MMSpGEMM · PACT'25 ★</h3><p>多路归并分区:全局等大 rank 窗+tournament 断点;离线 split+在线块内 ESC</p></div>
+    <div class="card"><h3>HSMU · HPCA'25 ★</h3><p>专治 hash 累积器 smem 浪费;<b>338 阵集</b>评测</p></div>
+    <div class="card"><h3>gMAGNUS · 2026 ★</h3><p>分层 multisplit 攻不规则巨阵(Wolfson-Pou & Helal)</p></div>
+  </div>
+  <ul class="tight big" style="font-size:1.1rem;">
+    <li>观察①:<b>估计思想已扩散</b>(ocean HLL/Wang ML 选估计器)——但补救停在 <b>retry</b>,判废证书+形态回退是空白;</li>
+    <li>观察②:<b>混合分域成共识</b>——但停在累积器级,管线形态级分发不存在;</li>
+    <li>观察③:<b>基准集是传承的</b>(HSMU 338 → ocean 337)——领域在中大阵舒适区内部互比。</li>
+  </ul>
+  <div class="notes"><b>P6(2′)</b> 带走三条观察——每条都直接通向我们的工作:①→证书;②→形态分发;③→并集战场。这一页是"领域→我们"的桥。</div>
+</section>
+
+<!-- P7 场外支柱 -->
+<section class="slide">
+  <div class="kicker">05 · GPU 单机之外</div>
+  <h2>场外四支柱 <span class="en">(一页快翻)</span></h2>
+  <div class="row">
+    <div class="card"><h3>A 估计理论血统</h3><p>Cohen'96/97 → Amossen'14 → HLL(Flajolet'07/Heule'13)→ <b>ocean'26</b></p><p style="color:var(--accent2);">三级跳:90年代理论→大数据工程→2026进SpGEMM</p></div>
+    <div class="card"><h3>B 分布式/多核/多GPU</h3><p>CombBLAS'12(2D+SUMMA)→ Nagasaka'19 多核 → RDMA ICS'24 → Trident'26(ocean 同组)</p></div>
+    <div class="card"><h3>C 应用拉动</h3><p>MATLAB'92 → AMG → 图算法(HipMCL) → 基因组(BELLA,<b>Guidi 本人</b>) → GNN/稀疏注意力</p></div>
+    <div class="card"><h3>D 重排+标准化</h3><p>重排轴(Islam'25 Buluç组/Wolfson-Pou);GraphBLAS 半环标准;Gao'23 CSUR 系统综述</p></div>
+  </div>
+  <div class="notes"><b>P7(1.5′)</b> 超时先砍这页(压到 30 秒,只讲估计家谱一句)。金句:估计范式是三级跳不是单点发明;Guidi 本人就是应用拉动下场做 kernel 的例证。</div>
+</section>
+
+<!-- P8 我们架构 -->
+<section class="slide">
+  <div class="kicker">06 · 我们的位置</div>
+  <h2>三形态家族 × 三层裁定 × 七武器 × 证书</h2>
+<pre class="diagram">
+L0 矩阵级  形态三选一 ── merge3(3 相位) / 轻 hash(4-5,待建) / 全形态(17→8→5)
+             │ 三层裁定:解析门(α·Σflop vs β·Σnnz+γ·A_rows,零预跑)
+             │          → 状态机(margin 证书直方图先验)→ 学习型(只管物理不可约)
+L1 行级    七武器按行路由:ESC/批量/hash_spa/hash_heavy/cursor/dense 梯子/k7
+L2 证书    dense 溢出证书(判废→merge3 形态回退)· k7 count 证书 · hash retry
+           → 敢判死刑,因为 merge3 永远活着兜底
+</pre>
+  <p class="big" style="margin-top:1.5rem;">对前作的三个升级:粒度(<b>变体→形态</b>) · 架构(<b>单层→三层:能解析的不学习</b>) · 安全网(<b>retry→判废证书+回退</b>)</p>
+  <div class="notes"><b>P8(3′)</b> 带走:形态级分发是查新确认的空白(03-novelty-sweep.md)。讲图时从下往上讲:L2 证书保正确→L1 七武器管行税→L0 三层管形态税。</div>
+</section>
+
+<!-- P9 记分牌 -->
+<section class="slide">
+  <div class="kicker">06 · 记分牌(同日同口径配对)</div>
+  <h2>三层战场,三个数字</h2>
+  <table style="font-size:1.08rem;">
+    <tr><th>战场</th><th>数字</th><th>口径</th></tr>
+    <tr><td><b>ocean337</b>(对手主场)</td><td>C 1.2714 / A 1.2301 / <b>oracle 1.1846</b></td><td>10-14 同日配对 ocean_337.csv;含 ~1% 满载税【compare/README】</td></tr>
+    <tr><td><b>first100</b>(挑战赛原始集)</td><td><b class="good">0.6224</b>(赢 81/19)</td><td>七月陈数下界——其后 DCEST/merge−43%/修雷全未计入</td></tr>
+    <tr><td><b>437 并集</b>(双方基准之并)</td><td>GM ≈ <b>1.02</b>(保守)</td><td>重叠仅 1 阵;10-14 外推;权威批待跑</td></tr>
+  </table>
+  <p class="big" style="margin-top:1.8rem;">内部配对(净可信,10-13/14):A/C <b>−3.45%</b> · oracle/C <b>−7.0%</b>(配置空间未收割,选择器在训)</p>
+  <div class="notes"><b>P9(3′)不可砍</b>。口径纪律=信誉:所有数字带日期与数据源,唯一事实源 compare/README.md。Q&A"337 为什么还输 27%"→三层答:①oracle 1.1846=配置空间还有 −6.6% 未收割(选择器在训);②满载税 ~1% 未洗;③输面集中在大阵 hash 硬件墙(H100 无 smem double 原子),小阵碾压。</div>
+</section>
+
+<!-- P10 近期工程 -->
+<section class="slide">
+  <div class="kicker">06 · 近期工程</div>
+  <h2>两周四战果</h2>
+  <div class="row" style="margin-bottom:1.5rem;">
+    <div class="card"><h3>DCEST V3(10-12)</h3><p><b>dense_count 相位消灭</b>:est 配额+溢出证书+双 buffer 紧凑拷贝;屏 18/20 净赢(wb-edu −45.3%);337 定谳=门控 niche(69 阵主场)</p></div>
+    <div class="card"><h3>mh_merge <span class="good">−43%</span>(10-13)</h3><p>指令台账取证(578 指令/行)→ PPT×EST_CONT 模板化重写:寄存器持最小值+零 smem+SP 数学</p></div>
+  </div>
+  <div class="row">
+    <div class="card"><h3>修雷四连+审计 25 条(10-14)</h3><p>tmp_val 未清零/FORCE_DITER_EST 写序/mempool 溢出改回退/#endif 吞行;守门三件套全绿</p></div>
+    <div class="card"><h3>1c 相位融合两刀(10-14)</h3><p>est_collapse_tail 三处合一+binning 双计数器合一(17→8 首两刀);值级+memcheck 全绿,计时验证等 GPU</p></div>
+  </div>
+  <div class="notes"><b>P10(3.5′)</b> 带走:DCEST=消相位+证书的实战;mh_merge=取证驱动优化的范式(先指令台账后动刀)。超时砍法:只讲 DCEST+mh_merge,后两个一句带过。</div>
+</section>
+
+<!-- P11 查新+发现 -->
+<section class="slide">
+  <div class="kicker">06 · 查新 & 独立发现</div>
+  <h2>可主张的 novelty(查新背书)& 一个否定结果</h2>
+  <ul class="tight big" style="margin-bottom:1.8rem;">
+    <li>① <b>形态级分发</b>(3/4-5/8 相位结构整体切换——前作只做变体选择)</li>
+    <li>② <b>三层裁定</b>(解析门→状态机→学习型;前作全是单层)</li>
+    <li>③ <b>证书链判废+形态回退</b>(前作补救只到 retry)</li>
+    <li>④ <b>否定结果</b>:逐行 kernel 时间 ≠ 系统成本(集体效应;337 数据背书)</li>
+  </ul>
+  <p class="big">划界三前作:<b>IA-SpGEMM 2019</b>(MatNet 逐阵预测,变体级)· <b>Wang 2025</b>(ML 选估计器,单形态内)· <b>ocean 2026</b>(静态阈值两形态)<br>
+  <span style="color:var(--muted);">另:SiO2 翻面首证(修管线改变最优调度)· 并集战场(双基准不相交,重叠仅 1 阵)</span></p>
+  <div class="notes"><b>P11(3′)</b> 带走:四条可主张 novelty 全部有查新划界(03-novelty-sweep.md);否定结果体现深度——不是"我们没做好",是"逐 kernel 计时不等于系统成本"这一原理性发现。禁语提醒:不说"没人做过调度"。</div>
+</section>
+
+<!-- P12 下一步 -->
+<section class="slide">
+  <div class="kicker">07 · 下一步</div>
+  <h2>GPU 释放即执行</h2>
+  <ul class="tight big">
+    <li><b>437 权威批</b>(规格已冻结):干净 GPU × 437 × 我方四臂(含 merge3 路由)+ ocean 同日重测 → L0/L1 唯一训练源</li>
+    <li><b>L0 选择器</b>:解析门(已验证判据)+ 分类器,收割 oracle −6.6%</li>
+    <li><b>1c 计时验证</b> → 深水融合(launch 间隙实测定值)</li>
+    <li><b>论文四节并行开写</b>:否定结果/形态调度/三层裁定/证书——成败都有交代(L1 预注册成败线)</li>
+  </ul>
+  <p class="sub" style="margin-top:2rem;">评测立场:双方基准之并(437),无懈可击。</p>
+  <div class="notes"><b>P12(1.5′)</b> Q&A"时间表":权威批 1 天→L0 选择器 2-3 天→1c 验证→L1(预注册成败线)→论文并行已开写。</div>
+</section>
+
+<!-- P13 附录 -->
+<section class="slide">
+  <div class="kicker">附录 · 备查</div>
+  <h2>数字口径与数据源(备 Q&A)</h2>
+  <table style="font-size:.92rem;">
+    <tr><th>数字</th><th>口径/日期</th><th>数据源</th></tr>
+    <tr><td>337 三臂配对 C 1.2714/A 1.2301/oracle 1.1846</td><td>10-14 同日,WARMUP_N=1,~1% 满载税</td><td>compare/ocean_337/ocean_337.csv + p2_provisional/p2_337.csv</td></tr>
+    <tr><td>三臂内部 A/C −3.45% · oracle/C −7.0%</td><td>10-13/14 批内同条件</td><td>compare/p2_provisional/</td></tr>
+    <tr><td>first100 0.6224(赢 81/19)</td><td>七月 auto0727,陈数下界</td><td>compare/aa(best)/、first100 系列</td></tr>
+    <tr><td>437 并集 GM≈1.02</td><td>10-14 保守外推</td><td>study/42 §10-14 晚</td></tr>
+    <tr><td>kernel 同行集 0.927 ✅(去 dense 路由阵)</td><td>10-05 定谳层</td><td>docs/79(09-30 层)+ 总账</td></tr>
+    <tr><td>DCEST 屏 18/20 净赢 · mh_merge −43%</td><td>10-12 / 10-13</td><td>study/40 · study/41</td></tr>
+    <tr><td>symbolic 占 28% · ocean 加速比</td><td>ocean 论文一手(ICS'26)</td><td>arXiv:2604.19004</td></tr>
+  </table>
+  <p class="sub" style="font-size:.95rem;">材料包:report-1021/(01 脉络 · 02 全景+排片 · 03 查新 · 本 slides)</p>
+  <div class="notes"><b>P13</b> 不主动讲,被问数字时翻到这页——每个数字都有日期+数据源,这就是口径纪律。</div>
+</section>
+
+<script>
+const slides=[...document.querySelectorAll('.slide')];let cur=0;
+const pager=document.getElementById('pager');
+function show(i){cur=Math.max(0,Math.min(slides.length-1,i));
+  slides.forEach((s,k)=>s.classList.toggle('active',k===cur));
+  pager.textContent=(cur+1)+' / '+slides.length;}
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown')show(cur+1);
+  else if(e.key==='ArrowLeft'||e.key==='PageUp')show(cur-1);
+  else if(e.key==='n'||e.key==='N')document.body.classList.toggle('show-notes');
+  else if(e.key==='p'||e.key==='P')window.print();
+  else if(e.key==='Home')show(0); else if(e.key==='End')show(slides.length-1);});
+document.addEventListener('click',e=>{if(e.clientX>innerWidth*0.7)show(cur+1);else if(e.clientX<innerWidth*0.3)show(cur-1);});
+show(0);
+</script>
+</body>
+</html>

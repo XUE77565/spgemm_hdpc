@@ -99,7 +99,7 @@ symbolic 相位平均占 **~28%** 运行时间(ocean ICS'26 实测)——这就�
 | 2 | **离线学习逐阵选择** | 语料训练模型,运行期特征→预测最优 | **IA-SpGEMM(ICS'19)**:MatNet 深度模型,2700+ SuiteSparse 阵,sparse features+density representations→直接预测 format+算法(一手摘要已核)——**逐阵学习分发的祖师** | 单层黑盒;选的是同构两阶段管线的变体;无安全网 |
 | 3 | **管线内 ML** | ML 嵌进管线做子决策 | Wang 2025(TACO):ML 预测"结果规模估计方法"的选择(一手摘要已核),单形态 hash 内 | 只有一个决策点 |
 | 4 | **运行时自纠** | 估计错了现场补救 | ocean:溢出 retry(§3.2 Overflow Handling) | retry 不带回退目标,慢不是错也可能错 |
-| 5 | **形态级分发 + 三层裁定 + 证书** | 整条管线形态三选一;解析可解不学习/证书反馈走状态机/物理不可约才学习;判废证书→形态回退 | **我们(查新背书:无人做过,见 inno/novelty-sweep-dispatch-1015.md)** | 复杂度=论文负担(Phase 2 消融矩阵专为它设计) |
+| 5 | **形态级分发 + 三层裁定 + 证书** | 整条管线形态三选一;解析可解不学习/证书反馈走状态机/物理不可约才学习;判废证书→形态回退 | **我们(查新背书:无人做过,见 03-novelty-sweep.md(同目录))** | 复杂度=论文负担(Phase 2 消融矩阵专为它设计) |
 
 **叙事线(汇报用)**:决策点的迁移 = 编译期(选库)→ 调优期(MatNet 2019)→
 运行期逐阵(形式选择)→ 运行期逐相位(估计+证书)。每一级迁移都把更多的
@@ -217,7 +217,7 @@ L2 证书:dense 溢出证书(判废→merge3 回退)/ k7 count 证书 / hash ret
   mempool 溢出改回退/#endif 吞行;P0 修后 WRITE_MTX 雷退役
 - **1c 两刀落地**:est_collapse_tail 三处合一 + binning 双计数器合一
   (17a7e00/823ed00),守门值级+memcheck 全绿;计时验证等 GPU【10-14】
-- **查新定谳**(inno/novelty-sweep-dispatch-1015.md):可主张 novelty 四条
+- **查新定谳**(03-novelty-sweep.md(同目录)):可主张 novelty 四条
   (形态级分发/三层裁定/证书链/否定结果);IA-SpGEMM 与 Wang 2025 划界完成
 
 ### 6.4 独立发现(论文素材,成败都有)
@@ -358,6 +358,6 @@ L2 证书:dense 溢出证书(判废→merge3 回退)/ k7 count 证书 / hash ret
 
 **调度轴理论挂靠**:Rice 1976(算法选择问题);SATzilla;OSKI(Vuduc 2005)
 
-> 与本文配套的划界档:inno/novelty-sweep-dispatch-1015.md(查新)、
+> 与本文配套的划界档:03-novelty-sweep.md(同目录)(查新)、
 > inno/mmspgemm_comparison.md(MMSpGEMM 比对)、docs/79-kernel-landscape-explained.md
 > (我方 kernel 生态)、compare/README.md(数据口径 manifest)。
