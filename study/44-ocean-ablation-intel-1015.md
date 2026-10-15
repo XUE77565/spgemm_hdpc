@@ -66,7 +66,7 @@ HSMU 集含大量编号名合成阵)。**修正后的事实更强**:领域不止
 | # | 机理 | 出处 | 插进我们哪里 | 价值/成本 | 状态 |
 |---|---|---|---|---|---|
 | **1** | **hash 索引/值分离放置**:索引留 smem(32bit 原子便宜),**值放 gmem 用原生 FP64 RED**(fire-and-forget,不需要返回值→编译器出 RED 单指令;gmem 原子延迟仅 2-4× smem) | **ocean §3.3(一手)** | **与 17 连败对账完成(10-15)**:我方"全局值"判死人群=**高 dup 自旋弹**(dup 23-61,同座 L2 串行化,gmem 不救);ocean 赢的人群=**容量界**行(表超 smem 容量,moderate dup)——**互补边界,非矛盾**。插进点=dense 梯子中带(span 1818-7277,输 1.15×)即此缺口;且仅"最大 hash 档"用 hybrid(他们自己也只这么用) | 中~高/中(需 GPU) | **补边界实验**:中带行 hybrid-hash vs D2 重写,二择一 |
-| **1b** | **fire-and-forget 纪律审计**:凡值累加不需要返回值处,确保编译出 RED 而非带回值的 ATOM——SASS 一查便知 | ocean Listing 1(机理泛化) | **全部 kernel 的 gmem atomicAdd 路径**(不只 hash)——若有热点在用带回值原子,白送性能 | 中/**零 GPU**(nvcc+cuobjdump 即可) | **立即可做**:SASS 审计一遍 |
+| **1b** | **fire-and-forget 纪律审计**:凡值累加不需要返回值处,确保编译出 RED 而非带回值的 ATOM——SASS 一查便知 | ocean Listing 1(机理泛化) | **全部 kernel 的 gmem atomicAdd 路径**(不只 hash) | 中/**零 GPU** | **✅ 已执行(10-15,见 §六)**:主流热路径已全 REDG;残留 4 点=merge3 numeric×2+hash_spa_batched×3 实例,补丁待 GPU 守门 |
 | 2 | 压缩比估计(采样 K 行→比率→每行 FLOP÷比率) | Du 2022b | 轻 hash 形态的廉价估计器候选(替代全行 minhash);dup 已是免费 L0 特征 | 中/低 | 并入轻 hash 设计+L0 特征规格 |
 | 3 | 选择器自证协议(被选臂获益 ≥1.05× 比例双向) | ocean §5.3 | L0/L1 验收指标(本文档 §一之 3) | 中/零 | 已记入 |
 | 4 | density representation 粗网格密度 sketch(如 16×16 计数) | MatNet(IA-SpGEMM) | L0/L1 特征:搭现有一遍 scan 顺手 256 计数器 | 中/低 | 并入 L0 特征规格 |
@@ -75,6 +75,30 @@ HSMU 集含大量编号名合成阵)。**修正后的事实更强**:领域不止
 | 7 | 矩阵重排+聚类分块(预处理形态) | Islam 2025 | 大阵局部性;A·A 需排回(2 额外遍),只对大阵可能值 | 低~中/高 | 记债务表,GM 投影后再议 |
 
 **执行纪律**:每项入默认前必须 转正批+守门三件套;#1 需先核对 17 连败清单是否已含"值放 gmem"(若无→这是新机理;若有→读当时判负原因再议)。
+
+## 六、SASS fire-and-forget 审计执行记录(10-15,#1b 完成)
+
+**方法**:10 行最小复现定谳工具链行为 → `cuobjdump -sass spgemm_test`(62 万行)逐 kernel 统计。
+**助记符陷阱(sm_90/CUDA 12.0)**:全局原子是 `ATOMG`/`REDG` 而非 `ATOM`/`RED`,
+第一版正则漏 REDG——**审计脚本先被审计**(教训:数 0 之前先证明模式能数到 1)。
+
+**复现定谳**:nvcc 12.0 对弃返回值的 `atomicAdd(double*)` **默认出 `REDG.E.ADD.F64`**
+(fire-and-forget),用返回值才出 `ATOMG`——编译器无锅,是源码上下文问题。
+
+**主 binary 审计结果**:
+- ✅ **主流热路径全部已 REDG**:hash_spa_kernel 主累积(16×)、dense_largest(4×)、
+  k7_numeric(3×)、hash_global/retry2/hkv/bsearch(各 2×)+ 非F64 REDG 106 处;
+- ⚠️ **残留 ATOM 4 点**(返回值已弃但编译成 `ATOM.E.ADD.F64.RN.STRONG.GPU P0, RZ, ...`
+  ——目标寄存器 RZ=弃值,但仍付 L2 往返;nvcc 未转 RED 疑因 break/分支上下文):
+  1. `bucket_merge_flop_kernel`(merge3 numeric **内积热循环**,src/spgemm_merge.cu:739)
+  2. `bucket_merge_kernel`(同族,spgemm_merge.cu:839)
+  3. `hash_spa_batched_kernel` ×3 模板实例(spgemm_kernel_hash.cu,batched t_val 全局加)
+
+**影响评估(诚实)**:merge3 numeric 是逐乘积原子加,ATOM→RED 省 L2 响应 flit,
+受争用时可观——但 merge3 主场=first100 小阵,**GM 投影小(估 <0.5%)**,属"白捡但小"。
+**处置**:20 行 inline PTX `red.global.add.f64` 补丁,**编译开关默认关**,
+GPU 释放后守门三件套(值级+memcheck)+first100 小电池验证再议转正。
+(EXCH 类 atomicExch 无 RED 等价,弃值也只能 ATOMG,不动。)
 
 ## 四、行动清单(衍生)
 
