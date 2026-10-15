@@ -83,9 +83,9 @@ void spgemm_self_product_adaptive(
     if (g_pregate && A_rows >= g_pregate_n) {
         use_hash = 1;
         pregated = 1;
-        if (!std::getenv("DITER_MIN_FLOP"))
-            setenv("DITER_MIN_FLOP", "999999999", 1);   // 未被用户显式设置才接管(A 等效)
     }
+    if (use_hash && !std::getenv("DITER_MIN_FLOP"))
+        setenv("DITER_MIN_FLOP", "999999999", 1);   // dispatcher 的 hash 路径全尺寸 A 等效(10-17:批437实证 diter 机器在 dispatcher 语境全是自税,含小阵 hash 路由 1.028)
     char why_buf[128];
     snprintf(why_buf, sizeof(why_buf), "%s%.2f fp=%.0f mr=%d sk=%.1f",
              pregated ? "pregate " : "", score, flop_proxy, max_row_nnz, skew);

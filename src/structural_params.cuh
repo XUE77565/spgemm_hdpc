@@ -242,7 +242,7 @@ constexpr int WPR_COPY_ROWS = 8;  // warp-per-row copy 的行数/CTA = HASH_BLOC
 struct DispatchModel {
     double w_flop, w_n, w_maxrow, w_skew, bias;
 };
-constexpr DispatchModel DISPATCH_MODEL = {-0.4259, -0.4215, -0.6441, -0.6420, 5.4297};
+constexpr DispatchModel DISPATCH_MODEL = {-1.8680, -1.4486, -0.1625, 0.0472, 15.6170};   // 10-17 重训:批437 A臂+mrg3_labels(91 f100)拟合,LOO 94.5%;f100 端到端 0.1775→0.1676ms(-5.6%,距{A,mrg3}oracle 2.7%);旧(8月100阵)见 git 历史
 
 // ── 通用推导 helper ─────────────────────────────────────────────────────────
 SP_HD constexpr int ilog2c(int v) { int b = 0; while (v >>= 1) ++b; return b; }  // ⌊log2⌋(v>0)
