@@ -23,6 +23,10 @@ Kernel 轴(怎么算):  dense SPA → smem hash → ESC 排序 → 归并 → �
 **我们的位置一句话**:kernel 轴上我们持七武器生态(部分区间 0.4-0.9×碾压);
 调度轴上我们做的是前人没做的最后一层——**管线形态级**的分发,配判废证书兜底。
 
+**四根场外支柱**(§五,"整个领域"视角):估计理论血统 / 分布式·多核·多 GPU /
+应用拉动 / 重排局部性与标准化。已有系统综述 = Gao 2023(CSUR 55(12))——
+本文定位 = GPU 主线深挖 + 2023-26 更新(估计范式/形态调度)+ 我方视角。
+
 ---
 
 ## 一、问题定义与两个根本矛盾(一切工作的坐标系)
@@ -126,9 +130,64 @@ symbolic 相位平均占 **~28%** 运行时间(ocean ICS'26 实测)——这就�
 
 ---
 
-## 五、我们的位置(近期工作,全部盖章)
+## 五、GPU 单机之外:领域四支柱("整个 SpGEMM"的完整视角)
 
-### 5.1 架构一页图
+> 前面两轴深挖的是我们的战场(GPU 单机 kernel+调度);要"讲整个领域",
+> 还有四根支柱。每根一页深度,细节可按需再扩。
+
+### 支柱 A:估计理论血统(ocean 范式的家谱——估计不是 2026 冒出来的)
+
+```
+Cohen 1996/1997(理论起点:稀疏乘积 size-estimation 框架,传递闭包/可达性)
+ → Amossen/Campagna/Pagh 2014(Algorithmica:SpGEMM 乘积规模更优估计)
+ → Flajolet 2007(HLL 近优基数估计)→ Heule 2013(Google:HLL 工程化)
+ → Du 2022b(采样压缩比预测输出结构,Xie 组)→ Wang 2025(ML 选估计器)
+ → ocean 2026(HLL 进 SpGEMM 主键;置信界引 Saw 1984 Chebyshev)
+```
+
+- **我们在此支柱的位置**:minhash+est 双估计器 + margin 状态机(高斯尾
+  1+√(2lnN)·1.04/√K);ocean 用 Chebyshev 类界——**两边都在给估计配统计保证**,
+  我们多一层"证书判废→形态回退"的硬保证(retry 只保正确不保性能边界);
+- **汇报金句**:估计范式是"90 年代理论 → 2010s 大数据工程 → 2026 进 SpGEMM
+  主线"的三级跳,不是单点发明;我们和 ocean 站在同一历史进程的两端。
+
+### 支柱 B:分布式 / 多核 / 多 GPU(单机之外的扩展线)
+
+| 工作 | 层 | 机制 |
+|---|---|---|
+| Buluç & Gilbert 2012(CombBLAS/CPSpGEMM) | 分布式 | 2D 网格分布 + SUMMA 框架稀疏化,领域奠基 |
+| Nagasaka et al. 2019(Parallel Computing 90) | 多核/众核 | 跨架构(x86/KNL/Power)性能建模与优化 |
+| KokkosKernels SpGEMM(Deveci et al.,Sandia) | 多核/众核 | hash 累积器族,可移植性能层 |
+| Brock, Buluç, Yelick ICS'24 | 多 GPU | RDMA 直连算法,避免中间物化 |
+| Bellavita et al. ICS'26(Trident,Guidi 组) | 多 GPU/层级互联 | 三叉分区通信避免(ocean 同组) |
+
+- 与我们关系:单卡内的形态调度与多机扩展**正交可叠加**;Buluç 2025 综述视角
+  (arXiv:2508.04077 "The ubiquitous sparse matrix-matrix products")值得一读。
+
+### 支柱 C:应用拉动(这个 kernel 为什么值这么多论文)
+
+- **软件起点**:MATLAB 稀疏矩阵引擎(Gilbert/Moler/Schreiber 1992);
+- **AMG 代数多重网格**:粗化 = SpGEMM 自乘(Bell/Dalton/Olson 2012 细粒度并行;
+  **我们的 A·A 挑战赛题即同谱系**);
+- **图算法**:Markov 聚类 HipMCL(Azad 2018)、三角形计数、传递闭包;
+- **基因组学**:序列比对/组装 BELLA、蛋白比对(Selvitopi SC20)——
+  **ocean 作者 Guidi 的血统就是应用拉动**(做基因组发现 SpGEMM 是瓶颈→下场做 kernel);
+- **GNN/ML**:SpMM 亲戚(通信优化 Tripathy SC20;DGL 生态);稀疏注意力 = 下一个潜在拉动。
+
+### 支柱 D:重排/局部性 + 标准化 + 基准方法论(三条支线)
+
+- **重排轴**("把矩阵变乖再算"):Islam et al. 2025(Buluç 组,重排+聚类分块
+  计算,ocean 引文)、Wolfson-Pou ICS'25(数据局部性生成)——与我们正交可叠加;
+- **标准化**:GraphBLAS 半环标准(SuiteSparse:GraphBLAS,Davis)把 SpGEMM 定为
+  核心算子 mxm;半环泛化(布尔/tropical)让图算法共用同一 kernel 族;
+- **基准方法论**:SuiteSparse 语料 = 领域通用货币;HSMU 338 → ocean 337 的传承
+  (§四观察③)即发生于此;Gao 2023(CSUR)系统综述 = 现有领域地图。
+
+---
+
+## 六、我们的位置(近期工作,全部盖章)
+
+### 6.1 架构一页图
 
 ```
 L0 矩阵级:形态三选一 ── merge3(3 相位)/ 轻 hash(4-5,待建)/ 全形态(17→8→5)
@@ -139,7 +198,7 @@ L2 证书:dense 溢出证书(判废→merge3 回退)/ k7 count 证书 / hash ret
         → 敢判死刑,因为 merge3 永远活着
 ```
 
-### 5.2 记分牌(唯一权威口径,详见 compare/README.md)
+### 6.2 记分牌(唯一权威口径,详见 compare/README.md)
 
 | 战场 | 数字 | 口径/日期 |
 |---|---|---|
@@ -149,7 +208,7 @@ L2 证书:dense 溢出证书(判废→merge3 回退)/ k7 count 证书 / hash ret
 | **437 并集** | GM ≈ **1.02**(保守) | 10-14 外推;权威批待跑 |
 | kernel 级同行集 | 去 dense 路由阵后 **0.927 ✅** | 10-05 定谳层(更新于 docs/79 的 09-30 层) |
 
-### 5.3 近两周工程战果
+### 6.3 近两周工程战果
 
 - **DCEST V3** 落地(fc49855):dense_count 相位消灭,est 配额+溢出证书+双 buffer
   紧凑拷贝;屏 18/20 净赢(wb-edu −45.3%);337 门控定谳=niche(69 阵主场)【10-12/13】
@@ -161,7 +220,7 @@ L2 证书:dense 溢出证书(判废→merge3 回退)/ k7 count 证书 / hash ret
 - **查新定谳**(inno/novelty-sweep-dispatch-1015.md):可主张 novelty 四条
   (形态级分发/三层裁定/证书链/否定结果);IA-SpGEMM 与 Wang 2025 划界完成
 
-### 5.4 独立发现(论文素材,成败都有)
+### 6.4 独立发现(论文素材,成败都有)
 
 1. **否定结果**:逐行 kernel 时间 ≠ 系统成本(集体效应/launch 税/占用交互),
    337 数据背书【10-10,study/37】;
@@ -171,7 +230,7 @@ L2 证书:dense 溢出证书(判废→merge3 回退)/ k7 count 证书 / hash ret
 
 ---
 
-## 六、周三汇报 slide 大纲建议(12 页)
+## 七、周三汇报 slide 大纲建议(13 页)
 
 1. **封面+一句话**:SpGEMM on GPU——从"怎么算"到"怎么选"
 2. **问题**:两个根本矛盾(输出未知→symbolic 28% 税;行间失衡×行内去重)+ 硬件不变量
@@ -179,40 +238,67 @@ L2 证书:dense 溢出证书(判废→merge3 回退)/ k7 count 证书 / hash ret
 4. **Kernel 轴 II**:均衡四板斧 + 四代分期(2.2/2.3 表)
 5. **调度轴**:五级阶梯(§三表)+ "决策权迁移"箭头图
 6. **前沿 25-26**:ocean/MMSpGEMM/HSMU/gMAGNUS 四格 + 三条观察
-7. **我们的架构**:三形态×三层×七武器×证书一页图
-8. **记分牌**:§5.2 表(强调口径纪律:同日同口径配对)
-9. **近期工程**:DCEST/mh_merge −43%/修雷四连/1c(§5.3 精简)
-10. **查新定谳**:四条 novelty + 三件前作划界(体现文献掌握)
-11. **独立发现**:否定结果/SiO2 翻面/并集战场(§5.4)
-12. **下一步**:权威 437 批(GPU 释放即跑)→ L0/L1 训练 → 论文四节
+7. **场外四支柱**(一页四格):估计理论家谱(Cohen→Amossen→HLL→ocean)/分布式·多核
+   (CombBLAS→RDMA/Trident)/应用拉动(MATLAB→AMG→图→GNN;Guidi 血统故事)/重排+GraphBLAS
+8. **我们的架构**:三形态×三层×七武器×证书一页图
+9. **记分牌**:§6.2 表(强调口径纪律:同日同口径配对)
+10. **近期工程**:DCEST/mh_merge −43%/修雷四连/1c(§6.3 精简)
+11. **查新定谳**:四条 novelty + 三件前作划界(体现文献掌握)
+12. **独立发现**:否定结果/SiO2 翻面/并集战场(§6.4)
+13. **下一步**:权威 437 批(GPU 释放即跑)→ L0/L1 训练 → 论文四节
 
 **讲述主线建议**:用"决策权迁移"串全场(领域史→我们的三层=迁移的终点站),
 用"并集战场"收尾(评测立场无懈可击),用"否定结果"体现深度。
 
 ---
 
-## 七、参考文献(★=已核一手摘要/贡献清单/源码)
+## 八、参考文献(★=已核一手摘要/贡献清单/源码;☆=自 ocean 引文表核得完整书目)
 
-1. ★ Gustavson 1978, *Two fast algorithms for sparse matrices*, TOMS
-2. Bell & Garland 2008-09, *Efficient Sparse Matrix-Vector Multiplication on CUDA*(NVIDIA TR;稀疏 CUDA 开山)
-3. ★ Liu & Vinter, IPDPS 2014, *An Efficient GPU General Sparse Matrix-Matrix Multiplication for Irregular Input*
-4. ★ Dalton et al. 2015, *Optimizing Sparse Matrix-Matrix Multiplication for the GPU*(bhSparse;源码在 external_sota/)
-5. Nagasaka et al. 2017, nsparse(行并行+排序归约)
-6. ★ Winter, Mlakar, Zayer, Seidel, Steinberger, PPoPP 2019, *Adaptive SpGEMM on the GPU*(product/reduction 两段+行块自适应 hash 表;TU Graz)
-7. Hong et al., PPoPP 2019, ASpT(自适应稀疏 tiling,SpMM 系)
-8. ★ Xie, Tan, Liu, Sun, ICS 2019, *IA-SpGEMM*(MatNet,2700+ 阵,逐阵预测 format+算法)
-9. ★ Parger et al. 2020, spECK(可变长 hash 累积器;TU Graz)
-10. tSparse 2020(ETH;tensor core 混合精度,旁支)
-11. opSparse 2022, arXiv:2206.07244(HKUST;binning+hash 优化)
-12. ★ Niu et al. 2022, TileSpGEMM(稀疏 tiling;源码在 external_sota/)
-13. ★ HSMU-SpGEMM 2025(README 一手:高 smem 利用率累积器+分立 symbolic;338 阵集;源码在 external_sota/)
-14. ★ Wang et al. 2025, ACM TACO, DOI 10.1145/3774654(ML 选估计方法;一手摘要)
-15. Wolfson-Pou, Laukemann, Petrini, ICS 2025(数据局部性生成)
-16. ★ MMSpGEMM, PACT 2025(GT HPArch;多路归并分区;源码+比对档 inno/)
-17. ★ ocean: Li & Guidi, ICS 2026, arXiv:2604.19004(HLL 估计范式;一手贡献清单)
-18. ★ gMAGNUS: Wolfson-Pou & Helal, arXiv:2607.22866(2026-07;分层 multisplit)
-19. (二手) Trident, arXiv 2026(通信避免分区,分布式)
-20. 背景:Rice 1976 算法选择问题;SATzilla;OSKI(Vuduc 2005)——调度轴的理论挂靠
+**GPU 单机主线(§二/§三/§四)**
+1. ★ Gustavson 1978, *Two fast algorithms for sparse matrices*, TOMS 4(3)
+2. Bell & Garland 2008-09, *Efficient SpMV on CUDA*(NVIDIA TR;稀疏 CUDA 开山)
+3. ☆ Gilbert, Moler, Schreiber 1992, *Sparse matrices in MATLAB*, SIMAX(软件起点)
+4. ★ Liu & Vinter, IPDPS 2014(首 GPU SpGEMM 之一,两遍范式)
+5. ☆ Anh, Fan, Wen, ICS 2016, *Balanced hashing and efficient GPU SpGEMM*
+6. ☆ Nagasaka, Nukada, Matsuoka, ICPP 2017, nsparse(Pascal;行并行+排序归约)
+7. ★ Dalton, Baxter, Merrill, Olson, Garland, IPDPS 2015, *Optimizing sparse matrix operations on GPUs using merge path*(bhSparse;源码在 external_sota/)
+8. ★ Winter, Mlakar, Zayer, Seidel, Steinberger, PPoPP 2019(product/reduction 两段+行块自适应 hash 表;TU Graz)
+9. Hong et al., PPoPP 2019, ASpT(自适应稀疏 tiling,SpMM 系)
+10. ★ Xie, Tan, Liu, Sun, ICS 2019, *IA-SpGEMM*(MatNet 深度模型,2700+ 阵,逐阵预测 format+算法;一手摘要已核)
+11. ★ Parger, Winter, Mlakar, Steinberger, PPoPP 2020, spECK(*through lightweight analysis*;可变长 hash 累积器)
+12. tSparse 2020(ETH;tensor core 混合精度,旁支)
+13. ☆ Du, Guan, Guan, Niu, Huang, Zheng, Xie, IEEE Access 10, 2022, *OpSparse*(binning smem 优化+hash;**与 IA-SpGEMM 同 Xie 组**,ssslab 同源)
+14. ★ Niu, Lu, Ji, Song, Jin, Liu, PPoPP 2022, TileSpGEMM(稀疏 tiling;源码在 external_sota/)
+15. ★ Wu, Luo, Li, Zhang, Tang, Li, Zhang, Liu, **HPCA 2025**, *HSMU-SpGEMM*(高 smem 利用率累积器+分立 symbolic;338 阵集;README 一手,源码在 external_sota/)
+16. ★ Wang, Lin, Wei, Gao, Ji, ACM TACO 2025, DOI 10.1145/3774654(ML 选估计方法;一手摘要已核)
+17. Wolfson-Pou, Laukemann, Petrini, ICS 2025(数据局部性生成)
+18. ★ MMSpGEMM, PACT 2025(GT HPArch;多路归并分区;源码+比对档 inno/)
+19. ★ ocean: Li & Guidi, ICS 2026, arXiv:2604.19004(HLL 估计范式;一手贡献清单已核)
+20. ★ gMAGNUS: Wolfson-Pou & Helal, arXiv:2607.22866(2026-07;分层 multisplit)
+21. ☆ Islam, Xu, Dai, Buluç, 2025, arXiv:2507.21253(重排+聚类分块计算)
+
+**估计理论血统(§五支柱 A)**
+22. ☆ Cohen 1996(IPCO)/1997(JCSS),稀疏乘积 size-estimation 框架
+23. ☆ Amossen, Campagna, Pagh, Algorithmica 69(3), 2014, *Better Size Estimation for Sparse Matrix Products*
+24. ☆ Flajolet et al. 2007(HLL 理论);Heule et al. 2013(Google,HLL 工程化)
+25. ☆ Du et al. 2022b, arXiv:2207.13848, *Predicting the Output Structure of SpGEMM with Sampled Compression Ratio*(Xie 组)
+26. ☆ Saw, Yang, Mo 1984(Chebyshev 不等式;ocean 置信界引)
+
+**分布式/多核(§五支柱 B)**
+27. Buluç & Gilbert 2012, CombBLAS/CPSpGEMM(JPDC;2D 分布+SUMMA 稀疏化)
+28. ☆ Nagasaka, Matsuoka, Azad, Buluç, Parallel Computing 90, 2019(多核/众核建模)
+29. KokkosKernels SpGEMM(Deveci et al., Sandia;可移植 hash 累积器族)
+30. ☆ Brock, Buluç, Yelick, ICS 2024(RDMA 多 GPU)
+31. ☆ Bellavita, Pichetti, Pasquali, Vella, Guidi, ICS 2026, *Trident*(通信避免三叉分区;ocean 同组)
+
+**应用/标准化/综述(§五支柱 C/D)**
+32. ☆ Bell, Dalton, Olson, SISC 2012(AMG 细粒度并行);☆ Azad et al. 2018 HipMCL
+33. ☆ Guidi et al. 2021a/b(BELLA/基因组);Selvitopi et al. SC20(蛋白比对);Tripathy et al. SC20(GNN 通信)
+34. GraphBLAS / SuiteSparse:GraphBLAS(Davis;半环标准)
+35. ☆ Gao, Ji, Chang, Han, Wei, Liu, Wang, ACM Comput. Surv. 55(12), 2023, *A Systematic Survey of General Sparse Matrix-matrix Multiplication*(领域现有地图)
+36. ☆ Buluç 2025, arXiv:2508.04077, *The ubiquitous sparse matrix-matrix products*(视角综述)
+
+**调度轴理论挂靠**:Rice 1976(算法选择问题);SATzilla;OSKI(Vuduc 2005)
 
 > 与本文配套的划界档:inno/novelty-sweep-dispatch-1015.md(查新)、
 > inno/mmspgemm_comparison.md(MMSpGEMM 比对)、docs/79-kernel-landscape-explained.md
