@@ -84,6 +84,11 @@ void spgemm_self_product_adaptive(
         use_hash = 1;
         pregated = 1;
     }
+    // 退化结构否决(10-17,S3 终审产物):准对角大阵(avg<2 ∧ n≥10000)merge3 无生态位
+    // (bcsstm25 实测 5.2×;73 个 merge3 赢家零误伤)。批发人群特征盲区,规则硬兜。
+    if (avg < 2.0 && A_rows >= 10000) {
+        use_hash = 1;
+    }
     if (use_hash && !std::getenv("DITER_MIN_FLOP"))
         setenv("DITER_MIN_FLOP", "999999999", 1);   // dispatcher 的 hash 路径全尺寸 A 等效(10-17:批437实证 diter 机器在 dispatcher 语境全是自税,含小阵 hash 路由 1.028)
     char why_buf[128];
