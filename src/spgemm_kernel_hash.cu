@@ -3916,6 +3916,37 @@ __global__ void hash_compact_copy_warp_kernel(
     }
 }
 
+// COMPACT_FLAT(study/49 K2',10-19 夜):全局条目级并行拷贝——thread e 二分 dC_rp 定行,
+// bkid∈拷贝桶(bin0/BATCH_S/ESC8-32/小梯)才动,src=d_off[行]+idx dst=e。
+// 动机:行级拷贝在 est 6-64 的行上只跑出 8-16% 带宽(每行 72-768B,warp/thread 固定成本摊不平);
+// 条目级把每行开销摊到 1 次二分(~25 级缓存友好),读写全局合并。csort/k7/dense 桶不受影响
+// (bkid 校验挡住)。溢出行由 skip(d_row_ovf)挡住,语义同旧 kernel。
+__global__ void hash_compact_copy_flat_kernel(
+    int total_entries, int n_rows,
+    const long long *row_off, const int *row_nnz, const int *row_ptr,
+    const unsigned long long *tmp_key, const double *tmp_val,
+    int *out_col, double *out_val, const int *skip, const int *bkid)
+{
+    int e = blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= total_entries) return;
+    // 二分:最大 row_ptr[e] == e 的行(闭开区间上界)
+    int lo = 0, hi = n_rows;              // 不变式:row_ptr[lo] <= e < row_ptr[hi](row_ptr[n_rows]=total)
+    while (lo + 1 < hi) {
+        int mid = (lo + hi) >> 1;
+        if (__ldg(row_ptr + mid) <= e) lo = mid; else hi = mid;
+    }
+    int row = lo;
+    if (skip && __ldg(skip + row)) return;
+    if (bkid) {   // 仅拷贝桶:bin0 / BIN_BATCH_S(19) / ESC8-32(21-23),与循环显式拷贝分支一一对应
+        int b = __ldg(bkid + row);
+        if (!(b == 0 || b == 19 || (b >= 21 && b <= 23))) return;
+    }
+    int idx = e - __ldg(row_ptr + row);
+    long long src = __ldg(row_off + row) + idx;
+    out_col[e] = (int)(__ldg(tmp_key + src) & 0xffffffffu);
+    out_val[e] = __ldg(tmp_val + src);
+}
+
 // D5H 原地行排序(MODE=2 大行:无序直写 dC 后,行内 BlockRadixSort col/val in==out)
 template<int TPB, int IPT>
 __global__ void csort_inplace_kernel(const int *rows, const int *rp, int *col, double *val,
@@ -6946,6 +6977,24 @@ static void hash_product(
     prof("compact+sort", [&]{
         static int g_cs_v2 = -1;   // CSORT_LADDER:默认 v2 开(×5 电池 geomean −6.4%,study/07);=legacy 回旧
         if (g_cs_v2 < 0) { const char *e = getenv("CSORT_LADDER"); g_cs_v2 = (e && !strcmp(e, "legacy")) ? 0 : 1; }
+        // COMPACT_FLAT(study/49 K2',默认关):条目级并行拷贝一次性覆盖拷贝桶(bin0/19/21-23),
+        // 循环里对应分支跳过;csort/k7/dense 桶路径不变
+        static int g_cflat = -1;
+        if (g_cflat < 0) { const char *e = getenv("COMPACT_FLAT"); g_cflat = (e && *e && atoi(e) > 0) ? 1 : 0; }
+        const bool flat_on = g_cflat && !in_place && !(dense_mode || dense_win_mode)
+                             && C_nnz_result > 0 && !att
+                             && [&]{   // 人口门:拷贝桶行占比 ≥50% 才启用(控制阵无害判据;
+                                      // c-64 类梯桶主导阵的 flat 全量 launch 全是空转二分,+8% 实测)
+                                      long long cp = (long long)h_cnt[0] + h_cnt[BIN_BATCH_S]
+                                                   + h_cnt[BIN_ESC8] + h_cnt[BIN_ESC16] + h_cnt[BIN_ESC32];
+                                      return cp * 2 >= (long long)A_rows;
+                                   }();
+        if (flat_on) {
+            hash_compact_copy_flat_kernel<<<((long long)C_nnz_result + 255) / 256, 256>>>(
+                C_nnz_result, A_rows, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val,
+                dC_ci, d_val, d_row_ovf, d_bkid);
+            CHECK_CUDA(cudaGetLastError());
+        }
         if (!in_place)
             CHECK_CUDA(cudaMemcpy(dC, dC_rp, C_rp_sz, cudaMemcpyDeviceToDevice));   // row_ptr 落位(~A_rows ints,微秒级,纳入计时)
         for (int bi = 0; bi < ((dense_mode || dense_win_mode) ? 1 : N_BINS); bi++) {
@@ -6971,11 +7020,13 @@ static void hash_product(
                 continue;
             }
             if (bi == 0) {
+                if (flat_on) continue;   // COMPACT_FLAT 已覆盖
                 // bin0(est≤64):warp-per-row(输出可达 64/行,warp 协作最稳;线程纂在 est 33-64 行
                 // 是 32-64 次串行拷贝 → web-Google +13.6% 教训,线程纂只给 nnz≤32 的 BATCH_S 行)
                 hash_compact_copy_warp_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());   // TEMP:定位
             } else if (bi == BIN_BATCH_S || (bi >= BIN_ESC8 && bi <= BIN_ESC32)) {
+                if (flat_on) continue;   // COMPACT_FLAT 已覆盖
                 // BATCH_S 行 est≤32(distinct ≤ 32 上界):串行 ≤32 次 = 0 闲 lane,CTA 3M→94K
                 if (g_compact_t)
                     hash_compact_copy_thread_kernel<<<(n + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
