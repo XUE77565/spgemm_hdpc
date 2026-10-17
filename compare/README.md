@@ -9,6 +9,7 @@
 |---|---|---|---|
 | **ocean 基线** | `ocean_337/ocean_337.csv`(列 `ocean_ms`) | 10-11 专测(run.log 同目录) | ocean 二进制逐阵,与 l0 同日配对(**已被 batch437 取代为首选**) |
 | **我方三臂** | `p2_provisional/p2_337.csv` | 10-13/14(CD/C/A 三臂) | WARMUP_N=1,含 ~1% 满载税(**已被 batch437 取代为首选**) |
+| **确认批三(带状族路由)** | `batch437/confirm3_428.csv`(ADPT3+OCN3 同夜) | 10-17 夜二,BIN@181525f | ADPT3/OCN3=**0.9588**;分解:治疗组(带状8阵)**−30% 兑现**(bloweybl 5.03→1.56×),但未治疗组夜漂 +1.4%/f100 +6.5%(ocean 仅+0.3%/+2.2%)→**两夜夹住真值:0.9486-0.9588(净赢4-5%)**;教训:我方末轮单发在亚毫秒阵上夜稳性弱于 ocean 均值10,终版权威批应改 min/median-of-N |
 | **⭐ 确认批(新 dispatcher)** | `batch437/confirm_428.csv`(ADPT2+OCN2 双列同夜) | **10-17 凌晨,BIN@3ec2e88(timed-confirm428)** | 预门+重训logit 的独立实测:**ADPT2/OCN2 GM=0.9486(净赢5.1%)**;ocean 跨夜一致性 0.9966;first100 0.4144/337 1.1870;尾部 9 阵 8 个 µs 级(bail 证书的靶);wb-edu ocean DNF 复现 |
 | **⭐ 437 权威批** | `batch437/batch_437.csv`(+prof/与 ocn_stats/ 全相位 sidecar+CALIBRATION.md 口径表) | **10-15/16 干净 GPU0,WARMUP_N=3,timed-437batch** | 428 阵×5 列(C/CD/A/ADPT/OCN 同日同机同口径);**L0/L1 训练与论文记分唯一来源**;oracle/OCN=0.9684 首过 1.0;红旗 8 面全定谳(ash 长方形×5/wb-edu OCN DNF/c-73×2 CD 溢出雷 study/47);8 个 can* 待补 |
 
