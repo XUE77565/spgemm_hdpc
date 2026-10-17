@@ -84,13 +84,19 @@ void spgemm_self_product_adaptive(
         use_hash = 1;
         pregated = 1;
     }
+    // 带状族 C 路由(10-17,金矿第二层):skew>1700 ∧ avg<10 的极端偏斜带状阵
+    // (blowey*/a5esindl/rajat*)保留 diter 机器(=C 配置)——批437 实测 C 快 0.28-0.94×,
+    // 模拟净 GM 0.9486→0.9413;排除 avg≥10(Stanford_Berkeley C输1.59);误伤=circuit_4 1.21。
+    static int g_band = -1;
+    if (g_band < 0) { const char *e = std::getenv("L0_BAND"); g_band = (e && *e) ? (std::atoi(e) > 0 ? 1 : 0) : 1; }
+    const bool band_family = g_band && skew > 1700.0 && avg < 10.0;
     // 退化结构否决(10-17,S3 终审产物):准对角大阵(avg<2 ∧ n≥10000)merge3 无生态位
     // (bcsstm25 实测 5.2×;73 个 merge3 赢家零误伤)。批发人群特征盲区,规则硬兜。
     if (avg < 2.0 && A_rows >= 10000) {
         use_hash = 1;
     }
-    if (use_hash && !std::getenv("DITER_MIN_FLOP"))
-        setenv("DITER_MIN_FLOP", "999999999", 1);   // dispatcher 的 hash 路径全尺寸 A 等效(10-17:批437实证 diter 机器在 dispatcher 语境全是自税,含小阵 hash 路由 1.028)
+    if (use_hash && !band_family && !std::getenv("DITER_MIN_FLOP"))
+        setenv("DITER_MIN_FLOP", "999999999", 1);   // dispatcher 的 hash 路径 A 等效;带状族例外(保留 diter=C 配置,金矿第二层)
     char why_buf[128];
     snprintf(why_buf, sizeof(why_buf), "%s%.2f fp=%.0f mr=%d sk=%.1f",
              pregated ? "pregate " : "", score, flop_proxy, max_row_nnz, skew);
