@@ -9,6 +9,7 @@
 | 定义 | TOTAL(GPU) − h2d − d2h(WARMUP_N=3 后末轮单发) | iteration 墙钟均值(10 warmup + 10 bench,SpGEMM.cuh:224-279) | — |
 | 输入上载 H2D | **扣**(独立相位 h2d) | **圈外**(bench 循环前) | ✓ |
 | 输出回传 D2H | **扣**(独立相位 d2h,如 c-64 64.9ms) | **圈外**(timer 停在 numeric 后) | ✓ |
+| **输出后处理** | **含** compact+sort(11.4% 中位) | **含** epilogue.sort/copy(**10-17 源码验证**:epilogue 计时点在 numeric_kernel_fat/precise 函数体内[SpGEMM.cuh:1020/1365∈900/1184],numeric 调用[259-265]在 timer 圈[229-268]内→计入 total_time) | ✓ |
 | 决策性 D2H(估计→门) | **无**(diter 门设备上判定,零预跑;TOTAL 相位清单实证无 D2H 项) | **计入**(analysis_mem_cpy 等,圈内:SpGEMM.cuh:484-519) | ✗ **ocean 亏**(对我方有利方向,记分时如实声明) |
 | binning | 计入(binning 相位在 TOTAL 内) | 计入(symbolic/numeric/estimation.binning 分项均在圈内) | ✓ |
 | convert/mtx 解析 | 圈外 | 圈外(convert 独立二进制) | ✓ |
