@@ -8,6 +8,23 @@
 > ncu 前冒烟,跑前查占用)/ 判死名单不再碰(hybrid 值外置=spec91 刀E 2× 劣;
 > 带状 CAS 墙=硬件边界;ESC64 旧实现=正确但慢,不复活只重设计)。
 
+## T0 首批成果:kernel 归因表(10-21,ocn_stats 427 json + confirm4 配对)
+
+| 族 | 阵(比值) | ocean kernel(数据源=其自带 stage 计时) |
+|---|---|---|
+| 网格 | delaunay_n23 1.79 / road 1.12 / rajat31 1.30 | **usparse ESC 子组 16/32/64 + outlier 二次发射**(workflow 2) |
+| 小表 | rgg 2.28 / StocF 2.18 | **精确 symbolic 工作流**:hash 数值 + sym_hash 计数(workflow 0) |
+| 小表 | ldoor 2.69 | 估计工作流 hash bins(workflow 1,hash=21ms) |
+| 带状 | bloweybq 3.02 / a5esindl 1.33 / hangGlider 2.41 | dense sub-warp:sym_dense 计数 + dense 数值(workflow 0) |
+| 混合 | in-2004 1.18 | 估计:dense 变体 9.7 + hash(hybrid)9.2 + epi_sort 4.3 |
+| 对照 | c-64 0.98(我赢) | dense 13.5——dense 对位我方不吃亏 |
+
+**两个改判**:
+1. **rgg/StocF 走精确 symbolic,付数数税仍赢 2×**(rgg:sym 6.5+hash 17.7=24ms vs 我 accumulate 单项 33ms)
+   → 差距 = **hash kernel 单位效率**;T2 受检假设重排:素数表/pow2、槽布局、探测序列升首位。
+2. **bloweybq 3.02× 三夜稳定** vs k7-only 实测 0.751(study/36 R3)→ 预门(n≥5000→hash-A)
+   对该阵误伤;T5 k7 门优先级上调,预门考虑带状例外。
+
 ## 战役结构(六阶段,取证先行)
 
 ### T0 无 GPU 侦察(10-21 汇报日当天,纯磁盘)——**先于一切动刀**
