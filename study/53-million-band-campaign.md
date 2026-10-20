@@ -25,6 +25,30 @@
 2. **bloweybq 3.02× 三夜稳定** vs k7-only 实测 0.751(study/36 R3)→ 预门(n≥5000→hash-A)
    对该阵误伤;T5 k7 门优先级上调,预门考虑带状例外。
 
+## T0.1+T0.2 尾部解剖+flop 带普查(10-21 完成,纯磁盘)
+
+**相位分解(147 阵相位对齐全;named 15 + tail 132)**:
+- [tail 132] 净差距 225ms = **compact +222ms(正差距的 66%)** + accumulate +112ms(34%)
+  **− 计数/估计 −109ms(我方赢:MinHash+低均度免估计)**;
+- [named 15] accumulate −158ms(巨鲸/dense 我赢)但 compact +79ms——**FLAT 两边都治**;
+- → **T1 FLAT 是尾部第一刀(权重上调);计数相位不用动(在赢)**。
+
+**kernel 归因(tail Top 输)**:cage15/nlpkkt120/CurlCurl/para-*/Ga41As41H72/c-big 全是
+  **我方 hash 梯 3-6 vs ocean 精确 symbolic hash(wf=0)——付税仍赢,与 rgg/StocF 同机制**;
+  尾部没有新的未知形态。**T2 干净探针新增:nlpkkt120(b4:96% 单 bin 纯培养皿)**。
+
+**flop 带普查(ocean avg_prod 口径,147 阵)**:
+| 带 | n | GM | 胜 |
+|---|---|---|---|
+| usparse ≤64 | 26 | **1.778** | **0/26** |
+| (64,128] | 8 | 1.518 | 1/8 |
+| hash 表 >128 | 113 | 1.328 | 20/113 |
+
+→ **T3 ESC 覆盖带靶区 = 33 个输阵 @ ~1.95×**(delaunay×4 + CurlCurl×3 + rajat31 +
+  M6/AS365/NLR/333SP 结构族 + …)——比"delaunay 临界带"预期**大一倍**;
+  修到 ~1.0 可吃掉 >100k 带对数差距约一半[折算]。
+ocean 工作流分布:>100k 上 wf0 精确 64 / wf1 估计 57 / wf2 usparse 26。
+
 ## 战役结构(六阶段,取证先行)
 
 ### T0 无 GPU 侦察(10-21 汇报日当天,纯磁盘)——**先于一切动刀**
