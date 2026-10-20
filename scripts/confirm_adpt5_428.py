@@ -30,8 +30,8 @@ csv_path = os.path.join(OUT, "confirm5_428.csv")
 rows = {}
 if os.path.exists(csv_path):
     for r in csv.DictReader(open(csv_path)):
-        rows[r["mat"]] = (float(r["adpt5_ms"]) if r["adpt2_ms"] else None,
-                          float(r["ocn5_ms"]) if r["ocn2_ms"] else None, r["note"])
+        rows[r["mat"]] = (float(r["adpt5_ms"]) if r["adpt5_ms"] else None,
+                          float(r["ocn5_ms"]) if r["ocn5_ms"] else None, r["note"])
 
 def adpt2(m, p):
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="1", WARMUP_N="3", USE_MEMPOOL="1",
