@@ -92,90 +92,157 @@
 
 <!-- P3 spECK -->
 <section class="slide">
-  <div class="kicker">重点篇目 ① · spECK(PPoPP'20)</div>
-  <h2>hash 累积器的成熟形态 <span class="en">——我们的武器血脉</span></h2>
-  <div class="big" style="margin-bottom:1.5rem;">
-    <b>一句话</b>:把 Gustavson 的"行内累积"做成 <b>共享内存里的可变长 hash 表</b>,加一步轻量分析定表容量。
+  <div class="kicker">重点篇目 ① · spECK(PPoPP'20)——我们的武器血脉</div>
+  <h2>hash 累积器:从"占座"到"自适应"</h2>
+  <div class="row" style="margin-bottom:1.2rem;">
+    <div class="card" style="flex:1.4;">
+      <h3>机制图(从源码还原)</h3>
+<pre class="diagram" style="font-size:.82rem; padding:.8rem 1rem;">
+行 i 的乘积流:                SMEM hash 表
+┌─────────────────────┐     ┌──────┬──────┬──────┬──────┬──────┐
+│ A[i,·] × B[·,j]     │     │col=3 │col=7 │ -1   │col=3 │ -1   │  ← t_col
+│  j=3  j=7  j=3  ... │────→│val=5 │val=2 │ (空) │val=+3│ (空) │  ← t_val
+│        ↓            │ 探针 │      │      │      │      │      │
+│  hash(j)%表长 探测   │     └──────┴──────┴──────┴──────┴──────┘
+│  命中→atomicAdd(val) │       线性探测: slot→slot+1→…(mod 表长)
+│  空槽→CAS 占位       │       表满→溢出标志→更大表重试
+│  别人的键→前进重探    │
+└─────────────────────┘
+分析步(轻量): 估算行输出规模 est[i] → 表长 = next_pow2(α×est)
+</pre>
+    </div>
+    <div class="card">
+      <h3>这条线的演进</h3>
+      <ul class="tight" style="font-size:.95rem;">
+        <li><b>nsparse'17</b>:固定表→行级并行</li>
+        <li><b>Winter'19</b>:自适应表容量(按行特征)</li>
+        <li><b>spECK'20</b>:可变长表 + 轻量分析步定容量 → <b>成熟形态</b></li>
+        <li>核心矛盾:<b>表容量</b>——大则浪费、小则溢出</li>
+      </ul>
+      <h3 style="margin-top:.8rem;">我们的继承</h3>
+      <p style="font-size:.95rem;">hash_spa 档位梯 = spECK 思想的<b>分档极限</b>(20 桶逐档几何),同行集 <b>0.52×</b> vs ocean</p>
+    </div>
   </div>
-  <div class="row">
-    <div class="card"><h3>它做了什么</h3>
-      <ul class="tight">
-        <li>每行(或行组)一张 smem hash 表,乘积按列号占座去重</li>
-        <li>表大小不再拍脑袋——<b>轻量分析步</b>按行特征定容量</li>
-        <li>表满了怎么办?溢出重试(更大的表重来)</li>
-      </ul></div>
-    <div class="card"><h3>这条线的位置</h3>
-      <ul class="tight">
-        <li>nsparse'17 → Winter'19(自适应表)→ <b>spECK'20</b>(可变长+分析)</li>
-        <li>今天所有主流系统(ocean/HSMU/我们)的 hash 内核都是这条线的后代</li>
-        <li><b>我们的 hash_spa 档位梯</b>(0.52× vs ocean)就是它的分档化极限形态</li>
-      </ul></div>
-  </div>
-  <div class="notes"><b>P3(2′)</b> 不讲源码细节。带走:hash 表 = 行内去重的主流答案,容量怎么定是这条线的核心矛盾(这个矛盾接下来会反复出现)。如果有人问碰撞:线性探测+重试兜底。</div>
+  <p class="big" style="font-size:.95rem;">这条线的 <b>表容量问题</b> 贯穿始终——spECK 用分析步缓解,ocean 用 HLL 估计替代,ocean 的 16253 档用值外置——问题没死,只是解法在进化。</p>
+  <div class="notes"><b>P3(2.5′)</b> 指左图讲机制:"乘积流进来,按列号 hash 到表里占座,同列合并值。"然后指右卡的演进线。带走:hash=主流,表容量=核心矛盾。</div>
 </section>
 
 <!-- P4 IA-SpGEMM -->
 <section class="slide">
-  <div class="kicker">重点篇目 ② · IA-SpGEMM(ICS'19)</div>
-  <h2>调度的第一枪 <span class="en">——"这台矩阵该用哪个算法"</span></h2>
-  <div class="big" style="margin-bottom:1.5rem;">
-    <b>一句话</b>:训一个深度模型(MatNet,2700+ SuiteSparse 阵),对每个新矩阵<b>直接预测</b>最优 format+算法组合。
+  <div class="kicker">重点篇目 ② · IA-SpGEMM(ICS'19)——调度第一枪</div>
+  <h2>MatNet:一个深模型替你选算法</h2>
+  <div class="row" style="margin-bottom:1.2rem;">
+    <div class="card" style="flex:1.4;">
+      <h3>决策流程</h3>
+<pre class="diagram" style="font-size:.82rem; padding:.8rem 1rem;">
+新矩阵 A ──→ 提取特征 ──→ MatNet 深度模型 ──→ 预测最优 (format, algorithm)
+              │                                    │
+              │  · sparse features(行/列统计)        │  例: (CSR, hash)
+              │  · density repr(矩阵密度图/块特征)    │      (ELL, merge)
+              │                                    │      (COO, sort)
+              ▼                                    ▼
+         不跑任何实验                              直接执行
+         纯预测,零采样                             选对了=白赚
+</pre>
+      <p style="font-size:.92rem; margin-top:.5rem;">训练数据:2700+ SuiteSparse 阵 × 各候选算法实测 → 标签=最优组合</p>
+    </div>
+    <div class="card">
+      <h3>贡献(承认)</h3>
+      <ul class="tight" style="font-size:.95rem;">
+        <li>第一个把"选算法"当学习问题(2019)</li>
+        <li>证明了选对=白赚(不同矩阵差异巨大)</li>
+        <li>input-aware 旗帜立起来了</li>
+      </ul>
+      <h3 style="margin-top:.8rem;">局限(=我们的入口)</h3>
+      <ul class="tight" style="font-size:.95rem;">
+        <li><b>单层黑盒</b>:一个模型包揽一切,不知道有些决策其实有公式</li>
+        <li><b>无安全网</b>:选错了没有任何运行时兜底</li>
+        <li>选的是 format 变体,不是管线配置</li>
+      </ul>
+    </div>
   </div>
-  <div class="row">
-    <div class="card"><h3>它的贡献</h3>
-      <ul class="tight">
-        <li>第一个把"选算法"当成学习问题(2019)——input-aware 诞生</li>
-        <li>证明了:不同矩阵的最优选择差异巨大,选对了就是白赚</li>
-      </ul></div>
-    <div class="card"><h3>它的局限(=我们的入口①)</h3>
-      <ul class="tight">
-        <li><b>单层黑盒</b>:一个深模型做完所有决策,不知道哪部分其实有公式可循</li>
-        <li><b>无安全网</b>:选错了就错了,没有运行时兜底</li>
-        <li>选的粒度是 format/变体,不是整条管线配置</li>
-      </ul></div>
-  </div>
-  <div class="notes"><b>P4(2′)</b> 语气:尊重先行者(必须承认它先做了学习调度),然后温和地指出两个结构性局限——单层+无安全网。这两点正好是我们的三层+证书的入口。Q&A 备好:"和 IA-SpGEMM 区别?"=粒度/架构/安全网三点。</div>
+  <p class="big" style="font-size:.95rem;">这两个局限——<b>不分层</b>和<b>无证书</b>——恰好就是我们三层裁定架构的两个入口。</p>
+  <div class="notes"><b>P4(2′)</b> 指左图:"MatNet 吃特征直接预测,不跑实验。"右卡先讲贡献(尊重先行者),再温和讲两个局限。语气:承认+指出空白。</div>
 </section>
 
 <!-- P5 MMSpGEMM -->
 <section class="slide">
-  <div class="kicker">重点篇目 ③ · MMSpGEMM(PACT'25)</div>
-  <h2>多路归并分区 <span class="en">——我们 merge3 的同轴兄弟</span></h2>
-  <div class="big" style="margin-bottom:1.5rem;">
-    <b>一句话</b>:把所有中间乘积排成一条全局序列,按<b>等大小切块</b>(tournament tree 精确断点),块内排序去重——负载均衡从"按行"升级为"按乘积"。
-  </div>
-  <div class="row">
-    <div class="card"><h3>它的贡献</h3>
-      <ul class="tight">
-        <li>负载均衡粒度从行细化到乘积——巨鲸行不再拖死大家</li>
+  <div class="kicker">重点篇目 ③ · MMSpGEMM(PACT'25)——我们 merge3 的同轴兄弟</section>
+  <h2>等大小切块:负载均衡从"行"到"乘积"</h2>
+  <div class="row" style="margin-bottom:1.2rem;">
+    <div class="card" style="flex:1.4;">
+      <h3>机制图(从源码还原)</h3>
+<pre class="diagram" style="font-size:.82rem; padding:.8rem 1rem;">
+全部中间乘积按 (row,col) 排成一条全局序列:
+  ┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐
+  │r1c3│r1c7│r2c1│r2c5│r3c2│r3c4│r3c9│r4c1│r4c6│...│
+  └───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘
+  │←── Block 0 ──→│←── Block 1 ──→│←── Block 2 ──→│
+       2048 个乘积/块(可跨行)
+
+  每块独立处理:
+  ① expand:线程各展开自己的乘积 → (key, val)
+  ② BlockRadixSort:块内按键排序
+  ③ 分段求和去重(同列合并) → 输出
+</pre>
+      <p style="font-size:.92rem; margin-top:.5rem;">断点用 <b>tournament tree</b> 精确计算(Varman 分区算法)</p>
+    </div>
+    <div class="card">
+      <h3>它的贡献</h3>
+      <ul class="tight" style="font-size:.95rem;">
+        <li>负载均衡粒度从<b>行</b>→<b>乘积</b>:巨鲸行不再拖死大家</li>
         <li>块可跨行:小行打包进同一块</li>
-      </ul></div>
-    <div class="card"><h3>我们的关系(诚实划界)</h3>
-      <ul class="tight">
-        <li><b>思想同轴</b>(都做 merge 路线的负载均衡),它先发表,<b>必须引</b></li>
-        <li><b>机制差异大</b>:它=全局 rank 窗+tournament 断点,块内是 ESC;我们 merge3=列域分桶+warp 归免排序</li>
-        <li>我们读过它全部源码(档 inno/mmspgemm_comparison.md)</li>
-      </ul></div>
+        <li>排序在块内完成(2048 项),不排全阵</li>
+      </ul>
+      <h3 style="margin-top:.8rem;">我们的关系</h3>
+      <ul class="tight" style="font-size:.95rem;">
+        <li><b>思想同轴</b>(都做 merge 路线负载均衡),它先发表,<b>必须引</b></li>
+        <li><b>机制差异</b>:它=全局 rank 窗+块内 ESC;我们=列域分桶+warp 归并(免排序)</li>
+        <li>我们读过全部源码,比对档 inno/</li>
+      </ul>
+    </div>
   </div>
-  <div class="notes"><b>P5(2.5′)</b> 这页展示学术诚实:主动讲同轴先行者,一句话讲清机制差异。听众/审稿人对"merge 路线有人做过"的疑问就此 preempt。不用讲 tournament tree 细节,"等大小切块+精确断点"八个字够了。</div>
+  <div class="notes"><b>P5(2.5′)</b> 指左图:"把所有乘积排一条序列,等大切块,块内排序去重。"强调"粒度从行到乘积"这一个 idea。右卡诚实划界,不回避。</div>
 </section>
 
 <!-- P6 ocean -->
 <section class="slide">
   <div class="kicker">重点篇目 ④ · ocean(ICS'26)——我们的头号对手</div>
-  <h2>估计范式 + 静态门 <span class="en">——当前 SOTA 的完整解剖</span></h2>
-  <div class="big" style="margin-bottom:1.2rem;">
-    <b>一句话</b>:用 HLL 采样估计替代精确 symbolic(砍 28% 税),一个静态阈值选工作流,错了就 retry。
+  <h2>估计范式:完整解剖</h2>
+  <div class="row" style="margin-bottom:1rem;">
+    <div class="card" style="flex:1.4;">
+      <h3>架构图(从源码还原)</h3>
+<pre class="diagram" style="font-size:.82rem; padding:.8rem 1rem;">
+输入 A ──→ analysis(乘积数+ER+3%采样)──→ decideMatrixType
+                │                              │
+                │                    ┌─────────┼─────────┐
+                │                    ▼         ▼         ▼
+                │              免估计      HLL 估计    精确 symbolic
+                │              (上界法)    (采样)      (数数)
+                │                    │         │         │
+                │                    ▼         ▼         ▼
+                │              ┌── binning ──┐          │
+                │              │ 符号/数值两遍 │    symbolic binning
+                │              └─────────────┘          │
+                │                    │                   │
+                ▼                    ▼                   ▼
+           overflow? ─── retry ──→ numeric kernels ────→ epilogue
+                                              (hash/dense/ESC 混合)
+</pre>
+    </div>
+    <div class="card">
+      <h3>我们的四行一手发现</h3>
+      <table style="font-size:.88rem;">
+        <tr><th>组件</th><th>发现</th></tr>
+        <tr><td>估计</td><td>337 阵中 <b>48% 仍走精确</b>(其消融)——估计是门控 niche</td></tr>
+        <tr><td>调度</td><td>静态阈值,单层,不学习</td></tr>
+        <tr><td>自纠</td><td><b>无判废证书、无回退</b>——retry 只保正确</td></tr>
+        <tr><td>评测</td><td>自选 337 阵(∩ HSMU 338 = <b>0</b>)——碎片化</td></tr>
+      </table>
+      <p style="font-size:.9rem; margin-top:.6rem;">加速比(其论文):vs spECK 1.4× / opSparse 2.6× / Tile 3.5× / HSMU 2.0×</p>
+    </div>
   </div>
-  <table style="font-size:.98rem; margin-bottom:1rem;">
-    <tr><th>组件</th><th>机制</th><th>我们的发现(一手)</th></tr>
-    <tr><td>估计</td><td>HLL 逐行预测输出规模</td><td>其消融:<b>337 阵中 48% 仍走精确 symbolic</b>——估计是门控 niche</td></tr>
-    <tr><td>调度</td><td>decideMatrixType = 静态阈值二选一</td><td>单层,无学习,无分层</td></tr>
-    <tr><td>自纠</td><td>溢出 retry</td><td><b>无判废证书、无形态回退</b>——我们证书的空白入口</td></tr>
-    <tr><td>评测</td><td>自选 337 阵(与 HSMU 338 重叠 = 0)</td><td>基准碎片化实证;我们用 428 并集回应</td></tr>
-  </table>
-  <p class="big" style="font-size:1.0rem;">所有记分以它为参照:同夜配对,口径源码级审计(其 epilogue 在计时圈内——我们行号级验证过)。</p>
-  <div class="notes"><b>P6(3′)全场最重的文献页</b>。四行表格逐行讲:估计(承认其强)+调度(单层)+自纠(retry空白)+评测(碎片化)。每一行都通向我们的某张牌。语气:对手很强,我们解剖得很细。</div>
+  <div class="notes"><b>P6(3′)最重的文献页</b>。左图从上到下走一遍流程,右表逐行讲我们的发现。每一行通向我们的一张牌。语气:对手很强,我们解剖到源码行号。</div>
 </section>
 
 <!-- P7 全景时间轴 -->
