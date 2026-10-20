@@ -90,74 +90,115 @@
   <div class="notes"><b>P2(2.5′)</b> 两个矛盾是后面五幕所有工作的坐标系。带走:输出未知→28%税;行间失衡×行内去重。</div>
 </section>
 
-<!-- P3 时代I -->
+<!-- P3 spECK -->
 <section class="slide">
-  <div class="kicker">第一幕 · 奠基(1978-2007)</div>
-  <h2>一个算法,两颗种子</h2>
-  <div class="row">
-    <div class="card"><h3>Gustavson 1978</h3><p>行式算法母体:每输出行=稀疏向量累积——<b>累积器抽象诞生</b>,此后48年=换累积器+换行分配</p></div>
-    <div class="card"><h3>MATLAB 1992</h3><p>稀疏矩阵进生产力工具,SpGEMM 从论文题变工程题</p></div>
-    <div class="card"><h3>两颗理论种子</h3><p>Cohen'96/97 规模估计 + Flajolet'07 HLL——<b>互不相识,2026 在 ocean 合流</b>(全脉络最长伏笔)</p></div>
+  <div class="kicker">重点篇目 ① · spECK(PPoPP'20)</div>
+  <h2>hash 累积器的成熟形态 <span class="en">——我们的武器血脉</span></h2>
+  <div class="big" style="margin-bottom:1.5rem;">
+    <b>一句话</b>:把 Gustavson 的"行内累积"做成 <b>共享内存里的可变长 hash 表</b>,加一步轻量分析定表容量。
   </div>
-  <p class="sub">遗留:单机到顶;"一种结构走天下"开始吃力 → <b>下一代发动机:GPU</b></p>
-  <div class="notes"><b>P3(2′)</b> 讲故事不堆引文。带走:48年=换累积器+换分配;两颗种子的伏笔。</div>
+  <div class="row">
+    <div class="card"><h3>它做了什么</h3>
+      <ul class="tight">
+        <li>每行(或行组)一张 smem hash 表,乘积按列号占座去重</li>
+        <li>表大小不再拍脑袋——<b>轻量分析步</b>按行特征定容量</li>
+        <li>表满了怎么办?溢出重试(更大的表重来)</li>
+      </ul></div>
+    <div class="card"><h3>这条线的位置</h3>
+      <ul class="tight">
+        <li>nsparse'17 → Winter'19(自适应表)→ <b>spECK'20</b>(可变长+分析)</li>
+        <li>今天所有主流系统(ocean/HSMU/我们)的 hash 内核都是这条线的后代</li>
+        <li><b>我们的 hash_spa 档位梯</b>(0.52× vs ocean)就是它的分档化极限形态</li>
+      </ul></div>
+  </div>
+  <div class="notes"><b>P3(2′)</b> 不讲源码细节。带走:hash 表 = 行内去重的主流答案,容量怎么定是这条线的核心矛盾(这个矛盾接下来会反复出现)。如果有人问碰撞:线性探测+重试兜底。</div>
 </section>
 
-<!-- P4 时代II -->
+<!-- P4 IA-SpGEMM -->
 <section class="slide">
-  <div class="kicker">第二幕 · CUDA 开荒(2008-2014)</div>
-  <h2>两遍范式的定型</h2>
-  <div class="row">
-    <div class="card"><h3>稀疏 CUDA 时代开启</h3><p>Bell&Garland 2008-09(SpMV/格式谱系)→ GPU 稀疏计算成为一等地</p></div>
-    <div class="card"><h3>Liu & Vinter IPDPS'14</h3><p>GPU SpGEMM 代表作:负载均衡+结果预分配+并行插入——<b>symbolic+numeric 两遍范式定型</b></p></div>
-    <div class="card"><h3>分布式侧</h3><p>CombBLAS'12:2D 分布+SUMMA 稀疏化,多机世界立地基</p></div>
+  <div class="kicker">重点篇目 ② · IA-SpGEMM(ICS'19)</div>
+  <h2>调度的第一枪 <span class="en">——"这台矩阵该用哪个算法"</span></h2>
+  <div class="big" style="margin-bottom:1.5rem;">
+    <b>一句话</b>:训一个深度模型(MatNet,2700+ SuiteSparse 阵),对每个新矩阵<b>直接预测</b>最优 format+算法组合。
   </div>
-  <p class="sub">遗留:①symbolic 只数不算却吃 28%;②巨鲸行拖死负载;③累积器三岔路口 → <b>发动机:谱系爆发</b></p>
-  <div class="notes"><b>P4(2′)</b> 带走:两遍范式=此后标准结构;三个遗留问题是下一幕的靶。</div>
+  <div class="row">
+    <div class="card"><h3>它的贡献</h3>
+      <ul class="tight">
+        <li>第一个把"选算法"当成学习问题(2019)——input-aware 诞生</li>
+        <li>证明了:不同矩阵的最优选择差异巨大,选对了就是白赚</li>
+      </ul></div>
+    <div class="card"><h3>它的局限(=我们的入口①)</h3>
+      <ul class="tight">
+        <li><b>单层黑盒</b>:一个深模型做完所有决策,不知道哪部分其实有公式可循</li>
+        <li><b>无安全网</b>:选错了就错了,没有运行时兜底</li>
+        <li>选的粒度是 format/变体,不是整条管线配置</li>
+      </ul></div>
+  </div>
+  <div class="notes"><b>P4(2′)</b> 语气:尊重先行者(必须承认它先做了学习调度),然后温和地指出两个结构性局限——单层+无安全网。这两点正好是我们的三层+证书的入口。Q&A 备好:"和 IA-SpGEMM 区别?"=粒度/架构/安全网三点。</div>
 </section>
 
-<!-- P5 时代III -->
+<!-- P5 MMSpGEMM -->
 <section class="slide">
-  <div class="kicker">第三幕 · 谱系爆发(2015-2020)</div>
-  <h2>五条路线各自成军 + 调度第一枪</h2>
-  <table style="font-size:.95rem;">
-    <tr><th>路线</th><th>代表</th><th>解决</th></tr>
-    <tr><td><b>ESC 排序</b></td><td>bhSparse'15</td><td>免表免原子:展开→排序→归并</td></tr>
-    <tr><td><b>smem hash</b></td><td>nsparse'17 · Winter'19(自适应表)· spECK'20(可变长)</td><td>省空间通用;表容量/碰撞难定</td></tr>
-    <tr><td><b>tiling</b></td><td>ASpT'19 → TileSpGEMM'22</td><td>dense GEMM 分块思想稀疏化</td></tr>
-    <tr><td><b>调度第一枪</b></td><td><b>IA-SpGEMM ICS'19</b>:MatNet 深模型,2700 阵,逐阵预测 format+算法</td><td>input-aware 诞生——单层黑盒,无安全网</td></tr>
+  <div class="kicker">重点篇目 ③ · MMSpGEMM(PACT'25)</div>
+  <h2>多路归并分区 <span class="en">——我们 merge3 的同轴兄弟</span></h2>
+  <div class="big" style="margin-bottom:1.5rem;">
+    <b>一句话</b>:把所有中间乘积排成一条全局序列,按<b>等大小切块</b>(tournament tree 精确断点),块内排序去重——负载均衡从"按行"升级为"按乘积"。
+  </div>
+  <div class="row">
+    <div class="card"><h3>它的贡献</h3>
+      <ul class="tight">
+        <li>负载均衡粒度从行细化到乘积——巨鲸行不再拖死大家</li>
+        <li>块可跨行:小行打包进同一块</li>
+      </ul></div>
+    <div class="card"><h3>我们的关系(诚实划界)</h3>
+      <ul class="tight">
+        <li><b>思想同轴</b>(都做 merge 路线的负载均衡),它先发表,<b>必须引</b></li>
+        <li><b>机制差异大</b>:它=全局 rank 窗+tournament 断点,块内是 ESC;我们 merge3=列域分桶+warp 归免排序</li>
+        <li>我们读过它全部源码(档 inno/mmspgemm_comparison.md)</li>
+      </ul></div>
+  </div>
+  <div class="notes"><b>P5(2.5′)</b> 这页展示学术诚实:主动讲同轴先行者,一句话讲清机制差异。听众/审稿人对"merge 路线有人做过"的疑问就此 preempt。不用讲 tournament tree 细节,"等大小切块+精确断点"八个字够了。</div>
+</section>
+
+<!-- P6 ocean -->
+<section class="slide">
+  <div class="kicker">重点篇目 ④ · ocean(ICS'26)——我们的头号对手</div>
+  <h2>估计范式 + 静态门 <span class="en">——当前 SOTA 的完整解剖</span></h2>
+  <div class="big" style="margin-bottom:1.2rem;">
+    <b>一句话</b>:用 HLL 采样估计替代精确 symbolic(砍 28% 税),一个静态阈值选工作流,错了就 retry。
+  </div>
+  <table style="font-size:.98rem; margin-bottom:1rem;">
+    <tr><th>组件</th><th>机制</th><th>我们的发现(一手)</th></tr>
+    <tr><td>估计</td><td>HLL 逐行预测输出规模</td><td>其消融:<b>337 阵中 48% 仍走精确 symbolic</b>——估计是门控 niche</td></tr>
+    <tr><td>调度</td><td>decideMatrixType = 静态阈值二选一</td><td>单层,无学习,无分层</td></tr>
+    <tr><td>自纠</td><td>溢出 retry</td><td><b>无判废证书、无形态回退</b>——我们证书的空白入口</td></tr>
+    <tr><td>评测</td><td>自选 337 阵(与 HSMU 338 重叠 = 0)</td><td>基准碎片化实证;我们用 428 并集回应</td></tr>
   </table>
-  <p class="sub" style="font-size:1.0rem;">遗留:没有万能累积器成共识,但"选一次全程用";估计理论还在沉睡 → <b>发动机:榨取+估计苏醒</b></p>
-  <div class="notes"><b>P5(2.5′)</b> 关键:IA-SpGEMM 是逐阵学习的祖师(必须承认)——为下半场我们的三层划界埋伏笔。</div>
+  <p class="big" style="font-size:1.0rem;">所有记分以它为参照:同夜配对,口径源码级审计(其 epilogue 在计时圈内——我们行号级验证过)。</p>
+  <div class="notes"><b>P6(3′)全场最重的文献页</b>。四行表格逐行讲:估计(承认其强)+调度(单层)+自纠(retry空白)+评测(碎片化)。每一行都通向我们的某张牌。语气:对手很强,我们解剖得很细。</div>
 </section>
 
-<!-- P6 时代IV -->
+<!-- P7 全景时间轴 -->
 <section class="slide">
-  <div class="kicker">第四幕 · 榨取与混合(2022-2025)</div>
-  <h2>共识收敛:没有赢家,只有生态位</h2>
-  <div class="row">
-    <div class="card"><h3>smem/局部性极限</h3><p>opSparse'22(binning 优化)· <b>HSMU HPCA'25</b>(hash 的 smem 利用率)· Wolfson-Pou ICS'25(局部性生成)· MMSpGEMM PACT'25(多路归并分区)</p></div>
-    <div class="card"><h3>基准碎片化(我们实测)</h3><p>first100/ocean337/HSMU338 <b>两两重叠 ≤1 阵</b>——每篇论文自选战场互比;Gao'23 CSUR=官方地图</p></div>
-  </div>
-  <p class="sub">遗留:①精确 symbolic 的 28% 税没人砍;②混合停在累积器级;③估计错了没人兜底 → <b>发动机:范式转变</b></p>
-  <div class="notes"><b>P6(2′)</b> 带走:混合分域成共识但粒度不够;基准碎片化是我们实测的发现(下半场428并集的立场依据)。</div>
-</section>
-
-<!-- P7 时代V -->
-<section class="slide">
-  <div class="kicker">第五幕 · 范式转变(2025-2026)</div>
-  <h2>估计上位,调度补完</h2>
-  <div class="row">
-    <div class="card"><h3>ocean · ICS'26 ★</h3><p>HLL 估计替代 symbolic + 分析步选工作流 + 混合累积器;其消融:<b>337 阵中 48% 仍走精确 symbolic</b>——估计是门控 niche(与我们定谳同构);补救=溢出 retry</p></div>
-    <div class="card"><h3>其余前锋</h3><p>Wang'25 TACO(ML 选估计方法)· gMAGNUS'26(分层 multisplit)· Du'22(压缩比预测输出结构)</p></div>
-  </div>
-  <p class="big" style="margin-top:1rem;">范式宣言:<b>"别数了,估就行了"</b>——但估计错了怎么办,是范式留下的新问题。</p>
-  <div class="notes"><b>P7(2′)</b> 带走:估计思想扩散但补救停在 retry;48% 仍走精确=门控niche实证。这个问题=下半场我们的证书入口。</div>
+  <div class="kicker">其余工作 · 全景时间轴</div>
+  <h2>四十八年一页收尽 <span class="en">(完整脉络见材料包 01 号文档)</span></h2>
+  <table style="font-size:.9rem;">
+    <tr><th>年代</th><th>里程碑</th><th>一句话</th></tr>
+    <tr><td>1978</td><td>Gustavson</td><td>行式母体+累积器抽象(48 年=换累积器+换分配)</td></tr>
+    <tr><td>1992-2007</td><td>MATLAB · Cohen'96/97 · HLL</td><td>工程化+两颗理论种子(2026 在 ocean 合流)</td></tr>
+    <tr><td>2014</td><td>Liu & Vinter</td><td>两遍范式(symbolic+numeric)定型</td></tr>
+    <tr><td>2015-2017</td><td>bhSparse · nsparse</td><td>ESC 排序线 / smem hash 线成军</td></tr>
+    <tr><td>2019-2020</td><td>Winter · ASpT · spECK</td><td>自适应表 / tiling 线 / hash 成熟(深讲①)</td></tr>
+    <tr><td>2022</td><td>opSparse · TileSpGEMM · Du'22b</td><td>binning 优化 / tiling 成熟 / 压缩比预测(我们 dup 维度前作)</td></tr>
+    <tr><td>2025</td><td><b>HSMU(HPCA)</b> · MMSpGEMM(PACT) · Wang(TACO) · Wolfson-Pou</td><td>bitmap mask+binning / 归并分区(深讲③) / ML 选估计器 / 局部性生成</td></tr>
+    <tr><td>2026</td><td><b>ocean(ICS)</b> · gMAGNUS · Trident</td><td>估计范式(深讲④) / 分层 multisplit / 多 GPU(ocean 同组)</td></tr>
+  </table>
+  <div class="notes"><b>P7(1.5′)</b> 一分钟扫过:"每一行都有代表工作,完整脉络在材料包,这里只标里程碑。"不要逐行念——手指从上往下滑,在 HSMU/bhSparse/Du 停半秒即可。这页的作用=证明我们掌握了全脉络,不是要讲完它。</div>
 </section>
 
 <!-- P8 三条贯穿线(桥) -->
 <section class="slide">
-  <div class="kicker">幕间 · 三条贯穿线</div>
+  <div class="kicker">四篇看完 · 三条贯穿线</div>
   <h2>四十八年收进三句话 <span class="en">——空白在哪</span></h2>
   <ul class="tight big" style="font-size:1.15rem;">
     <li><b>Kernel 线</b>:一分为五,五合于混——但混合停在<b>累积器级</b>;</li>
