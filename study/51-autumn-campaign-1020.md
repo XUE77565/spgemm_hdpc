@@ -15,9 +15,13 @@
       merge3**(int32 CSR 装不下 3.5e9 级巨输出,判废是唯一正确语义;复用 underflow 收尾);
       门:c-73/c-73b CD 臂优雅判废(打印溢出证书,不再 OOM 崩溃);控制阵 nd24k/wb-edu
       CD nnz == C 臂精确一致 ✓;全套 int64 化不做(int32 CSR 天花板,判废+回退=证书正解)
-- [ ] C(时间充裕)hybrid-hash 设计文档:依 A 的取证结论,写中带(索引 smem/值 gmem RED)
-      的实现方案(只设计不改码,明天汇报后人工过目再动)
-- [ ] 终报:入档 + commit + 通知
+- [x] C 设计文档完成(10-20 午后,study/52):梯 2-5 值外置混合 hash——smem 只存
+      key(32-bit CAS 原生)/值 gmem 原生 FP64 RED(fire-and-forget),正对 CAST.SPIN 墙
+      人群(ldoor dup9.5/rgg/StocF);衔接既有 d_hybrid_val 基建;人口门(dup 探针)先行
+      =FLAT 教训;预注册判据 ldoor ≥15%;预期 337 −0.3-0.5%[推测];待人工过目后动刀。
+- [x] 终报(10-20):A 取证(输面钉死梯2-5×dup 人群)+ B CD 修雷闭环(study/47 出清,
+      证书家族+int溢出判废)+ C hybrid-hash 设计稿(study/52)。三相位全部完成,
+      commits 1dd9136/28fa29c/本批。汇报日语义零改动(全 env 门控或纯文档)。
 
 ## 纪律
 改码必 env 门控默认关/值门三件套(Result C 锚定!grep 教训)/同会话 A/B/
