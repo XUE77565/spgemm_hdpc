@@ -86,6 +86,10 @@
       <p>行长跨 4-6 个数量级;行内去重代价 = 累积器选型,矩阵间差异极大</p>
       <p style="margin-top:.5rem;">→ <b>六种累积器谱系</b>(第三幕的主角们)</p></div>
   </div>
+  <div style="text-align:center; margin-top:1rem;">
+    <img src="slides_figs/ocean_fig1_accumulator.png" style="max-width:70%; border-radius:8px; border:1px solid var(--line);">
+    <p style="font-size:.82rem; color:var(--muted); margin-top:.3rem;">Gustavson 行累积器示意(ocean 论文 Figure 1)——左:hash 累积器;右:dense 累积器</p>
+  </div>
   <p class="sub" style="font-size:1.0rem;">硬件不变量(H100):smem ~228KB/SM · 无 smem double 原子 · launch 间隙 2-5µs/发</p>
   <div class="notes"><b>P2(2.5′)</b> 两个矛盾是后面五幕所有工作的坐标系。带走:输出未知→28%税;行间失衡×行内去重。</div>
 </section>
@@ -123,7 +127,11 @@
       <p style="font-size:.95rem;">hash_spa 档位梯 = spECK 思想的<b>分档极限</b>(20 桶逐档几何),同行集 <b>0.52×</b> vs ocean</p>
     </div>
   </div>
-  <p class="big" style="font-size:.95rem;">这条线的 <b>表容量问题</b> 贯穿始终——spECK 用分析步缓解,ocean 用 HLL 估计替代,ocean 的 16253 档用值外置——问题没死,只是解法在进化。</p>
+  <div style="text-align:center; margin-top:.6rem;">
+    <img src="slides_figs/ocean_fig2_workflow.png" style="max-width:65%; border-radius:8px; border:1px solid var(--line);">
+    <p style="font-size:.82rem; color:var(--muted); margin-top:.3rem;">GPU SpGEMM 标准两遍工作流(ocean 论文 Figure 2)——symbolic(数数) + numeric(算数)</p>
+  </div>
+  <p class="big" style="font-size:.95rem;">这条线的 <b>表容量问题</b> 贯穿始终——spECK 用分析步缓解,ocean 用 HLL 估计替代——问题没死,只是解法在进化。</p>
   <div class="notes"><b>P3(2.5′)</b> 指左图讲机制:"乘积流进来,按列号 hash 到表里占座,同列合并值。"然后指右卡的演进线。带走:hash=主流,表容量=核心矛盾。</div>
 </section>
 
@@ -210,25 +218,9 @@
   <div class="kicker">重点篇目 ④ · ocean(ICS'26)——我们的头号对手</div>
   <h2>估计范式:完整解剖</h2>
   <div class="row" style="margin-bottom:1rem;">
-    <div class="card" style="flex:1.4;">
-      <h3>架构图(从源码还原)</h3>
-<pre class="diagram" style="font-size:.82rem; padding:.8rem 1rem;">
-输入 A ──→ analysis(乘积数+ER+3%采样)──→ decideMatrixType
-                │                              │
-                │                    ┌─────────┼─────────┐
-                │                    ▼         ▼         ▼
-                │              免估计      HLL 估计    精确 symbolic
-                │              (上界法)    (采样)      (数数)
-                │                    │         │         │
-                │                    ▼         ▼         ▼
-                │              ┌── binning ──┐          │
-                │              │ 符号/数值两遍 │    symbolic binning
-                │              └─────────────┘          │
-                │                    │                   │
-                ▼                    ▼                   ▼
-           overflow? ─── retry ──→ numeric kernels ────→ epilogue
-                                              (hash/dense/ESC 混合)
-</pre>
+    <div class="card" style="flex:1.4; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+      <h3>ocean 完整架构(其论文 Figure 4)</h3>
+      <img src="slides_figs/ocean_fig4_architecture.png" style="max-width:95%; border-radius:8px; border:1px solid var(--line); margin-top:.5rem;">
     </div>
     <div class="card">
       <h3>我们的四行一手发现</h3>
