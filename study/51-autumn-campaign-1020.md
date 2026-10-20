@@ -11,9 +11,10 @@
   中高 dup 的梯 2-5 行**——ldoor est273/dup9.5(CAS 自旋墙本尊)/StocF est117·92%梯3/
   rgg est81 dup2.6。**= ocean §3.3 混合累积器靶区**(索引smem/值gmem原生FP64 RED 绕开
   smem double CAS 墙)。ocean 对 rgg/StocF 走 symbolic 工作流(其 numeric 更快是主因)。
-- [ ] B CD 溢出修雷(study/47):定位 DCEST 链的 int32 C_nnz/margin → long long 化 +
-      负值即判废 + cudaMalloc size_t 卫兵;build → 门:c-73/c-73b CD 臂出值且
-      Result C nnz == C 臂(值级 WRITE_MTX 门二选一)→ 控制阵无害 → commit
+- [x] B CD 溢出修雷完成(10-20 午后,study/47 闭环):cnnz_scan 后加**负值即判废回退
+      merge3**(int32 CSR 装不下 3.5e9 级巨输出,判废是唯一正确语义;复用 underflow 收尾);
+      门:c-73/c-73b CD 臂优雅判废(打印溢出证书,不再 OOM 崩溃);控制阵 nd24k/wb-edu
+      CD nnz == C 臂精确一致 ✓;全套 int64 化不做(int32 CSR 天花板,判废+回退=证书正解)
 - [ ] C(时间充裕)hybrid-hash 设计文档:依 A 的取证结论,写中带(索引 smem/值 gmem RED)
       的实现方案(只设计不改码,明天汇报后人工过目再动)
 - [ ] 终报:入档 + commit + 通知

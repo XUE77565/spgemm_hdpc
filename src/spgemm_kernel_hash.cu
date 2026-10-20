@@ -6598,6 +6598,30 @@ static void hash_product(
     dbg("[hash] C_nnz=%d (est=%lld, %.2fx over-alloc)\n", C_nnz_result, total_est,
         total_est > 0 ? (double)total_est / C_nnz_result : 0.0);
 
+    // study/47 修复(10-20):C_nnz 为负 = 行计数和溢出 int32(c-73 级巨输出阵,DCEST 的
+    // est×1.2 padding 和可达 3.5e9 > 2^31)。负值绕过现有判废条件(actual>est 在负数域失效)
+    // → 曾带负值进 compact 引爆 cudaMalloc size_t 下溢(1.8e19B)。修复:负值即判废回退
+    // merge3(int32 CSR 本就装不下该量级,回退是唯一正确语义,复用 underflow 收尾)。
+    if (C_nnz_result < 0) {
+        fprintf(stderr, "[hash] C_nnz int32 溢出(C_nnz=%d, est=%lld)→ 判废回退 merge\n",
+                C_nnz_result, total_est);
+        *C_buffer_out = nullptr; *C_rows = A_rows; *C_cols = A_cols; *C_nnz = -1;
+        if (!s_r2_arena_active) { dev_free(rtc); dev_free(rtv); dev_free(rk); dev_free(rv); }
+        dev_free(rk2); dev_free(rv2); dev_free(d_rht); dev_free(d_rtab);
+        if (!s_r2_arena_active) { dev_free(d_rslot); dev_free(d_roff); }
+        dev_free(d_rsb); dev_free(d_rse);
+        dev_free(dA); dev_free(d_off); dev_free(d_row_nnz);
+        dev_free(d_overflow); dev_free(d_tmp_key); dev_free(d_tmp_val);
+        dev_free(d_bkid); dev_free(d_cnt); dev_free(d_offb); dev_free(d_pos); dev_free(d_sort); dev_free(d_est); dev_free(d_span_lo); dev_free(d_span_len); dev_free(d_maxbl); for (int vb_ = 0; vb_ <= HASH_LADDER_MAX_BIN; vb_++) dev_free(d_gv_bins[vb_]); dev_free(d_gv_off);
+        dev_free(dC_rp);
+        dev_free(d_csc_cp); dev_free(d_csc_ri); dev_free(d_csc_val); dev_free(dB16);
+        dev_free(d_heavy_ht); dev_free(d_heavy_tab_off); dev_free(d_tab_col); dev_free(d_tab_val);
+        dev_free(d_seg_beg); dev_free(d_seg_end); dev_free(d_scr_key); dev_free(d_scr_val); dev_free(d_cub_tmp);
+        dev_free(d_ovf_rows); dev_free(d_ovf_cnt); dev_free(d_row_ovf);
+        dev_free(d_flop);
+        return;
+    }
+
     // est underflow check: actual C_nnz > estimated total → 回退 merge3
     // 方案5:dense 行计数精确(可 > 其 est,合法),检查改 hash 侧 = C_nnz − Σnnz_dense ≤ tmp_slots
     // DCEST:dense 行用 est×1.2(over-allocated)→ C_nnz 含 padding,检查必假阳 → 跳过
