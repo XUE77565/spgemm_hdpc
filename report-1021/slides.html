@@ -67,15 +67,15 @@
 <!-- P1 封面 -->
 <section class="slide">
   <div class="kicker">近期工作汇报 · 2026-10-21</div>
-  <h1>SpGEMM on GPU:<br>路由是我们的金子</h1>
-  <p class="sub">三层路由落地实录:从"怎么算"到"怎么选",到<b>部署系统在双方基准之并上净赢 ocean</b></p>
-  <p class="sub" style="margin-top:2.5rem; font-size:1.05rem;">领域坐标 15′ · 战果与证据链 13′ · 下一步 2′</p>
-  <div class="notes"><b>P1(1.5′)</b> 开场一句话:这周把"调度"从图纸钉进了战场——部署系统 428 阵同夜配对净赢 ocean 4-5%。三段结构预告。</div>
+  <h1>SpGEMM on GPU:<br>从文献脉络到我们的三层路由</h1>
+  <p class="sub">上半场:四十八年系列工作的五幕剧 &nbsp;·&nbsp; 下半场:我们的三层路由落地实录——<b>部署系统净赢 ocean 4-5%</b></p>
+  <p class="sub" style="margin-top:2.5rem; font-size:1.05rem;">文献脉络 12′ · 我们的工作 13′ · 下一步 2′</p>
+  <div class="notes"><b>P1(1.5′)</b> 开场:"先讲清楚这个领域怎么走到今天,再讲我们在这条线上站哪——上半场文献五幕,下半场我们的答卷。"</div>
 </section>
 
 <!-- P2 问题 -->
 <section class="slide">
-  <div class="kicker">01 · 问题定义</div>
+  <div class="kicker">序幕 · 问题定义</div>
   <h2>一切工作都挂在两个矛盾上</h2>
   <div class="row">
     <div class="card"><h3>矛盾① 输出未知</h3>
@@ -83,191 +83,171 @@
       <p style="margin-top:.5rem;">→ <b>两遍范式</b>(symbolic+numeric,2014 定型)</p>
       <p style="margin-top:.5rem; color:var(--accent2); font-weight:700;">symbolic 平均吃掉 ~28% 运行时间(ocean ICS'26 实测)</p></div>
     <div class="card"><h3>矛盾② 行间失衡 × 行内去重</h3>
-      <p>行长跨 4-6 个数量级;行内去重代价 = 累积器选型</p>
-      <p style="margin-top:.5rem;">→ <b>六种累积器谱系</b> + 负载均衡技术(P3)</p></div>
+      <p>行长跨 4-6 个数量级;行内去重代价 = 累积器选型,矩阵间差异极大</p>
+      <p style="margin-top:.5rem;">→ <b>六种累积器谱系</b>(第三幕的主角们)</p></div>
   </div>
-  <p class="sub" style="font-size:1.0rem;">硬件不变量(H100):smem ~228KB/SM · 无 smem double 原子(hash 大行=硬件墙) · launch 间隙 2-5µs/发(微阵仪式税)</p>
-  <div class="notes"><b>P2(3′)</b> 带走:输出未知→28% 税;行间失衡×行内去重。硬件不变量是后面一切"为什么不能"的根据。</div>
+  <p class="sub" style="font-size:1.0rem;">硬件不变量(H100):smem ~228KB/SM · 无 smem double 原子 · launch 间隙 2-5µs/发</p>
+  <div class="notes"><b>P2(2.5′)</b> 两个矛盾是后面五幕所有工作的坐标系。带走:输出未知→28%税;行间失衡×行内去重。</div>
 </section>
 
-<!-- P3 累积器六谱系 -->
+<!-- P3 时代I -->
 <section class="slide">
-  <div class="kicker">02 · Kernel 轴 I</div>
-  <h2>累积器六谱系 <span class="en">没有万能累积器 → 所以才有调度问题</span></h2>
-  <table>
-    <tr><th>谱系</th><th>机制</th><th>代表</th><th>我们的对应(实测 vs ocean)</th></tr>
-    <tr><td><b>dense SPA/位图</b></td><td>整段列区间直写</td><td>Gustavson 1978</td><td>dense 梯子(巨鲸行 <span class="good">0.46-0.78×</span>)</td></tr>
-    <tr><td><b>smem hash</b></td><td>行内哈希占座累加</td><td>nsparse'17 · Winter'19 · spECK'20</td><td>hash_spa(<span class="good">0.52×</span>)+heavy(<span class="good">0.726×</span>)</td></tr>
-    <tr><td><b>ESC 排序</b></td><td>展开→排序→归并去重</td><td>bhSparse'15</td><td>排序管线</td></tr>
-    <tr><td><b>多路归并</b></td><td>有序链 k 路免排归并</td><td>MMSpGEMM PACT'25</td><td>merge3(<span class="good">0.61×</span>,first100 主场)</td></tr>
-    <tr><td><b>cursor 游标</b></td><td>短行窄区间直滑</td><td>散见</td><td>cursor(<span class="good">0.83-0.88×</span>)+微行族(<span class="good">0.406×</span>)</td></tr>
-    <tr><td><b>混合分域</b></td><td>短/长行异构+两级显存</td><td>opSparse'22 · HSMU HPCA'25 · ocean'26</td><td>七武器=分域极限形态</td></tr>
-  </table>
-  <div class="notes"><b>P3(3′)</b> 不逐行念!指"我们的对应"列讲三例。带走:没有万能累积器——所以才有调度问题,这就是本周故事的前提。</div>
-</section>
-
-<!-- P4 均衡+四代 -->
-<section class="slide">
-  <div class="kicker">02 · Kernel 轴 II</div>
-  <h2>负载均衡四板斧 & 四代分期</h2>
-  <div class="row" style="margin-bottom:1.8rem;">
-    <div class="card"><h3>均衡四板斧</h3><ul class="tight">
-      <li>朴素映射(一行一块)</li><li>行长 <b>binning</b></li>
-      <li><b>等大 rank 窗</b>(MMSpGEMM tournament 断点)</li>
-      <li><b>tiling</b>(ASpT→TileSpGEMM'22)→分层分裂(gMAGNUS'26)</li></ul></div>
-    <div class="card"><h3>四代分期</h3><ul class="tight">
-      <li><b>Ⅰ 2008-14 能跑</b>:两遍范式定型(Liu&Vinter)</li>
-      <li><b>Ⅱ 2015-20 算得匀</b>:五谱系成军</li>
-      <li><b>Ⅲ 2022-25 榨干</b>:smem/局部性极限,混合分域共识</li>
-      <li><b>Ⅳ 2025-26 换范式</b>:估计替代精确(ocean ICS'26)</li></ul></div>
-  </div>
-  <p class="big">第四代宣言:<b>"别数了,估就行了"</b>——但估计错了怎么办,是范式留下的新问题(→ 我们的证书)。</p>
-  <div class="notes"><b>P4(2.5′)</b> 带走:四代走到"换范式"。若超时本页可只留四代分期表。</div>
-</section>
-
-<!-- P5 调度五级 -->
-<section class="slide">
-  <div class="kicker">03 · 调度轴(核心页)</div>
-  <h2>决策权的迁移史 <span class="en">+ 本周我们把终点站建成了</span></h2>
-  <div class="arrowflow" style="margin-bottom:1.8rem;">
-    <span class="st">编译期·选库 cuSPARSE</span><span class="ar">→</span>
-    <span class="st">调优期·逐阵学习 <b>IA-SpGEMM 2019</b>(MatNet)</span><span class="ar">→</span>
-    <span class="st">运行期·选工作流 <b>ocean 2026</b>(静态门)</span><span class="ar">→</span>
-    <span class="st us">三层路由+证书(我们,已部署实测)</span>
-  </div>
-  <table>
-    <tr><th>层</th><th>代表</th><th>机制</th><th>局限</th></tr>
-    <tr><td>静态阈值</td><td>ocean decideMatrixType</td><td>统计+采样→选工作流</td><td>单维,边界阵脆</td></tr>
-    <tr><td>离线学习</td><td><b>IA-SpGEMM(ICS'19)</b></td><td>深模型直接预测 format+算法</td><td>单层黑盒;无安全网</td></tr>
-    <tr><td>运行时自纠</td><td>ocean 溢出 retry</td><td>估错重跑</td><td>只保正确不保性能边界</td></tr>
-  </table>
-  <div class="notes"><b>P5(3′)不可砍</b>。带走:决策权一路迁移;IA-SpGEMM 是逐阵学习祖师(必须承认),ocean 是静态单层门——我们建的是带证书的终点站。Q&A"和 IA-SpGEMM 区别"→粒度/架构/安全网三点。</div>
-</section>
-
-<!-- P6 前沿+观察 -->
-<section class="slide">
-  <div class="kicker">04 · 2025-26 前沿</div>
-  <h2>谁在打什么 & 三条观察</h2>
-  <div class="row" style="margin-bottom:1.6rem;">
-    <div class="card"><h3>ocean · ICS'26 ★</h3><p>HLL 估计砍 symbolic+分析步+混合累积器;其消融:337 阵中 <b>48% 仍走精确 symbolic</b>——估计是门控 niche,与我们 CD 定谳同构</p></div>
-    <div class="card"><h3>MMSpGEMM · PACT'25 ★</h3><p>多路归并分区(与我们 merge3 同轴不同机制,已划界)</p></div>
-    <div class="card"><h3>HSMU · HPCA'25 ★</h3><p>hash 累积器 smem 利用率;**索引/值分离放置**(索引 smem/值 gmem 原生 FP64 RED)——中带 hybrid-hash 的机理来源</p></div>
-    <div class="card"><h3>gMAGNUS · 2026 ★</h3><p>分层 multisplit 攻不规则巨阵</p></div>
-  </div>
-  <ul class="tight big" style="font-size:1.05rem;">
-    <li>观察①:<b>估计思想已扩散</b>——但补救停在 <b>retry</b>,判废证书+形态回退是空白;</li>
-    <li>观察②:<b>混合分域成共识</b>——但停在累积器级,管线形态级分发不存在;</li>
-    <li>观察③:<b>基准碎片化(我们实测)</b>:first100/ocean337/HSMU338 两两重叠 ≤1 阵——每篇论文自选战场互比。</li>
-  </ul>
-  <div class="notes"><b>P6(2′)</b> 三条观察各通向我们的工作:①→证书;②→形态/路由;③→428 并集。ocean 消融 48% 精确 symbolic 是我们三层叙事的外部验证。</div>
-</section>
-
-<!-- P7 场外支柱 -->
-<section class="slide">
-  <div class="kicker">05 · GPU 单机之外</div>
-  <h2>场外四支柱 <span class="en">(一页快翻)</span></h2>
+  <div class="kicker">第一幕 · 奠基(1978-2007)</div>
+  <h2>一个算法,两颗种子</h2>
   <div class="row">
-    <div class="card"><h3>A 估计理论血统</h3><p>Cohen'96/97 → Amossen'14 → HLL(Flajolet/Heule)→ <b>ocean'26</b>——三级跳,不是单点发明</p></div>
-    <div class="card"><h3>B 分布式/多核</h3><p>CombBLAS'12 → RDMA ICS'24 → Trident'26(ocean 同组)</p></div>
-    <div class="card"><h3>C 应用拉动</h3><p>MATLAB → AMG → 图算法 → 基因组(<b>Guidi 本人</b>) → GNN</p></div>
-    <div class="card"><h3>D 重排+标准化</h3><p>Islam'25 重排;GraphBLAS 半环;Gao'23 CSUR 官方地图</p></div>
+    <div class="card"><h3>Gustavson 1978</h3><p>行式算法母体:每输出行=稀疏向量累积——<b>累积器抽象诞生</b>,此后48年=换累积器+换行分配</p></div>
+    <div class="card"><h3>MATLAB 1992</h3><p>稀疏矩阵进生产力工具,SpGEMM 从论文题变工程题</p></div>
+    <div class="card"><h3>两颗理论种子</h3><p>Cohen'96/97 规模估计 + Flajolet'07 HLL——<b>互不相识,2026 在 ocean 合流</b>(全脉络最长伏笔)</p></div>
   </div>
-  <div class="notes"><b>P7(1.5′)</b> 超时先砍这页(压到 30 秒,只讲估计家谱一句+Guidi 血统故事)。</div>
+  <p class="sub">遗留:单机到顶;"一种结构走天下"开始吃力 → <b>下一代发动机:GPU</b></p>
+  <div class="notes"><b>P3(2′)</b> 讲故事不堆引文。带走:48年=换累积器+换分配;两颗种子的伏笔。</div>
 </section>
 
-<!-- P8 我们的架构(v3 决策链) -->
+<!-- P4 时代II -->
 <section class="slide">
-  <div class="kicker">06 · 我们的系统</div>
+  <div class="kicker">第二幕 · CUDA 开荒(2008-2014)</div>
+  <h2>两遍范式的定型</h2>
+  <div class="row">
+    <div class="card"><h3>稀疏 CUDA 时代开启</h3><p>Bell&Garland 2008-09(SpMV/格式谱系)→ GPU 稀疏计算成为一等地</p></div>
+    <div class="card"><h3>Liu & Vinter IPDPS'14</h3><p>GPU SpGEMM 代表作:负载均衡+结果预分配+并行插入——<b>symbolic+numeric 两遍范式定型</b></p></div>
+    <div class="card"><h3>分布式侧</h3><p>CombBLAS'12:2D 分布+SUMMA 稀疏化,多机世界立地基</p></div>
+  </div>
+  <p class="sub">遗留:①symbolic 只数不算却吃 28%;②巨鲸行拖死负载;③累积器三岔路口 → <b>发动机:谱系爆发</b></p>
+  <div class="notes"><b>P4(2′)</b> 带走:两遍范式=此后标准结构;三个遗留问题是下一幕的靶。</div>
+</section>
+
+<!-- P5 时代III -->
+<section class="slide">
+  <div class="kicker">第三幕 · 谱系爆发(2015-2020)</div>
+  <h2>五条路线各自成军 + 调度第一枪</h2>
+  <table style="font-size:.95rem;">
+    <tr><th>路线</th><th>代表</th><th>解决</th></tr>
+    <tr><td><b>ESC 排序</b></td><td>bhSparse'15</td><td>免表免原子:展开→排序→归并</td></tr>
+    <tr><td><b>smem hash</b></td><td>nsparse'17 · Winter'19(自适应表)· spECK'20(可变长)</td><td>省空间通用;表容量/碰撞难定</td></tr>
+    <tr><td><b>tiling</b></td><td>ASpT'19 → TileSpGEMM'22</td><td>dense GEMM 分块思想稀疏化</td></tr>
+    <tr><td><b>调度第一枪</b></td><td><b>IA-SpGEMM ICS'19</b>:MatNet 深模型,2700 阵,逐阵预测 format+算法</td><td>input-aware 诞生——单层黑盒,无安全网</td></tr>
+  </table>
+  <p class="sub" style="font-size:1.0rem;">遗留:没有万能累积器成共识,但"选一次全程用";估计理论还在沉睡 → <b>发动机:榨取+估计苏醒</b></p>
+  <div class="notes"><b>P5(2.5′)</b> 关键:IA-SpGEMM 是逐阵学习的祖师(必须承认)——为下半场我们的三层划界埋伏笔。</div>
+</section>
+
+<!-- P6 时代IV -->
+<section class="slide">
+  <div class="kicker">第四幕 · 榨取与混合(2022-2025)</div>
+  <h2>共识收敛:没有赢家,只有生态位</h2>
+  <div class="row">
+    <div class="card"><h3>smem/局部性极限</h3><p>opSparse'22(binning 优化)· <b>HSMU HPCA'25</b>(hash 的 smem 利用率)· Wolfson-Pou ICS'25(局部性生成)· MMSpGEMM PACT'25(多路归并分区)</p></div>
+    <div class="card"><h3>基准碎片化(我们实测)</h3><p>first100/ocean337/HSMU338 <b>两两重叠 ≤1 阵</b>——每篇论文自选战场互比;Gao'23 CSUR=官方地图</p></div>
+  </div>
+  <p class="sub">遗留:①精确 symbolic 的 28% 税没人砍;②混合停在累积器级;③估计错了没人兜底 → <b>发动机:范式转变</b></p>
+  <div class="notes"><b>P6(2′)</b> 带走:混合分域成共识但粒度不够;基准碎片化是我们实测的发现(下半场428并集的立场依据)。</div>
+</section>
+
+<!-- P7 时代V -->
+<section class="slide">
+  <div class="kicker">第五幕 · 范式转变(2025-2026)</div>
+  <h2>估计上位,调度补完</h2>
+  <div class="row">
+    <div class="card"><h3>ocean · ICS'26 ★</h3><p>HLL 估计替代 symbolic + 分析步选工作流 + 混合累积器;其消融:<b>337 阵中 48% 仍走精确 symbolic</b>——估计是门控 niche(与我们定谳同构);补救=溢出 retry</p></div>
+    <div class="card"><h3>其余前锋</h3><p>Wang'25 TACO(ML 选估计方法)· gMAGNUS'26(分层 multisplit)· Du'22(压缩比预测输出结构)</p></div>
+  </div>
+  <p class="big" style="margin-top:1rem;">范式宣言:<b>"别数了,估就行了"</b>——但估计错了怎么办,是范式留下的新问题。</p>
+  <div class="notes"><b>P7(2′)</b> 带走:估计思想扩散但补救停在 retry;48% 仍走精确=门控niche实证。这个问题=下半场我们的证书入口。</div>
+</section>
+
+<!-- P8 三条贯穿线(桥) -->
+<section class="slide">
+  <div class="kicker">幕间 · 三条贯穿线</div>
+  <h2>四十八年收进三句话 <span class="en">——空白在哪</span></h2>
+  <ul class="tight big" style="font-size:1.15rem;">
+    <li><b>Kernel 线</b>:一分为五,五合于混——但混合停在<b>累积器级</b>;</li>
+    <li><b>调度线</b>:决策权持续迁移——编译期→调优期(IA-SpGEMM)→运行期(ocean 静态门);<b>全是单层,无安全网</b>;</li>
+    <li><b>精确性线</b>:精确→估计+运行时保证——补救只到 <b>retry</b>,无判废证书、无形态回退。</li>
+  </ul>
+  <p class="big" style="margin-top:1.5rem; color:var(--accent2); font-weight:700;">三条线的最后一格同时是空白:形态级分发 + 三层裁定 + 证书兜底 —— 就是我们的入口。</p>
+  <div class="notes"><b>P8(2′)全场枢纽</b>:这页把文献和我们的工作焊住。讲完停顿一拍:"这就是我们做的事。"</div>
+</section>
+
+<!-- P9 我们的决策链 -->
+<section class="slide">
+  <div class="kicker">下半场 · 我们的系统</div>
   <h2>三层路由决策链 <span class="en">全部在二进制内,一周末从图纸到战场</span></h2>
 <pre class="diagram">
 读矩阵头(O(n) 扫描,特征免费)
- ├─ n ≥ 5000 ──┬─ skew>1700 ∧ avg<10 ──→ hash·C配置   ← 带状族路由(本周新,blowey/rajat 系 −30%)
- │             └─ 其他 ────────────→ hash·A配置   ← 预门(跳过决策机器,杀 337 侧 4% 自税)
+ ├─ n ≥ 5000 ──┬ skew>1700∧avg<10 ──→ hash·C配置   ← 带状族路由(blowey/rajat 系 −30%)
+ │             └ 其他 ───────────→ hash·A配置   ← 预门(杀 337 侧 4% 决策自税)
  │                                        └─ 溢出证书判废 → merge3 兜底(L2 实战)
- └─ n < 5000 ──┬─ avg<2 ∧ n≥10k ────→ hash            ← 退化否决(对角阵保险)
-               └─ 四变量 logit(重训)→ hash / merge3   ← 学习层(LOO 94.5%)
+ └─ n < 5000 ──┬ avg<2∧n≥10k ────→ hash            ← 退化否决(对角阵保险)
+               └ 4 变量 logit(重训)→ hash / merge3 ← 学习层(LOO 94.5%)
 </pre>
-  <p class="big" style="margin-top:1.2rem;">对前作的三个升级:粒度(<b>变体→管线配置</b>) · 架构(<b>解析可解不学习</b>,学习层只管不可约) · 安全网(<b>retry→判废证书+形态回退</b>)</p>
-  <div class="notes"><b>P8(3′)</b> 从上往下讲决策链(一条命令 METHOD=adaptive 就是它)。强调:每层都有数据定谳的边界,不是堆砌。</div>
+  <p class="big" style="margin-top:1.2rem;">对前作的三个升级:粒度(<b>变体→管线配置</b>) · 架构(<b>能解析的不学习</b>) · 安全网(<b>retry→判废证书+形态回退</b>)</p>
+  <div class="notes"><b>P9(3′)</b> 一条命令 METHOD=adaptive 就是它。每层都有数据定谳的边界,不是堆砌。</div>
 </section>
 
-<!-- P9 记分牌 -->
+<!-- P10 记分牌 -->
 <section class="slide">
-  <div class="kicker">06 · 记分牌(同夜配对,口径源码级审计)</div>
-  <h2>部署系统:两夜夹住真值 <span class="good">0.949 – 0.959</span></h2>
+  <div class="kicker">下半场 · 记分牌(同夜配对,口径源码级审计)</div>
+  <h2>部署系统:三夜夹住真值 <span class="good">0.95 ± 0.005</span></h2>
   <div class="headline">428 阵(双方基准之并)× 同夜独立配对 × 净赢 ocean 4-5%</div>
   <table style="font-size:1.02rem;">
     <tr><th>战场</th><th>部署系统</th><th>oracle 上限</th><th>备注</th></tr>
-    <tr><td><b>并集 428</b></td><td><b>0.9486 / 0.9588</b>(两夜)</td><td>0.9684</td><td>部署系统超过旧 oracle(merge3 臂不在旧选择集)</td></tr>
-    <tr><td>ocean337(其主场)</td><td>1.187-1.190</td><td>1.172</td><td>剩 19% 在 kernel 层(见 P10)</td></tr>
-    <tr><td><b>first100</b></td><td><b>0.414-0.432</b></td><td>0.481</td><td>胜率 95%+,零大输</td></tr>
+    <tr><td><b>并集 428</b></td><td><b>0.9486 / 0.9588 / 0.9560</b>(三夜)</td><td>0.9684</td><td>部署系统超过单臂 oracle</td></tr>
+    <tr><td>ocean337(其主场)</td><td>1.174</td><td>1.172</td><td>剩 17% 在 kernel 层(取证已在路上)</td></tr>
+    <tr><td><b>first100</b></td><td><b>0.41-0.45</b></td><td>0.481</td><td>胜率 95%+,零大输</td></tr>
   </table>
-  <p class="big" style="margin-top:1.2rem; font-size:1.1rem;">规模分带:<1k <b>0.372 全胜48/48</b> · 1k-10k 0.556 · 1万-10万 1.035(分水岭) · >10万 <b>1.398</b><br>
-  <span style="color:var(--muted);">治疗效应实锤:带状族 8 阵夜对夜 −30%(bloweybl 5.0×→1.56×);aggregate 波动=微阵测量夜噪声,已定位并定协议改进(min-of-N)</span></p>
-  <div class="notes"><b>P9(3′)不可砍</b>。口径纪律=信誉:同夜配对/ocean跨夜一致性0.9966/全相位sidecar可后验。Q&A"337还输19%"→kernel层(accumulate/compact),调度已榨干(部署>oracle)。</div>
+  <p class="big" style="margin-top:1.2rem; font-size:1.1rem;">规模分带:<1k <b>0.372 全胜48/48</b> · 1k-1万 0.556 · 1万-10万 1.035(分水岭) · >10万 <b>1.398</b><br>
+  <span style="color:var(--muted);">治疗效应实锤:带状族 −30%(bloweybl 5.0×→1.56×);aggregate 波动=微阵测量噪声,已定位并改进协议(min-of-N)</span></p>
+  <div class="notes"><b>P10(3′)不可砍</b>。口径纪律=信誉:同夜配对/ocean跨夜一致性0.9966/全相位sidecar可后验。Q&A"337还输"→kernel层,调度已榨干(部署>oracle)。</div>
 </section>
 
-<!-- P10 路由金矿 -->
+<!-- P11 路由金矿 -->
 <section class="slide">
-  <div class="kicker">06 · 路由金矿——本周主战役</div>
+  <div class="kicker">下半场 · 路由金矿——本周主战役</div>
   <h2>三层挖掘,每层都有定谳边界</h2>
   <table style="font-size:1.0rem;">
     <tr><th>层</th><th>发现</th><th>收益</th><th>怎么来的</th></tr>
-    <tr><td><b>① 预门</b></td><td>老 dispatcher 方向从没错过(337 零 merge3 路由),亏在<b>决策机器自税 4%</b></td><td>1.0331→<b>0.9486</b></td><td>相位份额+路由痕迹法医分析</td></tr>
+    <tr><td><b>① 预门</b></td><td>老 dispatcher 方向从没错过,亏在<b>决策机器自税 4%</b></td><td>1.0331→<b>0.9486</b></td><td>相位份额+路由痕迹法医分析</td></tr>
     <tr><td><b>② logit 重训</b></td><td>四变量公式权重还是 8 月 100 阵时代的</td><td>f100 <b>−5.6%</b></td><td>91 张 merge3 标签补测,LOO 94.5%</td></tr>
-    <tr><td><b>③ 带状族</b></td><td>输面第一族(5× 输)的解药一直在 C 臂里,只是没人路由过去</td><td>治疗组 <b>−30%</b></td><td>输面结构画像:skew>1700∧avg<10</td></tr>
+    <tr><td><b>③ 带状族</b></td><td>输面第一族(5× 输)的解药一直在 C 臂里,没人路由过去</td><td>治疗组 <b>−30%</b></td><td>输面结构画像:skew>1700∧avg<10</td></tr>
   </table>
-  <p class="big" style="margin-top:1.2rem; font-size:1.05rem;">**前沿曲线**(预注册验证):无证书的学习选择,GM 与无回归<b>不可兼得</b>(1.0012↔14阵回归 vs 1.0141↔干净但白干)——<b>证书必要性被我们自己的数据反证法钉死</b>。S3 终审:9 指控→min5 协议翻案 6 无罪→真尾 <b>2 阵 171µs</b>。</p>
-  <div class="notes"><b>P10(3.5′)</b> 本页是"金子"主线:三层各有机理有数字有边界。前沿曲线一句带过(细节在 Q&A 弹药)。方法学彩蛋:亚毫秒阵单发跨日不可作证据(6/9 翻案率)。</div>
+  <p class="big" style="margin-top:1.2rem; font-size:1.05rem;"><b>前沿曲线</b>(预注册验证):无证书的学习选择,GM 与无回归<b>不可兼得</b>——<b>证书必要性被我们自己的数据反证法钉死</b>。S3 终审:真尾 2 阵 171µs。</p>
+  <div class="notes"><b>P11(3.5′)</b> "金子"主线:三层各有机理有数字有边界。彩蛋:亚毫秒阵单发跨日不可作证据(6/9 翻案率)。</div>
 </section>
 
-<!-- P11 证据链 -->
+<!-- P12 证据链 -->
 <section class="slide">
-  <div class="kicker">06 · 证据链(审稿人级自证)</div>
+  <div class="kicker">下半场 · 证据链(审稿人级自证)</div>
   <h2>口径、泄露、泛化——三问三答</h2>
   <div class="row">
     <div class="card"><h3>口径一致吗?</h3><ul class="tight">
       <li>同夜配对(环境漂移两边等量吸收)</li>
-      <li>输入上载/输出回传双方排除;输出后处理双方计入(<b>源码行号级</b>验证 ocean epilogue 在计时圈内)</li>
+      <li>输入上载/输出回传双方排除;输出后处理双方计入(<b>源码行号级</b>验证)</li>
       <li>唯一不对称:ocean 多付决策 D2H——<b>方向对我们有利,如实声明</b></li></ul></div>
     <div class="card"><h3>泄露了吗?</h3><ul class="tight">
       <li>诚实:f100 logit 训练=评测(91 阵重叠)</li>
-      <li>但 <b>悲观界</b>:重训增量全是幻觉→并集仍 <b>0.9979&lt;1.0</b>(预门+8月概念层扛住,二者训练数据与 f100 不相交)</li>
+      <li><b>悲观界</b>:重训增量全是幻觉→并集仍 <b>0.9979&lt;1.0</b></li>
       <li>LOO 94.5% + 跨种群退化如实展示</li></ul></div>
-    <div class="card"><h3>泛化吗?(进行中)</h3><ul class="tight">
-      <li>每条规则有物理机理(带状/对角/决策成本),非魔法数</li>
-      <li><b>held-out 246 阵池</b>批进行中(与本轮全部拟合不相交)</li>
-      <li>can×8 到位后=f100 真 held-out</li></ul></div>
+    <div class="card"><h3>泛化吗?</h3><ul class="tight">
+      <li><b>held-out 70 阵</b>(与全部拟合不相交):调度增益 <b>+22.3%</b> 复现</li>
+      <li><b>S3 = 0/70 阵</b>回归>1.10,胜率 93%</li>
+      <li>每条规则有物理机理(带状/对角/决策成本)</li></ul></div>
   </div>
-  <div class="notes"><b>P11(2.5′)</b> 这页是"工作的成色":主动把审稿人三问答在前面。悲观界算法:91×ln(0.5259)+336×ln(1.187) 的组合,细节 Q&A。</div>
+  <div class="notes"><b>P12(2.5′)</b> 主动把审稿人三问答在台上——"不是没有泄露点,是泄露点被量化锁死并用实验裁决"。</div>
 </section>
 
-<!-- P12 独立发现 -->
+<!-- P13 发现+下一步 -->
 <section class="slide">
-  <div class="kicker">07 · 独立发现(论文素材)</div>
-  <h2>四个"成败都有"的发现</h2>
-  <ul class="tight big" style="font-size:1.1rem;">
-    <li><b>否定结果</b>:逐行 kernel 时间 ≠ 系统成本(集体效应;337 相位数据背书)——"看哪儿都快、加起来就是慢"的机制图谱;</li>
-    <li><b>dense_count 取舍悖论</b>:精确计数相位<b>最贵</b>的地方,恰是消灭它<b>最亏</b>的地方(份额 15-25% 桶 CD/C=1.13)——"不偷生态"的定量版;</li>
-    <li><b>基准碎片化</b>:三套领域基准两两重叠 ≤1 阵(实测)——428 并集=对评测惯性的正面回应;</li>
-    <li><b>SiO2 类翻面</b>:修管线改变最优调度(A 超默认 C 3.75%)——"先修管线再学调度"的方法论依据。</li>
+  <div class="kicker">下半场 · 发现与下一步</div>
+  <h2>独立发现(论文素材)& 攻坚队列</h2>
+  <ul class="tight big" style="font-size:1.02rem; margin-bottom:1.2rem;">
+    <li><b>逐行 kernel 时间 ≠ 系统成本</b>(集体效应)· <b>dense_count 取舍悖论</b>(最贵处恰是消灭它最亏处)· <b>SiO2 翻面</b>(修管线改变最优调度)· 基准碎片化实测</li>
   </ul>
-  <p class="sub" style="margin-top:1.5rem; font-size:1.0rem;">另:merge3 双雷修复(值级+性能同修,SASS 审计路径)/CD 溢出雷已定位待修/亚毫秒测量协议学。</p>
-  <div class="notes"><b>P12(2′)</b> 每条一句话,深挖留给 Q&A。这页体现"深度":不是只有赢的数字,还有机理层的发现。</div>
-</section>
-
-<!-- P13 下一步 -->
-<section class="slide">
-  <div class="kicker">08 · 下一步</div>
-  <h2>剩余空间与排期</h2>
   <ul class="tight big">
-    <li><b>kernel 层主攻</b>:巨型低均度网格族(delaunay/road,2.2-2.4× 输,337 剩余差距的主体)——中带 hybrid-hash(HSMU 机理)vs D2 二择一;compact+sort 对齐 ocean ~3%</li>
-    <li><b>held-out 泛化批</b>(进行中)+ can×8 补全 → 泄露终审</li>
-    <li><b>L1 行级调度</b>(预注册成败线 P≈25-40%):46 万行数据+行级 oracle 分析</li>
-    <li><b>论文四节</b>:并集记分/三层路由全链证据/前沿曲线+证书/否定结果与取舍悖论——素材已齐,汇报后冲刺</li>
+    <li><b>kernel 主攻</b>:梯 2-3 小表人群(rgg 1.83×/StocF 2.5×,accumulate 相位)——先 ncu 取证再开刀</li>
+    <li><b>FLAT 条目级拷贝转正</b>(受影响组 +9.1% 已实锤)· <b>L1 行级</b>(预注册成败线)· <b>论文四节</b>(素材已齐,汇报后冲刺)</li>
   </ul>
-  <p class="sub" style="margin-top:2rem;">评测立场:双方基准之并(428),无懈可击。</p>
-  <div class="notes"><b>P13(1.5′)</b> Q&A"时间表":held-out 本周→kernel 主攻(网格族)→L1→论文完稿。</div>
+  <p class="sub" style="margin-top:1.5rem;">评测立场:双方基准之并(428),无懈可击。</p>
+  <div class="notes"><b>P13(2′)</b> 发现一句话一个;下一步按队列讲。收尾金句:"小阵碾压、中阵均势、大阵落后——调度已交满分卷,剩下的仗在 kernel 层。"</div>
 </section>
 
 <!-- P14 附录 -->
@@ -276,32 +256,17 @@
   <h2>数字口径与数据源(备 Q&A)</h2>
   <table style="font-size:.9rem;">
     <tr><th>数字</th><th>口径/日期</th><th>数据源</th></tr>
-    <tr><td>部署系统 0.9486/0.9588(两夜)</td><td>10-17/18 同夜配对,WARMUP_N=3,tag timed-confirm428+</td><td>compare/batch437/confirm{,3}_428.csv</td></tr>
+    <tr><td>部署系统 0.9486/0.9588/0.9560(三夜)</td><td>10-17/18/19 同夜配对,WARMUP_N=3</td><td>compare/batch437/confirm{,3,4}_428.csv</td></tr>
     <tr><td>oracle 0.9684 / A 1.0139 / C 1.0517</td><td>10-15/16 batch437(428×5 列)</td><td>compare/batch437/batch_437.csv</td></tr>
-    <tr><td>带状族治疗 −30%</td><td>两夜同阵直接对比(8 阵)</td><td>confirm vs confirm3</td></tr>
-    <tr><td>悲观界 0.9979</td><td>f100 退回老 logit 水平的重算</td><td>study/48+对话审计</td></tr>
+    <tr><td>带状族治疗 −30% / FLAT +9.1%</td><td>同阵直接对比/同会话 A/B</td><td>confirm3 vs confirm / study/49</td></tr>
+    <tr><td>悲观界 0.9979 / held-out 22.3% 零尾</td><td>重算 / 70 阵不相交人群</td><td>study/48 + heldout_246.csv</td></tr>
     <tr><td>相位份额/规模分带/输面画像</td><td>批437 sidecar 全相位</td><td>compare/batch437/ANALYSIS-428.md</td></tr>
-    <tr><td>口径审计(含 ocean epilogue 源码验证)</td><td>10-17,SpGEMM.cuh 行号级</td><td>compare/batch437/CALIBRATION.md</td></tr>
-    <tr><td>337 旧记分 C 1.2714(历史层)</td><td>10-14 同日配对(被 batch437 取代)</td><td>compare/README.md manifest</td></tr>
+    <tr><td>口径审计(ocean epilogue 源码验证)</td><td>SpGEMM.cuh 行号级</td><td>compare/batch437/CALIBRATION.md</td></tr>
   </table>
-  <p class="sub" style="font-size:.92rem;">材料包:report-1021/(01 脉络 · 02 全景 · 03 查新 · slides);数据 manifest=compare/README.md(唯一事实源)</p>
-  <div class="notes"><b>P14</b> 不主动讲,被问数字时翻到这页——每个数字带日期+数据源。</div>
+  <p class="sub" style="font-size:.92rem;">材料包:report-1021/(01 脉络 · 02 全景 · 03 查新 · slides);数据 manifest=compare/README.md</p>
+  <div class="notes"><b>P14</b> 不主动讲,被问数字时翻到这页。</div>
 </section>
 
-<script>
-const slides=[...document.querySelectorAll('.slide')];let cur=0;
-const pager=document.getElementById('pager');
-function show(i){cur=Math.max(0,Math.min(slides.length-1,i));
-  slides.forEach((s,k)=>s.classList.toggle('active',k===cur));
-  pager.textContent=(cur+1)+' / '+slides.length;}
-document.addEventListener('keydown',e=>{
-  if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown')show(cur+1);
-  else if(e.key==='ArrowLeft'||e.key==='PageUp')show(cur-1);
-  else if(e.key==='n'||e.key==='N')document.body.classList.toggle('show-notes');
-  else if(e.key==='p'||e.key==='P')window.print();
-  else if(e.key==='Home')show(0); else if(e.key==='End')show(slides.length-1);});
-document.addEventListener('click',e=>{if(e.clientX>innerWidth*0.7)show(cur+1);else if(e.clientX<innerWidth*0.3)show(cur-1);});
-show(0);
 </script>
 </body>
 </html>
