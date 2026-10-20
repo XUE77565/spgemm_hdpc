@@ -151,6 +151,67 @@ pre.diagram{font-family:"Menlo","Consolas",monospace;font-size:.85rem;line-heigh
 <div class="notes"><b>P5(2.5′)</b> 左卡白话讲hash占座.右卡演进线一句话.下方图:"这是标准两遍工作流."</div>
 </section>
 
+
+<!-- P5b IA-SpGEMM -->
+<section class="slide">
+<div class="kicker">调度线 · IA-SpGEMM(ICS'19)——逐阵学习调度第一枪</div>
+<h2>MatNet:一个深模型替你选算法</h2>
+<div class="row" style="margin-bottom:1rem;">
+<div class="card" style="flex:1.3;">
+<h3>它做了什么</h3>
+<div class="big" style="font-size:1.0rem;line-height:1.7;">
+<p>训练了一个叫 <b>MatNet</b> 的深度模型,输入是新矩阵的特征——行统计量(行长、偏斜度等)加上<b>矩阵密度图</b>(把矩阵切成小格子,每格记录密度,就像给矩阵拍低分辨率照片)——模型直接输出:</p>
+<p style="margin-top:.5rem;"><b>"这个矩阵该用 CSR 格式 + hash 算法"</b>,或 <b>"用 ELL + 归并"</b>,或 <b>"用 COO + 排序"</b>。</p>
+<p style="margin-top:.5rem;">训练数据:2700+ SuiteSparse 矩阵 × 每种组合实测 → 标签 = 最优组合。</p>
+<p style="margin-top:.5rem;color:var(--muted);">纯预测——不在新矩阵上跑任何实验,直接告诉你答案。</p>
+</div>
+</div>
+<div class="card">
+<h3>贡献(必须承认)</h3>
+<ul class="tight" style="font-size:.95rem;">
+<li>第一次把"选算法"当成学习问题</li>
+<li>证明了选对=白赚(不同矩阵最优选择差异巨大)</li>
+<li>input-aware 旗帜立起来了</li>
+</ul>
+<h3 style="margin-top:.8rem;">局限(=我们的入口)</h3>
+<ul class="tight" style="font-size:.95rem;">
+<li><b>单层黑盒</b>:一个模型包揽一切——不知道有些决策其实有公式可解</li>
+<li><b>无安全网</b>:选错了没有任何运行时兜底</li>
+<li>粒度:选的是 format 变体,不是管线配置</li>
+</ul>
+</div>
+</div>
+<p class="big" style="font-size:1.0rem;">这两个局限——<b>不分层</b>和<b>无证书</b>——恰好就是我们三层裁定架构的两个入口。</p>
+<div class="notes"><b>P5b(2′)</b> 指左图:"MatNet吃特征直接预测,不跑实验."右卡先讲贡献(尊重先行者),再温和讲两个局限.语气:承认+指出空白.</div>
+</section>
+
+<!-- P5c HSMU -->
+<section class="slide">
+<div class="kicker">kernel 线 · HSMU(HPCA'25)——bitmap 累积器</div>
+<h2>从"hash 表"到"位图 mask":解决 smem 浪费</h2>
+<div class="row" style="margin-bottom:.8rem;">
+<div class="card" style="flex:1.3;">
+<h3>它做了什么</h3>
+<div class="big" style="font-size:1.0rem;line-height:1.65;">
+<p>传统 hash 表的问题:每个槽要存 key + value = <b>12 字节</b>,但大部分槽是空的——共享内存严重浪费。</p>
+<p style="margin-top:.5rem;">HSMU 的做法:不用 hash 表,改用<b>全矩阵位图 mask</b>——每个列位置只占 <b>1 bit</b>(有值/无值)。乘积写入时对位图做 atomicOr(置 1),提取时扫描位图,有 1 的位置就是输出列。</p>
+<p style="margin-top:.5rem;">空间:位图 = A_rows × A_cols / 8 字节(整个矩阵),远小于同规模的 hash 表。</p>
+<p style="margin-top:.5rem;">然后按行的乘积数分桶(bin),不同桶派不同 kernel。</p>
+</div>
+</div>
+<div class="card">
+<h3>与我们的关系</h3>
+<ul class="tight" style="font-size:.95rem;">
+<li><b>同族但实现独立</b>:我们的 dense 梯子用<b>span 窗口位图</b>(只对行的列区间开窗,空间 O(span) 而非 O(n²))</li>
+<li>巨鲸行 <b>0.46-0.78×</b> vs ocean(我们的窗口化更高效)</li>
+<li>它的 <b>338 阵评测集</b>:与 ocean 337 重叠 = <b>0</b>——基准碎片化实证</li>
+</ul>
+<h3 style="margin-top:.6rem;">一句话定位</h3>
+<p style="font-size:.95rem;">bitmap/SPA 是 Gustavson 以来公共形态,三方(我们/ocean/HSMU)各有窗口化/分桶策略——我们的贡献是<b>档位梯 × 行自适应路由</b></p>
+</div>
+</div>
+<div class="notes"><b>P5c(2′)</b> 白话:"hash表12字节一个槽太浪费,它改成1 bit一个位置,省了smem."右卡讲我们同族但窗口化更省.338阵=碎片化证据.</div>
+</section>
 <!-- P6 -->
 <section class="slide">
 <div class="kicker">谱系⑥深讲 · ocean(ICS'26)——当前SOTA,我们头号对手</div>
@@ -223,7 +284,7 @@ pre.diagram{font-family:"Menlo","Consolas",monospace;font-size:.85rem;line-heigh
 
 <!-- P8 -->
 <section class="slide">
-<div class="kicker">四篇看完 · 三条贯穿线</div>
+<div class="kicker">六篇看完 · 三条贯穿线</div>
 <h2>四十八年收进三句话 <span class="en">——空白在哪</span></h2>
 <ul class="tight big" style="font-size:1.15rem;margin-bottom:1.5rem;">
 <li><b>Kernel 线</b>:累积器一分为六,合于混合——但停在<b>累积器级</b>,没人做<b>管线形态级</b>分发;</li>
