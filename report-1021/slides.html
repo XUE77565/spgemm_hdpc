@@ -231,10 +231,31 @@
         <tr><td>自纠</td><td><b>无判废证书、无回退</b>——retry 只保正确</td></tr>
         <tr><td>评测</td><td>自选 337 阵(∩ HSMU 338 = <b>0</b>)——碎片化</td></tr>
       </table>
-      <p style="font-size:.9rem; margin-top:.6rem;">加速比(其论文):vs spECK 1.4× / opSparse 2.6× / Tile 3.5× / HSMU 2.0×</p>
+      <img src="slides_figs/ocean_fig7_speedup.png" style="max-width:90%; border-radius:8px; border:1px solid var(--line); margin-top:.5rem;">
+      <p style="font-size:.85rem; margin-top:.3rem;">vs spECK 1.4× / opSparse 2.6× / Tile 3.5× / HSMU 2.0×(A100)</p>
     </div>
   </div>
   <div class="notes"><b>P6(3′)最重的文献页</b>。左图从上到下走一遍流程,右表逐行讲我们的发现。每一行通向我们的一张牌。语气:对手很强,我们解剖到源码行号。</div>
+</section>
+
+<!-- P6b ocean 深度:估计+消融 -->
+<section class="slide">
+  <div class="kicker">重点篇目 ④ 续 · ocean 深入:估计与消融</div>
+  <h2>HLL 估计怎么工作 + 优势从哪来</h2>
+  <div class="row" style="margin-bottom:.8rem;">
+    <div class="card" style="flex:1;">
+      <h3>HLL 估计机制(其论文 Figure 3)</h3>
+      <img src="slides_figs/ocean_fig3_hll.png" style="max-width:100%; border-radius:8px; border:1px solid var(--line);">
+      <p style="font-size:.88rem; margin-top:.4rem;">每行构造一个 HyperLogLog sketch → merge 到全局 sketch → 从最大前导零位数估算 distinct 值个数。误差 ~1-2%。</p>
+    </div>
+    <div class="card" style="flex:1;">
+      <h3>消融:优势从哪来(Figure 9)</h3>
+      <img src="slides_figs/ocean_fig9_ablation.png" style="max-width:100%; border-radius:8px; border:1px solid var(--line);">
+      <p style="font-size:.88rem; margin-top:.4rem;">V2=估计工作流(主增益 1.30×) → V3=辅助 kernel(+3%) → V4=混合累积器(+6%) → 总体 1.25×(vs 基线 V1)。<b>337 阵中 163(48%) 被分析步送回精确 symbolic。</b></p>
+    </div>
+  </div>
+  <p class="big" style="font-size:1.0rem;"><b>我们的定谳</b>:ocean 的"运行时自纠" = 溢出 <b>retry</b>——没有判废证书、没有回退目标。<b>估计是门控 niche,不是万能默认</b>(与我们 CD 定谳完全同构)。</p>
+  <div class="notes"><b>P6b(2′)</b> 左图讲 HLL 怎么估(sketch+merge+零位数);右图讲消融(主增益来自估计,但 48% 回精确)。收:"retry 是空白=我们证书的入口"。</div>
 </section>
 
 <!-- P7 全景时间轴 -->
