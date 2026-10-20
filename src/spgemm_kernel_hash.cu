@@ -3936,19 +3936,22 @@ __global__ void hash_esc64_kernel(
         double ovA = __shfl_sync(0xffffffffu, vA, k);
         int okB = __shfl_sync(0xffffffffu, kB, k);
         double ovB = __shfl_sync(0xffffffffu, vB, k);
-        bool vA_ = okA != 0x7fffffff && okA != -1, vB_ = okB != 0x7fffffff && okB != -1;
+        // 守卫=【我自己】的键有效(n23 超计根因:旧版用广播方 lane k 的 B 有效性(vB_)做外层门,
+        // 当 k 无 B 槽时整块被跳过——连本该触发的 A-B 夺领导也跳过 → A/B 同键双双当 leader,超计 ~4/行;
+        // 独立复现件 /tmp/esc64_fix.cu 定谎,22/22 对齐)
+        const bool myA = kA != 0x7fffffff && kA != -1, myB = kB != 0x7fffffff && kB != -1;
         // —— 对我的 A 键(虚拟 t;B 槽同键恒不夺领导[t+32>t],但其值要被领导者吸收)——
-        if (vA_) {
+        if (myA) {
             if (okA < kA) smallerA |= (1ull << k);
             else if (okA == kA && k != t) { sumA += ovA; if (k < t) leadA = false; }
-            if (okB == kA) sumA += ovB;
+            if (okB == kA) sumA += ovB;   // 哨兵恒不等,无需 vB_ 守卫
         }
-        // —— 对我的 B 键(虚拟 t+32;A 槽同键恒夺领导[k<t+32])——
-        if (vB_) {
-            if (vA_ && okA < kB) smallerB |= (1ull << k);
-            if (vA_ && okA == kB) { sumB += ovA; leadB = false; }
+        // —— 对我的 B 键(虚拟 t+32;A 槽同键恒夺领导[k<t+32];广播 A 的哨兵 0x7fffffff 恒不等于 kB)——
+        if (myB) {
+            if (okA < kB) smallerB |= (1ull << k);
+            if (okA == kB) { sumB += ovA; leadB = false; }
             if (okB < kB) smallerB |= (1ull << (k + 32));
-            else if (okB == kB && k != t) { sumB += ovB; if (k < t) leadB = false; }   // B-B 同键:低 lane 夺领导(nnz 红旗修复:漏此句则双 B 都写=超计)
+            else if (okB == kB && k != t) { sumB += ovB; if (k < t) leadB = false; }   // B-B 同键:低 lane 夺领导
         }
     }
     __syncwarp();
