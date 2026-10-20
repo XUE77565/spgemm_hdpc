@@ -6,10 +6,11 @@
 
 ## 状态机(值守 loop 按序推进,勾选留痕)
 
-- [ ] A accumulate 取证(新 top 输家四阵):Long_Coup_dt6/ldoor/rgg_n_2_22_s0/StocF-1465
-      ①相位份额(我 A 臂 sidecar vs ocean ocn_stats)定位 2.2-3.9× 集中在哪个相位
-      ②DUMP_ROUTING 看 bkid 分布(哪类 kernel 伺候它们的行)
-      ③输出:差距解剖 + 下一刀候选排序(纯分析零风险)
+- [x] A 取证(10-20 午后):**差距集中 accumulate**(rgg 33vs18=1.83×/StocF 15vs6=2.5×/ldoor 28vs21=1.33×;
+  Long_Coup 已平 1.04×,confirm4 的 3.9× 为 FLAT 前旧数)。**人群钉死:中 est(64-1024)×
+  中高 dup 的梯 2-5 行**——ldoor est273/dup9.5(CAS 自旋墙本尊)/StocF est117·92%梯3/
+  rgg est81 dup2.6。**= ocean §3.3 混合累积器靶区**(索引smem/值gmem原生FP64 RED 绕开
+  smem double CAS 墙)。ocean 对 rgg/StocF 走 symbolic 工作流(其 numeric 更快是主因)。
 - [ ] B CD 溢出修雷(study/47):定位 DCEST 链的 int32 C_nnz/margin → long long 化 +
       负值即判废 + cudaMalloc size_t 卫兵;build → 门:c-73/c-73b CD 臂出值且
       Result C nnz == C 臂(值级 WRITE_MTX 门二选一)→ 控制阵无害 → commit
