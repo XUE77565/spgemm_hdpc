@@ -7122,12 +7122,21 @@ static void hash_product(
     prof("compact+sort", [&]{
         static int g_cs_v2 = -1;   // CSORT_LADDER:默认 v2 开(×5 电池 geomean −6.4%,study/07);=legacy 回旧
         if (g_cs_v2 < 0) { const char *e = getenv("CSORT_LADDER"); g_cs_v2 = (e && !strcmp(e, "legacy")) ? 0 : 1; }
-        // COMPACT_FLAT(study/49 K2',默认关):条目级并行拷贝一次性覆盖拷贝桶(bin0/19/21-23),
-        // 循环里对应分支跳过;csort/k7/dense 桶路径不变
+        // COMPACT_FLAT(study/49 K2';10-21 转正默认开):条目级并行拷贝一次性覆盖拷贝桶(bin0/19/21-23),
+        // 循环里对应分支跳过;csort/k7/dense 桶路径不变。转正依据:15/15 同会话 A/B 无罪
+        // (flat_ab/ab_raw*.log,10-21)+ 预门短路(拷贝桶零行阵免税);=0 回退旧行为
         static int g_cflat = -1;
-        if (g_cflat < 0) { const char *e = getenv("COMPACT_FLAT"); g_cflat = (e && *e && atoi(e) > 0) ? 1 : 0; }
+        if (g_cflat < 0) { const char *e = getenv("COMPACT_FLAT"); g_cflat = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }
         bool flat_on = g_cflat && !in_place && !(dense_mode || dense_win_mode)
                        && C_nnz_result > 0 && !att;
+        // 预门(10-21):拷贝桶行数=0 的阵连 count kernel+D2H 同步都不付(h_cnt 已在 host;
+        // ldoor/Long_Coup 类全 hash 梯阵原白付一趟)。零行 → h_ce 必 0 → 门必败,语义不变。
+        if (flat_on) {
+            long long copy_rows = (long long)h_cnt[0] + h_cnt[BIN_BATCH_S]
+                + (long long)h_cnt[BIN_ESC8] + h_cnt[BIN_ESC16] + h_cnt[BIN_ESC32]
+                + (BIN_ESC64 < N_BINS ? h_cnt[BIN_ESC64] : 0);
+            if (copy_rows == 0) flat_on = false;
+        }
         if (flat_on) {   // 条目覆盖门(wb-edu 教训:行比例≠条目比例,浪费随条目数涨):
                         // 拷贝桶条目占比 ≥50% 才放行,否则全量条目线程空转二分
             int *d_ce = (int*)dev_alloc(sizeof(int));
