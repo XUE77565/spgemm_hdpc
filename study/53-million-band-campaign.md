@@ -154,3 +154,18 @@ ocean 工作流分布:>100k 上 wf0 精确 64 / wf1 估计 57 / wf2 usparse 26�
 - [ ] **下一优先 = T3(ESC 覆盖带 33 阵 @1.95×,usparse 对位)**——账面价值十倍于 T4b
 - [ ] T4b(bin2-3 内环瘦身,StocF 残余 1.18×)降级为 T3 后的收尾刀
 - [ ] T5 k7 人口门(bloweybq 单阵 2.3×)+ 预门带状例外
+
+### T3 设计简报(10-21,机理存档自 AccumulatorESC.cuh:71-131)
+
+ocean usparse 主形态 = `countSortCompactFused<NTHREADS>`(N∈{16,32,64,128}):
+- 每线程一乘积(串行走位定位,O(k));smem 暂存 (key,val) 于线程序;
+- **O(N²) 全对扫描**:同键→聚值+首现 leader;小键→bitmap 计秩;
+- `__ballot` 收 leaders → n=popc;position=popc(bitmap∧leaders)=有序位;
+- leader 直写输出槽——**排序+去重+写出一次融合,零原子零表零探测**;
+- 外层:ESCKernelDispatcher 每块多行×子组;outlier(product_num>NTHREADS)二次发射。
+
+**我方 ESC64 尸检对照(study/50)**:死因=shfl 双键(64bit 键 2× shfl/访问)>表税;
+他们的 O(N²) 用 **smem 广播读**(LDS broadcast 每槽 N 读廉价)。
+→ T3 刀 = flop∈(32,128] 行建 warp 秩排序路径(smem 暂存+ballot leader+秩直写,
+flop 精确已知免溢出机器),NOT 复活旧 ESC64(shfl 形态)。
+预注册:受影响人群 accumulate ≥20% ∧ delaunay 全阵 ≥10% ∧ 值门三件套。
