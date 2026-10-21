@@ -120,3 +120,14 @@ spec81 的 9 月全局默认在 B16/LHT 时代后反转(旧 512→256 日班扩�
 **值门**:pre2 PASS(1.6 亿条目,col/序全同,worst_rel 1.09e-27=原子序噪声带);StocF 比对中。
 **记分**:confirm6(今晚)盖 FLAT+T4a 联合部署分。
 **残余**:StocF 7.22 vs ocean 6.12 = 1.18×——T4b(内环瘦身)的剩余靶。
+
+## 十一、para 族定谳(10-21 晚,新 #1 残余族,7 阵 @2.0-2.2×)
+
+**逐行对拍反转**:para-9 hash 人口我方每行快一倍(Σ 0.53×,bin4 0.35×/bin5 0.44×,
+dup 3-8 占 89%)——hash 战场我们赢。
+**nsys 定罪**:`hash_dense_window_kernel`(**diter 臂,BIN_DITER=13**)7.25ms = 我方最大单相;
+ocean 同人群走 `hashNumeric<10,16253,HYBRID=1>`(16K hybrid,索引 smem/值 gmem)= 1.82ms
+——**diter 臂比 ocean hybrid 慢 4×**。dup<1.5 行我方反慢 1.90×(次要人群)。
+**刀向(T4c)**:para/atmosmod/cnr 类中重行的 BIN_DITER 路由收口——改派 hash_heavy
+(我方 2.22ms,距 ocean hybrid 仅 0.4ms)或直接缩 diter 人口;纯路由刀,无新 kernel。
+预注册:para 族 accumulate ≥40% 改善 ∧ 控制阵(c-64 等 diter 赢家阵)无害。
