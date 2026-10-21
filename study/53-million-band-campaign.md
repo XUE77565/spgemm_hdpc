@@ -212,3 +212,18 @@ ocean 同相位用 sortOutputFused。同理 nlpkkt80 3.0ms/cage14/CurlCurl。
    形态:ocean sortOutputFused 对位(排序+写出一趟)或条目级扩到 hash 行;
 2. **T4b 扩散版**(hash 梯 4-6 accumulate 效率);
 3. T5b/T3 二轮不变。
+
+### T5b 取证进展(10-22 深夜 loop)
+
+**四项硬事实**:
+1. vsp 219× = **hash_dense_count_kernel 单 kernel 爆 4.6s**(99.4%);k7 累积器本身干净
+   (315 行,accumulate 0.86ms,overflow=0);
+2. **跨迭代污染**:WARMUP_N=0 全快(3.9ms);pass1 快(4.1ms)、**pass2 同输入(dense_nr/Σest
+   全同)爆 4642ms(930×)**;K7=0 对照两轮全干净 → k7 特异;
+3. pass1→pass2 之间另有 **3.4s 主机侧空档**(不在任何相位内,未解释);
+4. dense_count kernel 本体每窗自初始化(窗0全写游标)——相同输入不可能异速 → **pass 间某
+   输入数组实质不同**(嫌疑:dstr_split 的 h_big_off/span 状态、分配复用、或 k7 行的
+   est/ovf 残留改变下游)。
+**下步**:pass 间输入对拍(dump spans/split/ovf 状态两轮 diff);修好 = k7 翻默认可能整体复活
+(万级 16 名将 + 分裂阵全兑现)。
+**本轮 loop 战果**:T4b 假设八证伪(§14)/T4d 假设九证伪(§15)/T5b 病灶定位到单 kernel+跨迭代。
