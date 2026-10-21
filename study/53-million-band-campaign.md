@@ -179,3 +179,15 @@ flop 精确已知免溢出机器),NOT 复活旧 ESC64(shfl 形态)。
 **定性**:延迟型慢(~128 smem 趟/线程 + 3×__syncthreads);下轮设计=**融合单趟**
 (leader/rank/聚值一趟,如 ocean 原版)+ warp-local ballot 形态(32 内全 shfl,64/128 拆
 两半各配一趟跨半修正),预算半天。
+
+### T5b 首取证点(10-21 深夜)
+
+vsp_model1(K7=1):k7 行仅 315,accumulate 0.86ms,overflow=0——**爆炸不在 k7 累积,
+在下游**(直写终态 exact_rp 与 est-gap/compact 的交互;219×=4579ms 量级疑似重试风暴
+或病态 compact)。T5b = 相位定位(nsys 一发)+行级门修复;靶阵赢面保留(bloweybq 2.27
+/hangGlider_3 1.70/pre2 1.56 均实测)。
+
+## 战役终态(10-21)
+
+- 部署定谳 = **FLAT+T4a+T4c,双夜 0.9183/0.9234**(单日 0.9486→~0.92,−3%);
+- T5 批级证伪回滚(k7 默认关);T3 停车入库;教训两条入账:筛面≠批级、聚合掩盖逐阵。
