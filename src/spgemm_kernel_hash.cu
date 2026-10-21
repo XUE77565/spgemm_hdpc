@@ -3362,7 +3362,7 @@ __global__ void compute_bucket_kernel(
     int force_est_min = 0,   // 决赛 v2 真强制
     int had_l1 = 0, int k7_on = 0,   // k7_on:BIN_K7 路由开关(env K7,默认关)
     int d6_on = 0, const int *d6_maxbl = nullptr,          // D6EXP:PVD 学生派发(study/36;默认关)
-    float d6_cr = 0.f, float d6_cs = 0.f, float d6_cm = 0.f, int d6_ncols = 0)          // HAD L1 路由修正(env HAD_L1,host 读取传入:est≥此值终判 BIN_DITER(覆盖全门;0=关)                  // OCCGATE 系数(默认 16;OCC_GATE_COEFF=10 已验证但停靠③阶段启用;env OCCGATE_COEFF —— REXP
+    float d6_cr = 0.f, float d6_cs = 0.f, float d6_cm = 0.f, int d6_ncols = 0, int ovr_se = 8)          // HAD L1 路由修正(env HAD_L1,host 读取传入:est≥此值终判 BIN_DITER(覆盖全门;0=关)                  // OCCGATE 系数(默认 16;OCC_GATE_COEFF=10 已验证但停靠③阶段启用;env OCCGATE_COEFF —— REXP
                                                   // 轮盘教训:crankseg −8.5 实为本门 est×16<span 边界
                                                   // 迁移,直接调门替代 est 侧信道;变小=更多重行留 hash)
                           //   1.63× → 表≈真需求 3.3× vs Ocean 1.75×;env HASH_TGT_ALPHA(200=legacy)
@@ -3540,7 +3540,12 @@ __global__ void compute_bucket_kernel(
     // HEAVY 候选行(e>CAP)无条件改判 DITER:全局内存原子(CAS ~600ns)比任何 dense
     // 窗扫描都贵——dup 门的"防 dense 浪费"逻辑在备选方案为 HEAVY 时不再适用。
     // SiO2:2373 行×1.74GB 全局表=3521ms;dense_direct 同人口 8.4ms=419× 差距。
-    else if (diter_thr > 0 && e > HASH_CAP) bid = BIN_DITER;
+    // study/54 §11(10-21)补经济学门:无条件改判对宽 span 行是灾难——para 族
+    // span/est=8.0(窗扫 8× 浪费,dense 7.25ms vs heavy 2.2ms);c-64=2.5/SiO2 小(窗经济,
+    // 关 diter 则 +8144%/+42469%)。门=span≤G×est(默认 G=4,实测分离 2.5 vs 8.0;
+    // DITER_OVR_SPANEST=0 回旧无条件行为)。
+    else if (diter_thr > 0 && e > HASH_CAP
+             && (ovr_se <= 0 || (long long)span_len[i] <= (long long)ovr_se * e)) bid = BIN_DITER;
     else if (e > HASH_CAP) bid = BIN_HEAVY;          // heavy:全局表(2026-08-25,不再回退 merge)
     else {
         int bi = 0, ht = WARP_SIZE;
@@ -5069,7 +5074,9 @@ static void hash_product(
     if (g_esc < 0) { const char *e = getenv("ESC_K"); g_esc = (e && *e) ? atoi(e) : 1; }
     static int g_esc64 = -1;     // study/50 靶1:flop∈(32,64] IPT=2 零表档(ESC64=1 开,默认关)
     if (g_esc64 < 0) { const char *e = getenv("ESC64"); g_esc64 = (e && *e && atoi(e) > 0) ? 2 : 0; }
-    int esc_on_pass = g_esc | g_esc64;   // 编码:1=32 档;2=64 档;3=全开
+    static int g_ovr_se = -1;   // DITER_OVR_SPANEST(study/54 §11):HEAVY→DITER 无条件改判的 span/est 经济学门;默认 8(边界扫描:G6 SiO2 破防 399ms/G8 SiO2 8.4+para 12.0+c-64 3.7 全绿/G12 para 回吐);0=旧无条件
+        if (g_ovr_se < 0) { const char *e_ = getenv("DITER_OVR_SPANEST"); g_ovr_se = (e_ && *e_) ? atoi(e_) : 8; }
+        int esc_on_pass = g_esc | g_esc64;   // 编码:1=32 档;2=64 档;3=全开
     static int g_diter_est_min = -1; static bool g_est_env = false;   // docs/76 §16:diter est 下限(默认 EST_DENSE_MIN/2;Ocean dense 分流启示)
     if (g_diter_est_min < 0) { const char *e = getenv("DITER_EST_MIN"); if (e && *e) { g_diter_est_min = atoi(e); g_est_env = true; } else g_diter_est_min = DITER_EST_TIER; }   // v33d 翻默认:档内行结构档 1024(超档老路径在 kernel 内钳 2048);g_est_env=显式实验值,小阵守卫不改写
     static int g_dstruct_win = -2;    // §22:-1 = 档位梯(span≤7277 五档联动);0 = 关;>0 = 手调单窗
@@ -5146,7 +5153,7 @@ static void hash_product(
         }
         compute_bucket_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_est, dA_rp, A_rows, EST_ULTRA_THR, d_flop, diter_thr_run, d_span_len, d_bkid, d_cnt, (g_dim2 || g_largest) ? A_cols : 0, g_spanf, g_occgate, g_ladder, g_batch2, g_sroute, ht_sroute, g_batch_s ? BATCH_S_EST_MAX : 0, g_largest, esc_on_pass, diter_est_min_run, g_dstruct_win, g_dim2, g_dtier_cmp, g_tgt_alpha,
             g_rexp_bk == 2 ? tbl_glo_bk : 0.0, g_rexp_bk == 2 ? tbl_ghi_bk : 0.0, g_rexp_bk == 2 ? tbl_elo_bk : 0, g_rexp_bk == 2 ? tbl_ehi_bk : 0, est_expand_final, g_occ_coeff, g_fdest, g_had_l1, g_k7,
-            g_d6, d6_maxbl, d6_cr, d6_cs, d6_cm, g_d6 ? A_cols : 0);
+            g_d6, d6_maxbl, d6_cr, d6_cs, d6_cm, g_d6 ? A_cols : 0, g_ovr_se);
         if (d_est_save) CHECK_CUDA(cudaMemcpy(d_est_save, d_est, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));   // est 快照:dense 路径后续会置零(D2TIER 工作量轴也吃)
         thrust::exclusive_scan(thrust::device_ptr<int>(d_cnt),
                                thrust::device_ptr<int>(d_cnt + N_BINS),

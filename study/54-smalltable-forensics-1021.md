@@ -131,3 +131,14 @@ ocean 同人群走 `hashNumeric<10,16253,HYBRID=1>`(16K hybrid,索引 smem/值 g
 **刀向(T4c)**:para/atmosmod/cnr 类中重行的 BIN_DITER 路由收口——改派 hash_heavy
 (我方 2.22ms,距 ocean hybrid 仅 0.4ms)或直接缩 diter 人口;纯路由刀,无新 kernel。
 预注册:para 族 accumulate ≥40% 改善 ∧ 控制阵(c-64 等 diter 赢家阵)无害。
+
+## 十二、T4c 落刀:DITER 覆盖条款的 span/est 经济学门(10-21 下午)
+
+**刀**:HEAVY→DITER 无条件改判(3553 行,SiO2 419× 保护条款)加
+`span ≤ 8×est` 门(`DITER_OVR_SPANEST`,默认 8,0=旧行为)。
+**边界扫描定谳**:G=6 SiO2 破防(399ms)/ **G=8 全绿(SiO2 8.4+para 12.0+c-64 3.7)** /
+G=12 para 回吐(14.2)——两人群边界恰好跨在 6-12,8 居中。
+**电池**:para-9/5/10 accumulate 15.7→**12.0(−23%)**;atmosmodj/d 2.6;保护阵
+SiO2 8.19/c-64 3.46/in-2004 20.2/bloweybq 8.04/nd24k 79.6/wb-edu 44.8 全部无损。
+**值门双 PASS**(para-9 1e-17 噪声带/atmosmodj 逐位全同)。
+**记分**:confirm7(今晚)盖 FLAT+T4a+T4c 三刀联合,兼作 0.9310 复夜。
