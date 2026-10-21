@@ -1045,9 +1045,6 @@ __global__ void k7_numeric_kernel(
     // 核内证书:flop−distinct ≤ K7_FIX_MAX(含防御带越界产品)→ 快道;否则 exch 慢道
     bool fast = (fl_tot - (int)cum[K7_W] <= K7_FIX_MAX);
     int obase = exact_rp[i];
-    if (blockIdx.x == 1 && threadIdx.x == 0) {
-        int j0 = A_col_idx[rs];
-            }
     if (k_idx < ak) {
         int j = A_col_idx[rs + k_idx];
         double a = A_val[rs + k_idx];
@@ -1077,10 +1074,6 @@ __global__ void k7_numeric_kernel(
             }
         }
     }
-    __syncthreads();
-    if (blockIdx.x == 1 && threadIdx.x == 0)
-        printf("[k7rb] i=%d obase=%d col0=%d col1=%d col2=%d val0=%.3f\n", i, obase,
-               (int)out_col[obase], (int)out_col[obase+1], (int)out_col[obase+2], out_val[obase]);
     __syncthreads();
     if (fast) {
         int nf = *fcnt;
