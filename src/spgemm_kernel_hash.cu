@@ -4694,7 +4694,7 @@ static void hash_product(
     //   (flop+maxbl 只依赖 rp + 本 chunk 的 A_ci 行区间);span(B_ci 随机访问)同步后补趟。
     //   收益 = count_flop 藏入 h2d 窗 + DVFS(docs/57:传输期干活让后继起点更暖)。
     static int g_h2dovl = -1;
-    if (g_h2dovl < 0) { const char *e = getenv("H2DOVL"); g_h2dovl = (e && *e) ? atoi(e) : 1; }
+    if (g_h2dovl < 0) { const char *e = getenv("H2DOVL"); g_h2dovl = (e && *e) ? atoi(e) : 0; }   // T5b(10-23)翻默认关:span 产出毒值(pass1即错,预存静默病)+计分口径平/微亏(重叠收益=藏h2d,不计分);H2DOVL=1 复活门
     // 门:avg B 行长 ≤ TINY_ROW_MAX_LEN(平方阵 = A_nnz/A_rows;h2d 时刻可判)——
     //   B 行短 → span 补趟的随机 B_ci 重走与主 pass 同量级(road 族实测 −15~−17%);
     //   B 行长(pre2/F2/nd24k,FEM 重乘积族)→ span 补趟 ≈ 整个 count 重做(+10~+34% 实测)→ 关
