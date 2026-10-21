@@ -1092,8 +1092,7 @@ __global__ void hash_dense_count_kernel(
     const int *span_lo /*nullable*/,
     const int *row_flop = nullptr, const int *row_maxbl = nullptr /*Phase B v2-lite*/,
     int cnt_w = DENSE_CNT_W /*DCFUSE:动态窗宽 = min(DENSE_CNT_W, ceil4(n)),小阵 occupancy↑*/,
-    int cnt_cursor = 0,                       // spec87:跨窗游标化(COUNT_CURSOR;0=每窗双二分旧行)
-    unsigned long long *dbg_win = nullptr, unsigned long long *dbg_lb = nullptr)   // T5b 取证:Σ窗数/Σ二分步数(null=零开销)
+    int cnt_cursor = 0)                       // spec87:跨窗游标化(COUNT_CURSOR;0=每窗双二分旧行)
 {
     int i = bucket_rows ? bucket_rows[blockIdx.x] : blockIdx.x;
     if (i >= A_rows) return;
@@ -1108,13 +1107,11 @@ __global__ void hash_dense_count_kernel(
     int lo0 = span_lo ? span_lo[i] : 0;
     int nw_win = (n - lo0 + cnt_w - 1) / cnt_w;
     for (int wi = 0; wi < nw_win; wi++) {
-        if (dbg_win && tid == 0) atomicAdd(dbg_win, 1ULL);
         int c0 = lo0 + wi * cnt_w, c1 = min(c0 + cnt_w, n);
         int w = c1 - c0;
         for (int j = tid; j < w; j += blockDim.x) csmem[j] = 0;
         __syncthreads();
         for (int p = rs + warp; p < re; p += nw) {
-            if (dbg_lb) atomicAdd(dbg_lb, 1ULL);
             int k = A_col_idx[p];
             int ks, ke;   // spec87:首窗双二分;后续窗 ks=上窗 ke 直传(免 c0 二分),ke 再 lb 一次
             if (use_cur && wi > 0) {
@@ -5427,11 +5424,6 @@ static void hash_product(
         const int *h_dense = h_both.data() + dense_nr;      // [n, 2n) = 行号
         const int *h_est = h_both.data() + 2 * dense_nr;    // [2n, 3n) = est(est 置零前快照)
         const int *h_alen = h_both.data() + 3 * dense_nr;   // [3n, 4n) = a_len(§26 成本律维)
-        {   // T5b 取证:逐轮输入指纹(pass 间污染定位,vsp k7 案)
-            unsigned long long ss = 0, se = 0, sr = 0, sx = 0; long long big = 0; int mx = 0;
-            for (int k_ = 0; k_ < dense_nr; k_++) { ss += (unsigned)h_sp[k_]; se += (unsigned)h_est[k_]; sr += (unsigned)h_dense[k_]; sx ^= ((unsigned)h_dense[k_] * 2654435761u) >> 8; if (h_sp[k_] > mx) mx = h_sp[k_]; }
-            dbg("[T5BFN] nr=%d sum_span=%llu sum_est=%llu sum_row=%llu xor_row=%llx maxspan=%d\n", dense_nr, ss, se, sr, sx, mx);
-        }
         std::vector<int> idx(dense_nr);
         for (int k = 0; k < dense_nr; k++) idx[k] = k;
         // ⚠ 按【档位索引】稳定排序,不按 span 排:稳定 = 同档内保持行号序(nsys 定谳:span 升序
@@ -5681,16 +5673,10 @@ static void hash_product(
 
                     if (!g_cnf && split_cnt && h_big_off < dense_nr) {   // 超档段:老窗式 count(#4' CNT_FUSE=1 跳过=免计数)
                         int old_nr = dense_nr - h_big_off;
-                        static unsigned long long *d_t5b = nullptr;   // T5b 取证:Σ窗/Σ迭代
-                        if (!d_t5b) d_t5b = decltype(d_t5b)(dev_alloc(2 * sizeof(long long)));
-                        CHECK_CUDA(cudaMemset(d_t5b, 0, 2 * sizeof(long long)));
                         hash_dense_count_kernel<<<old_nr, DENSE_BLK, csm>>>(
                             dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows, A_cols,
-                            d_row_nnz, d_rows_sorted + h_big_off, d_span_lo, d_flop, d_maxbl, cnt_w, g_ccur, d_t5b, d_t5b + 1);
+                            d_row_nnz, d_rows_sorted + h_big_off, d_span_lo, d_flop, d_maxbl, cnt_w, g_ccur);
                         CHECK_CUDA(cudaGetLastError());
-                        unsigned long long hw[2] = {0,0};
-                        CHECK_CUDA(cudaMemcpy(hw, d_t5b, 16, cudaMemcpyDeviceToHost));
-                        dbg("[T5BWIN] seg1 rows=%d win=%llu iter=%llu\n", old_nr, hw[0], hw[1]);
                     }
                     bcnt_launched = true;   // DSTRUCT 命中时不再走 BCNT/旧窗式
                 }
@@ -5717,17 +5703,10 @@ static void hash_product(
                 if (!bcnt_launched) {   // #4':CNT_FUSE 时收缩为仅梯段(老段免计数)
                     int cnt_nr = (g_cnf && d_rows_sorted) ? h_big_off : dense_nr;
                     const int *cnt_rows = (g_cnf && d_rows_sorted) ? d_rows_sorted : dense_rows;
-                    if (cnt_nr > 0) {
-                        static unsigned long long *d_t5b2 = nullptr;   // T5b 取证
-                        if (!d_t5b2) d_t5b2 = decltype(d_t5b2)(dev_alloc(2 * sizeof(long long)));
-                        CHECK_CUDA(cudaMemset(d_t5b2, 0, 2 * sizeof(long long)));
-                        hash_dense_count_kernel<<<cnt_nr, DENSE_BLK, csm>>>(
-                            dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows, A_cols,
-                            d_row_nnz, cnt_rows, cnt_rows ? d_span_lo : nullptr, d_flop, d_maxbl, cnt_w, g_ccur, d_t5b2, d_t5b2 + 1);
-                        unsigned long long hw2[2] = {0,0};
-                        CHECK_CUDA(cudaMemcpy(hw2, d_t5b2, 16, cudaMemcpyDeviceToHost));
-                        dbg("[T5BWIN] seg2 rows=%d win=%llu iter=%llu\n", cnt_nr, hw2[0], hw2[1]);
-                    }
+                    if (cnt_nr > 0)
+                    hash_dense_count_kernel<<<cnt_nr, DENSE_BLK, csm>>>(
+                        dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows, A_cols,
+                        d_row_nnz, cnt_rows, cnt_rows ? d_span_lo : nullptr, d_flop, d_maxbl, cnt_w, g_ccur);
                 }
                 CHECK_CUDA(cudaGetLastError());
                 unsigned long long *d_sums = decltype(d_sums)(dev_alloc(2 * sizeof(long long)));

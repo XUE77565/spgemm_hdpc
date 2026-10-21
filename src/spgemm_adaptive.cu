@@ -95,6 +95,12 @@ void spgemm_self_product_adaptive(
     if (avg < 2.0 && A_rows >= 10000) {
         use_hash = 1;
     }
+    // T4e(LLB skew 门,10-22):100≤skew≤1900(dispatcher 口径=maxrow/avg)人口开按行动态负载平衡
+    // 负载平衡(静态 G 分组在行长悬殊 k 集上尾部拖死)。电池:HTC×2 −44/−39%/c-66 −29%/
+    // email-Enron −14%/circuit_4 −6%;反面:cage/Emilia/StocF(行匀)+4~7%,bloweya
+    // (带状 3750)+47% → 带状族排除。LLB=0/1 显式 env 优先(缓存首读,须先于 hash 首调)。
+    if (use_hash && !std::getenv("LLB") && skew >= 100.0 && skew <= 1900.0)
+        setenv("LLB", "1", 1);
     if (use_hash && !band_family && !std::getenv("DITER_MIN_FLOP"))
         setenv("DITER_MIN_FLOP", "999999999", 1);   // dispatcher 的 hash 路径 A 等效;带状族例外(保留 diter=C 配置,金矿第二层)
     char why_buf[128];

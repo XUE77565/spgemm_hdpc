@@ -237,3 +237,21 @@ ocean 同相位用 sortOutputFused。同理 nlpkkt80 3.0ms/cage14/CurlCurl。
 - **剩余主嫌:多流竞态**(h2dovl = sC 拷贝流 + sK kernel 流 + 默认流,时序/布局敏感完美匹配症状);
 - **下 tick 动作**:剥仪器→重建→确认爆炸复现→对该构建跑 12.8 memcheck;阴性则 racecheck/synccheck。
   仪器全部 dbg 门控可安全保留;工具账:/usr/bin/compute-sanitizer 坏(缺注入库),用 cuda-12.8 版。
+
+### T4e 落地(10-23 凌晨):LLB skew 门——第九假设成立,首刀正向
+
+**发现链**:LLB(按行动态负载平衡,docs/27 旧机制默认关)在偏斜阵 −39~45%;
+边界连环翻车后定谳:**门 = skew∈[100,1900](dispatcher 口径)**——features.csv 的
+skew/avg 列与实算不一致(HTC 表 10 vs 实 1850;c-66 表 avg5.5 vs 实 10),特征表不可作门;
+**电池**:HTC×2 −44/−39% / c-64 −45%(3.45→1.90)/ c-66 −17% / email-Enron −14% /
+circuit_4 −6%;排除面零扰动(StocF/cage15 低 skew +4~7% 不进门,bloweya skew2000 排除)。
+**值门**:HTC+c-64 双 PASS(真门二进制;首版值门空对照教训:门二进制须与刀同源重建)。
+**部署**:dispatcher setenv LLB=1(显式 env 优先);confirm10 盖分中。
+
+### h2dovl 毒 span 案(10-23 凌晨,T5b 终局线索)
+
+vsp 219× 的最终病灶 = **h2dovl 重叠管线的 span 产出毒值**(pass1 已错:57K vs 同步
+154M;pass2 垃圾 −6e12)→ dense_count lo0 读毒。H2DOVL=0 两轮全净。**预存静默病,
+全生产线在毒 span 上跑**(lo0 错=全幅扫描=白付税,输出碰巧仍对)。racecheck/memcheck
+均 0 错(纯时序/顺序问题)。vsp A/B:重叠 236 vs 无重叠 192ms——**管线本身在倒贴**。
+下一步:全量 A/B → 若中性/更好 → H2DOVL 翻默认关 + k7 复活重试。
