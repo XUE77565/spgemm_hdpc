@@ -251,7 +251,7 @@ __global__ void row_span_only_kernel(
 #define HASH_CAP HASH_CAP_STRUCT
 #endif
 #define HASH_BLOCK HASH_BLOCK_STRUCT  // SM 占用单位(硬件手册)
-#define N_BINS 25    // …+ largest(20) + esc8/16/32(21-23) + esc64(24,study/50 靶1)
+#define N_BINS 26    // …+ largest(20) + esc8/16/32(21-23) + esc64(24,study/50) + esc_rank128(25,T3)
 #define BIN_SSPAN0 14   // span≤256(64线程/3.3KB,32+行/SM —— Ocean dense bin0 同位)
 #define BIN_ULTRA 11
 #define BIN_HEAVY 12
@@ -264,6 +264,7 @@ __global__ void row_span_only_kernel(
 #define BIN_ESC32 23    // flop≤32 → 32 线程子组(=v1 形态)
 #define INT_SENTINEL 0x7ffffffe   // ESC64 装载内部哨兵(区别于键哨兵 0x7fffffff)
 #define BIN_ESC64 24     // study/50 靶1(10-20):flop∈(32,64] → 1 warp/行、IPT=2;delaunay 网格族 79.3% 行在此带(批437 flop 直方图),原落 bin0 表路径=ocean usparse 吃这带的 1.8× accumulate 残差
+#define BIN_ESC128 25    // T3(study/53):flop∈(64,128] → esc_rank_kernel<128>(smem 广播秩排序,对位 ocean usparse)
 #define BIN_K7 15        // kernel₇:双遍位图+rank 直写,dup≈1∧窄span∧短a_len 人口(10-06;K7 env,默认关)
 #define BATCH_S_HT BATCH_S_HT_STRUCT  // 64 = 2×32(α=0.5)
 #define GLOBAL_HT_MAX_SLOTS GLOBAL_HT_MAX_STRUCT  // 内存预算÷12B/槽
@@ -3420,6 +3421,9 @@ __global__ void compute_bucket_kernel(
     } else if ((esc_on & 2) && flop[i] > ESC_FLOP_MAX && flop[i] <= 2 * ESC_FLOP_MAX
                && flop[i] <= ESC_DUP_MAX * e) {
         bid = BIN_ESC64;   // study/50 靶1:flop∈(32,64] ∧ dup≤2 → IPT=2 零表子组(同 dup 门)
+    } else if ((esc_on & 4) && flop[i] > 2 * ESC_FLOP_MAX && flop[i] <= 4 * ESC_FLOP_MAX
+               && flop[i] <= ESC_DUP_MAX * e) {
+        bid = BIN_ESC128;   // T3(study/53):flop∈(64,128] ∧ dup 门 → NT=128 子组秩排序
     } else if (largest_ok) {
         bid = BIN_LARGEST;
     } else if (e > BATCH_EST_MAX && sl0 > 0 && sl0 <= SMALL_SPAN_MAX && 2LL * e >= (long long)sl0) {  // 数组 < 最小表(docs/37)
@@ -3506,7 +3510,7 @@ __global__ void compute_bucket_kernel(
     // 争用 B 推导:H100 SMEM 同地址 atomicAdd 吞吐 ≈ 1/4 cycles vs 不同地址 ≈ 1/cycle
     //   → 每"多余乘积"(flop>est 部分)多付 3 cycles ≈ 3×4B = 12B 争用字节
     //   (Ga41 dup=38× → 37×est×12B ≈ 巨额 → 正确回 hash;F2 dup<3 → 小额 → 留 dense)
-    if (bid == BIN_LARGEST || (bid >= BIN_ESC8 && bid <= BIN_ESC64) || bid == BIN_K7) {}   // k7 同 largest/esc:已定案不被后续 diter 链覆写(10-06 bug:漏豁免致全数被 diter 抢走)
+    if (bid == BIN_LARGEST || (bid >= BIN_ESC8 && bid <= BIN_ESC128) || bid == BIN_K7) {}   // k7 同 largest/esc:已定案不被后续 diter 链覆写(10-06 bug:漏豁免致全数被 diter 抢走)
     // ↑ largest/esc 已定案,后续链(小跨度/ultra/v4/heavy)不覆写;原 if(false) 占位
     // SROUTE v3(docs/72 Phase 2):结构化字节路由,替代 v4 拟合门(sroute>0 时)
     else if (sroute > 0 && diter_thr > 0 && dup_ok) {
@@ -3987,6 +3991,93 @@ __global__ void hash_esc64_kernel(
         tmp_val[base + pos] = sumB;
     }
     if (t == 0) row_nnz[i] = n_out;
+}
+
+// ── T3(study/53 §T3 设计简报,10-21):NT=64/128 子组秩排序 ──────────────────────
+// 机理 = ocean countSortCompactFused(AccumulatorESC.cuh:71-131)的 smem 广播形态:
+// 每线程 1 乘积 → smem 暂存 → O(N²) 全对扫描(同键聚值+首现 leader+更小键计秩)
+// → leader 按秩直写有序输出。零原子零表零探测。
+// 与 hash_esc_kernel(shfl 版,SUBW≤32 硬限)的差异:全对扫描走 smem 广播读
+// (LDS broadcast 每槽 N 读廉价),leader 用"∃j<t 同键"判定(免跨 warp ballot);
+// 与 hash_esc64(shfl 双键,study/50 证伪)的差异:无 64bit shfl。
+template<int NT>
+__global__ void esc_rank_kernel(
+    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
+    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
+    int upper_tri,
+    const int *bucket_rows, int n_in_bucket,
+    const long long *row_off, const int *est,
+    unsigned long long *tmp_key, double *tmp_val,
+    int *row_nnz, int *overflow_flag, int *ovf_rows, int *ovf_cnt, int *row_ovf)
+{
+    constexpr int SGRP = HASH_BLOCK_STRUCT / NT;          // 子组/块(64→4,128→2)
+    const int sg = threadIdx.x / NT, t = threadIdx.x % NT;
+    constexpr int NTP = NT + 4;   // +4 垫:64 槽=2 圈银行,跨子组同 k 步冲突
+    __shared__ int s_key[SGRP][NTP];
+    __shared__ double s_val[SGRP][NTP];
+    __shared__ unsigned char s_dup[SGRP][NTP];
+    __shared__ int s_nout[SGRP];
+    const int stride = gridDim.x * SGRP;                   // 持久化行循环(ocean dispatcher 形态:
+    for (int row = blockIdx.x * SGRP + sg; row < n_in_bucket; row += stride) {   // 块数~2×SM,行循环复用缓存/摊调度)
+    const int i = bucket_rows[row];
+
+    int my_key = 0x7fffffff; double my_val = 0.0;
+    {
+        int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+        int cnt = 0;                                       // ① 链式定位第 t 个乘积(同 hash_esc ①)
+        for (int p = rs; p < re && my_key == 0x7fffffff; p++) {
+            int k = A_col_idx[p];
+            int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
+            int len = ke - ks;
+            if (cnt <= t && t < cnt + len) {
+                int q = ks + (t - cnt);
+                int col = B_col_idx[q];
+                if (!(upper_tri && col < i)) { my_key = col; my_val = A_val[p] * B_val[q]; }
+                else my_key = -1;
+                break;
+            }
+            cnt += len;
+        }
+    }
+    s_key[sg][t] = my_key; s_val[sg][t] = my_val;
+    __syncthreads();
+
+    bool leader = my_key != 0x7fffffff && my_key != -1;
+    {   // ② 首现判定:∃j<t 同键则非 leader。⚠ 统一步数(k<NT 全员同趟)+谓词(k<t)——
+        // 首版 k<t 步数 = warp 内每人不同 trip = 大分歧(8.09ms 2× 慢的根因)
+        #pragma unroll 4
+        for (int k = 0; k < NT; k++)
+            if (k < t && s_key[sg][k] == my_key) leader = false;
+    }
+    s_dup[sg][t] = leader ? 0 : 1;
+    __syncthreads();
+
+    if (t == 0) {                                          // ③ n_out(leader 数)+ est 欠估 retry 兜底
+        int n = 0;
+        for (int k = 0; k < NT; k++) if (!s_dup[sg][k]) n++;
+        s_nout[sg] = n;
+        if (n > est[i]) {
+            if (!atomicExch(&row_ovf[i], 1)) { int q2 = atomicAdd(ovf_cnt, 1); ovf_rows[q2] = i; }
+            atomicExch(overflow_flag, 1);
+        }
+    }
+    __syncthreads();
+    if (!s_dup[sg][t]) {                            // ④ leader:聚值+计秩+直写
+        double sum = 0.0; int rank = 0;
+        #pragma unroll 4
+        for (int k = 0; k < NT; k++) {
+            int ok = s_key[sg][k];
+            if (ok == 0x7fffffff || ok == -1) continue;
+            if (ok == my_key) sum += s_val[sg][k];
+            else if (ok < my_key && !s_dup[sg][k]) rank++;
+        }
+        long long base = row_off[i];
+        tmp_key[base + rank] = (unsigned long long)(unsigned)my_key;   // 低 32 = 列(compact 同消费)
+        tmp_val[base + rank] = sum;
+        if (t == 0) row_nnz[i] = s_nout[sg];
+    }
+    __syncthreads();   // 行循环边界:下一行的 scratch 写前,本轮读全退(数据依赖栅)
+    }   // 行循环结束
 }
 
 // compact 小行线程版(docs/13 v2):行内串行拷贝零闲 lane(warp 版 5-nnz 行 27/32 lane 闲;
@@ -5076,7 +5167,9 @@ static void hash_product(
     if (g_esc64 < 0) { const char *e = getenv("ESC64"); g_esc64 = (e && *e && atoi(e) > 0) ? 2 : 0; }
     static int g_ovr_se = -1;   // DITER_OVR_SPANEST(study/54 §11):HEAVY→DITER 无条件改判的 span/est 经济学门;默认 8(边界扫描:G6 SiO2 破防 399ms/G8 SiO2 8.4+para 12.0+c-64 3.7 全绿/G12 para 回吐);0=旧无条件
         if (g_ovr_se < 0) { const char *e_ = getenv("DITER_OVR_SPANEST"); g_ovr_se = (e_ && *e_) ? atoi(e_) : 8; }
-        int esc_on_pass = g_esc | g_esc64;   // 编码:1=32 档;2=64 档;3=全开
+        static int g_esc128 = -1;   // ESC128(T3 study/53):flop(64,128] 走 esc_rank_kernel<128>;默认关待电池
+        if (g_esc128 < 0) { const char *e_ = getenv("ESC128"); g_esc128 = (e_ && *e_ && atoi(e_) > 0) ? 4 : 0; }
+        int esc_on_pass = g_esc | g_esc64 | g_esc128;   // 编码:1=32档;2=64档;4=128档(T3)
     static int g_diter_est_min = -1; static bool g_est_env = false;   // docs/76 §16:diter est 下限(默认 EST_DENSE_MIN/2;Ocean dense 分流启示)
     if (g_diter_est_min < 0) { const char *e = getenv("DITER_EST_MIN"); if (e && *e) { g_diter_est_min = atoi(e); g_est_env = true; } else g_diter_est_min = DITER_EST_TIER; }   // v33d 翻默认:档内行结构档 1024(超档老路径在 kernel 内钳 2048);g_est_env=显式实验值,小阵守卫不改写
     static int g_dstruct_win = -2;    // §22:-1 = 档位梯(span≤7277 五档联动);0 = 关;>0 = 手调单窗
@@ -5870,12 +5963,24 @@ static void hash_product(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                     rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
                     d_ovf_rows, d_ovf_cnt, d_row_ovf, d_hybrid_val);
-            } else if (bi == BIN_ESC64) {   // study/50 靶1:flop∈(32,64],1 warp/行 IPT=2
-                int nlaunch = (n + (HASH_BLOCK_STRUCT / 32) - 1) / (HASH_BLOCK_STRUCT / 32);
-                hash_esc64_kernel<<<nlaunch, HASH_BLOCK_STRUCT, 0, cur_s>>>(
-                    dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
-                    rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val,
-                    d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf);
+            } else if (bi == BIN_ESC64 || bi == BIN_ESC128) {   // T3(study/53):esc_rank smem 广播秩排序(64/128 档)
+                static int g_sm_count = -1;
+                if (g_sm_count < 0) { cudaDeviceProp prop_; CHECK_CUDA(cudaGetDeviceProperties(&prop_, 0)); g_sm_count = prop_.multiProcessorCount; }
+                if (bi == BIN_ESC64) {   // 64 档(旧 hash_esc64=shfl 双键已证伪 study/50)
+                    int nlaunch = (n + (HASH_BLOCK_STRUCT / 64) - 1) / (HASH_BLOCK_STRUCT / 64);
+                    if (nlaunch > g_sm_count * 8) nlaunch = g_sm_count * 8;   // 256T 块 8/SM=满占用
+                    esc_rank_kernel<64><<<nlaunch, HASH_BLOCK_STRUCT, 0, cur_s>>>(
+                        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
+                        rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val,
+                        d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf);
+                } else {
+                    int nlaunch = (n + (HASH_BLOCK_STRUCT / 128) - 1) / (HASH_BLOCK_STRUCT / 128);
+                    if (nlaunch > g_sm_count * 8) nlaunch = g_sm_count * 8;   // 256T 块 8/SM=满占用
+                    esc_rank_kernel<128><<<nlaunch, HASH_BLOCK_STRUCT, 0, cur_s>>>(
+                        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
+                        rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val,
+                        d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf);
+                }
             } else if (bi >= BIN_ESC8 && bi <= BIN_ESC32) {   // v31-④ v2:零表 counting-sort,行宽分档
                 int subw = (bi == BIN_ESC8) ? 8 : (bi == BIN_ESC16) ? 16 : 32;
                 int rpb = HASH_BLOCK_STRUCT / subw;                       // 行/块 = 块宽÷子组宽
@@ -7145,7 +7250,7 @@ static void hash_product(
         if (flat_on) {
             long long copy_rows = (long long)h_cnt[0] + h_cnt[BIN_BATCH_S]
                 + (long long)h_cnt[BIN_ESC8] + h_cnt[BIN_ESC16] + h_cnt[BIN_ESC32]
-                + (BIN_ESC64 < N_BINS ? h_cnt[BIN_ESC64] : 0);
+                + (BIN_ESC64 < N_BINS ? h_cnt[BIN_ESC64] : 0) + h_cnt[BIN_ESC128];
             if (copy_rows == 0) flat_on = false;
         }
         if (flat_on) {   // 条目覆盖门(wb-edu 教训:行比例≠条目比例,浪费随条目数涨):
@@ -7193,7 +7298,7 @@ static void hash_product(
                 // 是 32-64 次串行拷贝 → web-Google +13.6% 教训,线程纂只给 nnz≤32 的 BATCH_S 行)
                 hash_compact_copy_warp_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());   // TEMP:定位
-            } else if (bi == BIN_BATCH_S || (bi >= BIN_ESC8 && bi <= BIN_ESC64)) {
+            } else if (bi == BIN_BATCH_S || (bi >= BIN_ESC8 && bi <= BIN_ESC128)) {
                 if (flat_on) continue;   // COMPACT_FLAT 已覆盖
                 // BATCH_S 行 est≤32(distinct ≤ 32 上界):串行 ≤32 次 = 0 闲 lane,CTA 3M→94K
                 if (g_compact_t)

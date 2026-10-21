@@ -169,3 +169,13 @@ ocean usparse 主形态 = `countSortCompactFused<NTHREADS>`(N∈{16,32,64,128}):
 → T3 刀 = flop∈(32,128] 行建 warp 秩排序路径(smem 暂存+ballot leader+秩直写,
 flop 精确已知免溢出机器),NOT 复活旧 ESC64(shfl 形态)。
 预注册:受影响人群 accumulate ≥20% ∧ delaunay 全阵 ≥10% ∧ 值门三件套。
+
+### T3 战报(10-21 晚,首轮:停车入库,负结果入账)
+
+**已建**:`esc_rank_kernel<64/128>`(smem 广播秩排序,BIN_ESC128=25 全链接线,ESC64/ESC128 env
+默认关=生产零影响);nnz 与旧路径逐位一致(43,417,519;ocean +5 为其口径癖,两旧路径互证)。
+**三连证伪(微迭代)**:①k<t 分歧修复(8.09→8.65 无效)②跨子组 bank 垫(无效)
+③持久化行循环(22.6@2×SM / 10.4@8×SM 更差)。现状 8.6ms vs hash 路径 4.0 vs ocean 2.19。
+**定性**:延迟型慢(~128 smem 趟/线程 + 3×__syncthreads);下轮设计=**融合单趟**
+(leader/rank/聚值一趟,如 ocean 原版)+ warp-local ballot 形态(32 内全 shfl,64/128 拆
+两半各配一趟跨半修正),预算半天。
