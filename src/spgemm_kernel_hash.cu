@@ -4112,12 +4112,13 @@ __global__ void hash_compact_copy_warp_kernel(
 
 // COMPACT_FLAT 条目覆盖计数(wb-edu 教训 10-19:行数比例门漏了大 C_nnz 低覆盖阵——
 // 行过半但条目占少数时全量条目线程空转二分,wb-edu +109%/nd24k +56% 实测;改按条目比例放行)
-__global__ void k_count_copy_entries(const int *bkid, const int *row_nnz, int n, int *out)
+__global__ void k_count_copy_entries(const int *bkid, const int *row_nnz, int n, int *out, int flatb = 0)
 {
     int c = 0;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
         int b = __ldg(bkid + i);
         if (b == 0 || b == 19 || (b >= 21 && b <= 24)) c += __ldg(row_nnz + i);
+    else if (flatb && b >= 2 && b <= 6) c += __ldg(row_nnz + i);   // T4d(FLATB)
     }
     __shared__ int red[256];
     red[threadIdx.x] = c; __syncthreads();
@@ -4128,7 +4129,7 @@ __global__ void hash_compact_copy_flat_kernel(
     int total_entries, int n_rows,
     const long long *row_off, const int *row_nnz, const int *row_ptr,
     const unsigned long long *tmp_key, const double *tmp_val,
-    int *out_col, double *out_val, const int *skip, const int *bkid)
+    int *out_col, double *out_val, const int *skip, const int *bkid, int flatb = 0)
 {
     int e = blockIdx.x * blockDim.x + threadIdx.x;
     if (e >= total_entries) return;
@@ -4140,9 +4141,12 @@ __global__ void hash_compact_copy_flat_kernel(
     }
     int row = lo;
     if (skip && __ldg(skip + row)) return;
-    if (bkid) {   // 仅拷贝桶:bin0 / BIN_BATCH_S(19) / ESC8-32(21-23),与循环显式拷贝分支一一对应
+    if (bkid) {   // 仅拷贝桶:bin0 / BIN_BATCH_S(19) / ESC8-32(21-23),与循环显式拷贝分支一一对应;
+                  // FLATB=1 扩 bins2-6(T4d:这些行 accumulate 已 count-sort 出有序 tmp,compact 只剩拷贝)
         int b = __ldg(bkid + row);
-        if (!(b == 0 || b == 19 || (b >= 21 && b <= 24))) return;
+        bool ok = (b == 0 || b == 19 || (b >= 21 && b <= 24));
+        if (!ok && flatb) ok = (b >= 2 && b <= 6);   // T4d(FLATB)
+        if (!ok) return;
     }
     int idx = e - __ldg(row_ptr + row);
     long long src = __ldg(row_off + row) + idx;
@@ -7236,6 +7240,8 @@ static void hash_product(
         // (flat_ab/ab_raw*.log,10-21)+ 预门短路(拷贝桶零行阵免税);=0 回退旧行为
         static int g_cflat = -1;
         if (g_cflat < 0) { const char *e = getenv("COMPACT_FLAT"); g_cflat = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }
+        static int g_flatb_v = -1;   // FLATB(T4d):bins2-6 hash 行并入条目级拷贝
+        if (g_flatb_v < 0) { const char *e = getenv("FLATB"); g_flatb_v = (e && *e && atoi(e) > 0) ? 1 : 0; }
         bool flat_on = g_cflat && !in_place && !(dense_mode || dense_win_mode)
                        && C_nnz_result > 0 && !att;
         // 预门(10-21):拷贝桶行数=0 的阵连 count kernel+D2H 同步都不付(h_cnt 已在 host;
@@ -7243,14 +7249,15 @@ static void hash_product(
         if (flat_on) {
             long long copy_rows = (long long)h_cnt[0] + h_cnt[BIN_BATCH_S]
                 + (long long)h_cnt[BIN_ESC8] + h_cnt[BIN_ESC16] + h_cnt[BIN_ESC32]
-                + (BIN_ESC64 < N_BINS ? h_cnt[BIN_ESC64] : 0) + h_cnt[BIN_ESC128];
+                + (BIN_ESC64 < N_BINS ? h_cnt[BIN_ESC64] : 0) + h_cnt[BIN_ESC128]
+                + (g_flatb_v ? (long long)h_cnt[2]+h_cnt[3]+h_cnt[4]+h_cnt[5]+h_cnt[6] : 0);   // T4d FLATB
             if (copy_rows == 0) flat_on = false;
         }
         if (flat_on) {   // 条目覆盖门(wb-edu 教训:行比例≠条目比例,浪费随条目数涨):
                         // 拷贝桶条目占比 ≥50% 才放行,否则全量条目线程空转二分
             int *d_ce = (int*)dev_alloc(sizeof(int));
             CHECK_CUDA(cudaMemset(d_ce, 0, sizeof(int)));
-            k_count_copy_entries<<<(A_rows + 255) / 256, 256>>>(d_bkid, d_row_nnz, A_rows, d_ce);
+            k_count_copy_entries<<<(A_rows + 255) / 256, 256>>>(d_bkid, d_row_nnz, A_rows, d_ce, g_flatb_v);
             int h_ce = 0;
             CHECK_CUDA(cudaMemcpy(&h_ce, d_ce, sizeof(int), cudaMemcpyDeviceToHost));
             if ((long long)h_ce * 2 < (long long)C_nnz_result) flat_on = false;
@@ -7258,7 +7265,7 @@ static void hash_product(
         if (flat_on) {
             hash_compact_copy_flat_kernel<<<((long long)C_nnz_result + 255) / 256, 256>>>(
                 C_nnz_result, A_rows, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val,
-                dC_ci, d_val, d_row_ovf, d_bkid);
+                dC_ci, d_val, d_row_ovf, d_bkid, g_flatb_v);
             CHECK_CUDA(cudaGetLastError());
         }
         if (!in_place)
@@ -7302,6 +7309,8 @@ static void hash_product(
             } else if (bi <= ilog2c(CSORT_HT / WARP_SIZE)) {
                 // 小行(ht≤CSORT_HT):accumulate 已 count-sort,这里只 compact_copy(tmp→CSR)
                 // Fix#11(审查):warp-per-row(8 行/CTA)替 1CTA/行 —— 万行级 bin 的 CTA 数砍 8×
+                // T4d(FLATB):bins2-6 已被 flat 条目级拷贝覆盖,跳过行级拷贝
+                if (flat_on && bi >= 2 && bi <= 6) { CHECK_CUDA(cudaGetLastError()); continue; }
                 hash_compact_copy_warp_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
             } else if (bi <= ilog2c(TABLE_DOUBLING_THR / WARP_SIZE)) {
                 // v37 csort 细梯(study/06 §7):CSORT_LADDER=v2 → bin6 <128,16>(CAP 2048 紧贴表容,
