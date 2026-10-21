@@ -191,3 +191,24 @@ vsp_model1(K7=1):k7 行仅 315,accumulate 0.86ms,overflow=0——**爆炸不在 
 
 - 部署定谳 = **FLAT+T4a+T4c,双夜 0.9183/0.9234**(单日 0.9486→~0.92,−3%);
 - T5 批级证伪回滚(k7 默认关);T3 停车入库;教训两条入账:筛面≠批级、聚合掩盖逐阵。
+
+## #0 弥散尾再解剖(10-22 凌晨,新配置 24 阵=该组 49% 差距,定谳)
+
+**分解(我方−ocean,+125.3ms)**:
+| 相位 | 差距 | 份额 | 对比旧解剖(夜1) |
+|---|---|---|---|
+| accumulate | +81.2ms | **65%** | 从 34% 升为主项(T4a 只盖了 bin2-3) |
+| compact | +48.5ms | 39% | 从 66% 降(FLAT 生效)但**有结构性缺口** |
+| 计数/est | −4.5ms | — | 我方净赢,无仗可打 |
+
+**compact 缺口的机制**:FLAT 预门(拷贝桶条目≥50%)拒了**纯 hash 阵**——
+cage15(bins 4:215万 5:179万 3:83万,拷贝桶占比 <1%!)compact **20.6ms 单阵最大项**;
+ocean 同相位用 sortOutputFused。同理 nlpkkt80 3.0ms/cage14/CurlCurl。
+**accumulate 残余**:HTC_336 族(+9.1/+6.2)/Hook(+9.2)/nlpkkt80(+6.9)/cage14(+5.3)
+= hash 梯 4-6 带效率(T4b-class,与 StocF 同根不同带)。
+
+**刀序更新**:
+1. **T4d(FLAT-B:hash 行的 compact 融合)**——靶 cage15 类纯 hash 阵,单 cage15 就 19ms;
+   形态:ocean sortOutputFused 对位(排序+写出一趟)或条目级扩到 hash 行;
+2. **T4b 扩散版**(hash 梯 4-6 accumulate 效率);
+3. T5b/T3 二轮不变。
