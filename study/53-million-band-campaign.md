@@ -227,3 +227,13 @@ ocean 同相位用 sortOutputFused。同理 nlpkkt80 3.0ms/cage14/CurlCurl。
 **下步**:pass 间输入对拍(dump spans/split/ovf 状态两轮 diff);修好 = k7 翻默认可能整体复活
 (万级 16 名将 + 分裂阵全兑现)。
 **本轮 loop 战果**:T4b 假设八证伪(§14)/T4d 假设九证伪(§15)/T5b 病灶定位到单 kernel+跨迭代。
+
+### T5b 取证进展二(10-22 深夜,第二 tick)
+
+- **输入逐位全同**(序无关指纹:Σspan/Σest/Σrow/xor 全同)+ kernel 慢 1070× → 黑箱排除输入;
+- **仪器化即痊愈**:加计数器参数+发射侧 memset/sync 后两轮全快(4ms)——**码型/布局敏感**;
+- 候选连环排除:游标区(默认关)、h2dovl 末块 flop OOB(已 clamp,注释为史)、
+  当前构建 memcheck(cuda-12.8 sanitizer)= 0 错;
+- **剩余主嫌:多流竞态**(h2dovl = sC 拷贝流 + sK kernel 流 + 默认流,时序/布局敏感完美匹配症状);
+- **下 tick 动作**:剥仪器→重建→确认爆炸复现→对该构建跑 12.8 memcheck;阴性则 racecheck/synccheck。
+  仪器全部 dbg 门控可安全保留;工具账:/usr/bin/compute-sanitizer 坏(缺注入库),用 cuda-12.8 版。
