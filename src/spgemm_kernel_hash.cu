@@ -272,7 +272,9 @@ __global__ void row_span_only_kernel(
 // spec 81 两级计数排序(HASH_EXTRACT=2):小行 extract 的 O(d²) rank → O(d + 1024)。
 // 门槛 ht≥512:d≤256 档 O(d²) 税轻(≤65K op),且小 bin 表仅 3-6KB,加 12KB hist 会压 occupancy。
 // 寄存器 staging 上限 4 槽/线程(count ≤ 4×blockDim;块梯窄配/异常布局自动回退 legacy,零风险)。
-#define CS2_MIN_HT 256   /* 日班:512→256 扩覆盖 bin3(64-255 微行带,§3.1aa 判据契合;表 3KB+hist 12KB 不压占用) */
+#define CS2_MIN_HT 1024  /* study/54(10-21 定谳):smem 预算线 bin5+(行级门见 CS2_MIN_COUNT) */
+#define CS2_MIN_COUNT 384 /* study/54:行级 d 门——rank O(d²) 与 count-sort 五趟的实测交叉;
+                             * d≤273(ldoor)rank 赢 / pre2 bin5 大行 count-sort 赢;bins2-4 天然 d≤256 免预算 */
 #define CS2_STAGE 4
 
 // MinHash 概率基数估计:替 flop_ub 定 tmp buffer + hash 表大小
@@ -2263,7 +2265,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
         // 精确位次(b 实测 ≤2-4,退化上界 = legacy d²)。门槛 ht≥512;count>4×blockDim 回退 legacy。
         int *cs2_cnt = nullptr, *cs2_start = nullptr;
         int cs2_lo = 0, cs2_SH = 0;
-        if (extract2 && ht_size >= CS2_MIN_HT && count > 0
+        if (extract2 && ht_size >= CS2_MIN_HT / 2 && count > CS2_MIN_COUNT && count > 0
             && count <= CS2_STAGE * (int)blockDim.x) {
             int *h_cnt2  = smem + 3 * ht_size;               // [1024] 桶计数(sh_col ht×4B + sh_val
                                                             // ht×8B = 12×ht B 之后;2×ht 会砸 sh_val!)
