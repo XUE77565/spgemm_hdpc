@@ -143,3 +143,14 @@ ocean 工作流分布:>100k 上 wf0 精确 64 / wf1 估计 57 / wf2 usparse 26�
 - 带状 CAS 残余 1.56×:H100 无 smem F64 原子,硬件边界;
 - ESC64 旧实现:study/50(正确但慢);
 - band rule 扩张(low-Thrust/hangGlider):C/A≈1.00 无路由解。
+
+## 战役进度(10-21 14:00 更新)
+
+- [x] T0 侦察(尾部解剖/flop 普差/kernel 归因)
+- [x] T1 FLAT 转正(15/15 A/B + confirm5 GM 0.9528,网格族 −26~45%)
+- [x] T2 定谳(study/54:发射吞吐差;七假设六证伪)
+- [x] **T4a CS2 行级 d 门落地**(commit e66d9bf:StocF −53%/rgg −37%,值门双 PASS)
+- [~] confirm6 盖分中(FLAT+T4a 联合部署,428)
+- [ ] **下一优先 = T3(ESC 覆盖带 33 阵 @1.95×,usparse 对位)**——账面价值十倍于 T4b
+- [ ] T4b(bin2-3 内环瘦身,StocF 残余 1.18×)降级为 T3 后的收尾刀
+- [ ] T5 k7 人口门(bloweybq 单阵 2.3×)+ 预门带状例外
