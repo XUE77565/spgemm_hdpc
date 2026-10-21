@@ -5998,7 +5998,9 @@ static void hash_product(
                         total_est, n, d_seg_beg, d_seg_end));
                 }
             } else {
-                int ht = WARP_SIZE << bi;
+                static int g_ht_shift = -1;   // HASH_HT_SHIFT(study/54 LF 弹性探针):bins≤6 表松弛位;默认 0=旧行为零变更
+                if (g_ht_shift < 0) { const char *e = getenv("HASH_HT_SHIFT"); g_ht_shift = (e && *e) ? atoi(e) : 0; }
+                int ht = (WARP_SIZE << bi) << ((bi <= 5) ? g_ht_shift : 0);
                 size_t smem_flat = (size_t)ht * (sizeof(int) + sizeof(double));
                 // spec 81 两级排序 hist 预算:3×1024×4B=12KB(仅 512≤ht≤1024 档——kernel 侧分支同界;
                 // bin5 表 12KB+12KB=24KB,256 线程 8 块 ×24KB=192KB < 228KB 不压 occupancy。
