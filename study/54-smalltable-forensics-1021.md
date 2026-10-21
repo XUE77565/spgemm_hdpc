@@ -142,3 +142,25 @@ G=12 para 回吐(14.2)——两人群边界恰好跨在 6-12,8 居中。
 SiO2 8.19/c-64 3.46/in-2004 20.2/bloweybq 8.04/nd24k 79.6/wb-edu 44.8 全部无损。
 **值门双 PASS**(para-9 1e-17 噪声带/atmosmodj 逐位全同)。
 **记分**:confirm7(今晚)盖 FLAT+T4a+T4c 三刀联合,兼作 0.9310 复夜。
+
+## 十三、T4b-SASS 内环对账(10-22,静态,弥散尾 accumulate 主刀的账单)
+
+**规模**:我方 bin5 实例 SASS 9732 行 vs ocean hashNumeric<6,331> 4700 行(2.07×)。
+
+**探测环逐指令(核心发现)**:
+- 我方:探测环被展开 8+ 次,单轮迭代 ~32 条,其中**谓词+结构化分支开销
+  (ISETP 14 + BRA/BSSY/BSYNC/BREAK 24)≈ 59%**;
+- 他们:紧凑单序列 ~23 条完成 探测 LDS→CAS→POPC.INC(occupancy)→值乘加 全程;
+- **值乘位置**:他们 DMUL/DADD 在插入序列内;我们乘积在 B-scan 算好、探测环只管
+  key——因式分解不同,不直接定罪;
+- **真嫌疑 1:溢出簿记住在热环里**——我们每次探测迭代携带
+  `++probes≥ht_size → atomicExch(overflow)→row_ovf→ovf_cnt` 的谓词/寄存器压力;
+  ocean 用 CHECK_OVERFLOW **模板分离**(热核零溢出机器,溢行走重launch 的冷核);
+- **真嫌疑 2:8× 展开 + 结构化分支机器**(BSSY/BSYNC/BREAK)吞掉大半发射预算。
+
+**T4b 刀设计(极简实例,bins 4-6)**:
+1. 溢出语义外提:模板 <OVF=0> 热核(探测满即整行标记早退,簿记交给外层重试核)
+   ——对齐 ocean 的 CHECK_OVERFLOW 分离;
+2. 探测环重写为紧凑形态(去 8× 展开,单 CAS 站点);
+3. 剥 WM/D5H/span 死分支质量;
+判据:bin4-6 人群 accumulate ≥25% ∧ 值门三件套 ∧ 控制阵无害。
