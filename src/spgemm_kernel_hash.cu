@@ -5226,7 +5226,7 @@ static void hash_product(
         static int g_had_l1 = -1;   // HAD L1 路由修正(④;env HAD_L1=阈值:1=旧30 兼容,8=09-30 判别式;默认关)
         if (g_had_l1 < 0) { const char *e = getenv("HAD_L1"); g_had_l1 = (e && *e) ? atoi(e) : 0; if (g_had_l1 == 1) g_had_l1 = 30; }
         static int g_k7 = -1;   // kernel₇(BIN_K7):双遍位图 dup≈1 人口(10-06;默认关,51 阵屏全绿再议)
-        if (g_k7 < 0) { const char *e = getenv("K7"); g_k7 = (e && *e) ? atoi(e) : 0; }
+        if (g_k7 < 0) { const char *e = getenv("K7"); g_k7 = (e && *e) ? atoi(e) : 1; }   // T5(10-21)翻默认:16阵筛零回归+bloweybq/hangGlider −86%/pre2 −69%/wb-edu −20%;旧+3%伤害系10-06双门(spanf/occgate)之前;K7=0 逃生门
         g_k7 = g_k7 && !att;   // att(upper-tri)形态未适配:span_lo 基址不含 tri 过滤
         // D6EXP(D3② PVD 学生派发,默认关):maxbl 预计算 + 阵级 ctx 三量 + 传参
         static int g_d6 = -1;

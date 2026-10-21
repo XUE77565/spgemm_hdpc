@@ -99,3 +99,14 @@ mh_merge 4.4% / retry 3.5%;ocean:numeric 64.8% / epilogue 8.5% / analysis 6.2% /
   rajat31 2.40→1.30/delaunay_n23 2.40→1.79/road_usa 2.20→1.54;
 - 逐阵尾干净:恶化>15% 仅 2 阵(circuit_4/c-67b @1.17×=F2 类已知边际,值门内);
 - 诚实注:新配置单夜,夜5→夜6 为同链增量(FLAT 同配置跨夜),如需盖章可加 confirm7 复夜。
+
+## 八、confirm7(10-21,T4c diter 路由夜,权威)
+
+协议:BIN@5cbeabf(FLAT+CS2 行级门+DITER_OVR_SPANEST=8);ocean 同卡;哨兵全程。
+
+- **并集 GM = 0.9234**(0.9486→0.9310→0.9234,单日累计 −2.7%);
+- T4c 增量 −0.8%:para 族 2.16→1.81-1.86 / in-2004 1.18→1.12 / cnr-2000 1.78→1.70;
+- 逐阵尾 4 阵:rajat28 1.72× **无罪**(同会话 OVR 对审 accumulate 反改善 0.91→0.87,
+  夜里尖峰=已知双峰);circuit_4/c-67b = T4a 已知边际;**Stanford_Berkeley 1.20× = 真实
+  T4c 代价**(同会话 OVR=0/8:161→190ms,其宽 span 行偏好 diter)——净 GM 正,入档已知代价;
+  后续可选:dup 条件化的覆盖门(SB vs para 的判别维)。
