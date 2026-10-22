@@ -1954,6 +1954,107 @@ __global__ void hash_spa_batched_kernel(
     }
 }
 
+// ══ 刀C3(study/57 §十七):hash_spa_packed —— bin4 多行封包内核 ════════════════
+// 病灶:bin4-5 并发逆差 2.85×(tick7 逐行对拍:我方周期 0.53× 赢,系统 1.51× 输);
+// 刀C2 证伪块宽杠杆(共享表组数减单调恶化);本核 = C2 未测设计点:
+//   warp 私有表(无跨行争用)+ k 串行 × j 32 路 + 屏障摊销 —— ocean <7,673> 对位形态。
+// 保留我方资产:read-first 探测(逐行赢面的探测半)+ 溢出熔断全套(probes≥HT 早退
+// → row_ovf → retry 换 flop 表,est 欠估人群保命机制,铁律不剥)。
+// extract:表内 bitonic 全序(HT=2^n,-1 哨兵升序沉头部)—— 零额外 smem、免 pack 数组、
+// 免 O(n²) rank(n≈300 时 2813 seq-op 判死)与 CS2 直方图 3KB hist;45 趟 × 16 idx/lane。
+// smem 静态 24KB/块(4 warp × [512 col | 512 val])→ 9 块/SM = 36 行在飞(现 8,4.5×)。
+// 路由:bin4 整桶(env HASH_B4PACK,默认关);est>448 高 LF 行自然走 overflow→retry
+// = 现路径逃生。tmp 契约与 batched 同:row_off+rank 有序写,compact 走 copy。
+template<int HT>
+__global__ __launch_bounds__(128) void hash_spa_packed_kernel(
+    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
+    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
+    int upper_tri,
+    const int *bucket_rows, int n_in_bucket,
+    const long long *row_off, const int *est,
+    unsigned long long *tmp_key, double *tmp_val,
+    int *row_nnz, int *overflow_flag,
+    int *ovf_rows, int *ovf_cnt, int *row_ovf)
+{
+    constexpr int WPB = 4;                       // 128T = 4 warp,每 warp 一行
+    int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    int lane = threadIdx.x & 31;
+    if (warp >= n_in_bucket) return;
+    int i = bucket_rows[warp];
+    __shared__ int    s_col[WPB][HT];
+    __shared__ double s_val[WPB][HT];
+    int    *t_col = s_col[warp & (WPB - 1)];
+    double *t_val = s_val[warp & (WPB - 1)];
+    for (int s = lane; s < HT; s += 32) { t_col[s] = -1; t_val[s] = 0.0; }
+    __syncwarp();
+
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    for (int p = rs; p < re; p++) {              // k 串行(ocean 形态;a_len p50=45 紧凑)
+        int k = A_col_idx[p];
+        double a = A_val[p];
+        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
+        for (int q = ks + lane; q < ke; q += 32) {   // j 32 路并行
+            int j = B_col_idx[q];
+            if (upper_tri && j < i) continue;
+            double v = a * B_val[q];
+            unsigned slot = ((unsigned)(j * 2654435761u)) & (HT - 1);
+            int probes = 0;
+            while (true) {                        // read-first:命中零 CAS(我方资产)
+                int entry = t_col[slot];
+                if (entry == j) { atomicAdd(&t_val[slot], v); break; }
+                if (entry == -1) {
+                    int prev = atomicCAS(&t_col[slot], -1, j);
+                    if (prev == -1) { t_val[slot] = v; break; }
+                    if (prev == j) { atomicAdd(&t_val[slot], v); break; }
+                }
+                slot = (slot + 1) & (HT - 1);
+                if (++probes >= HT) {             // 熔断器全套(铁律不剥)
+                    atomicExch(overflow_flag, 1);
+                    if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
+                    break;
+                }
+            }
+        }
+    }
+    __syncwarp();
+    // 表内 bitonic 全序:-1 哨兵 < 任意 col → 沉头部;完美匹配每趟单交换者,免锁
+    for (int ks = 2; ks <= HT; ks <<= 1)
+        for (int j = ks >> 1; j > 0; j >>= 1) {
+            for (int idx = lane; idx < HT; idx += 32) {
+                int l = idx ^ j;
+                if (l > idx) {
+                    bool up = ((idx & ks) == 0);
+                    int a = t_col[idx], b = t_col[l];
+                    if (a != b && (a > b) == up) {
+                        t_col[idx] = b; t_col[l] = a;
+                        double va = t_val[idx], vb = t_val[l];
+                        t_val[idx] = vb; t_val[l] = va;
+                    }
+                }
+            }
+            __syncwarp();
+        }
+    int cnt = 0;
+    for (int s = lane; s < HT; s += 32) cnt += (t_col[s] >= 0);
+    for (int off = 16; off; off >>= 1) cnt += __shfl_down_sync(0xffffffffu, cnt, off);
+    int n = __shfl_sync(0xffffffffu, cnt, 0);
+    long long base = row_off[i];
+    int cap = est[i];
+    if (lane == 0) {
+        row_nnz[i] = (n <= cap) ? n : cap;
+        if (n > cap) { atomicExch(overflow_flag, 1); if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; } }
+    }
+    for (int s = lane; s < HT; s += 32) {         // 有序写 tmp(-1 头部长度 HT-n)
+        if (t_col[s] >= 0) {
+            int rank = s - (HT - n);
+            if (rank < cap) {
+                tmp_key[base + rank] = ((unsigned long long)i << 32) | (unsigned)t_col[s];
+                tmp_val[base + rank] = t_val[s];
+            }
+        }
+    }
+}
+
 
 // 按桶跑:ht_size = 该桶 hash 表大小;轻行小表、重行大表,distinct>ht_size → overflow_flag
 // MODE:0=legacy(gapped tmp + packed key,compact 阶段善后)1=count-only(只插 key 出精确 row_nnz,
@@ -6459,9 +6560,18 @@ static void hash_product(
                         CHECK_CUDA(cudaGetLastError());
                     } else {
                     static int g_lht = -1;
-                    if (g_lht < 0) { const char *e = getenv("HASH_LHT"); g_lht = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }   // 09-24 用户授权翻默认:bins4-9 常量折叠(八阵屏 0.878-0.990 全≤1+值门逐位);HASH_LHT=0 逃生门
+                    if (g_lht < 0) { const char *e = getenv("HASH_LHT"); g_lht = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }   // 09-24 用户授权翻默认:bins4-9 常量折叠;HASH_LHT=0 逃生门
                     static int g_lht23 = -1;
-                    if (g_lht23 < 0) { const char *e = getenv("HASH_LHT23"); g_lht23 = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 0; }   // 刀A(study/57 tick2):bins2-3 常量折叠扩展——生产内生对照(b45 LHT 拍数比 1.1-1.35 vs b23 运行时 1.9-2.3)指向折叠收益;默认 0=现行为逐位;HASH_LHT23=1 探针
+                    if (g_lht23 < 0) { const char *e = getenv("HASH_LHT23"); g_lht23 = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 0; }   // 刀A(study/57 tick2):bins2-3 常量折叠扩展;默认 0=现行为逐位
+                    static int g_b4pack = -1;   // 刀C3(study/57 §十七):bin4 多行封包内核(warp 私有表,36 行/SM vs 8);默认关
+                    if (g_b4pack < 0) { const char *e = getenv("HASH_B4PACK"); g_b4pack = (e && *e) ? atoi(e) : 0; }
+                    if (g_b4pack && bi == 4 && probe_rf_on() && !d_phist && !g_wm && !g_llb) {
+                        hash_spa_packed_kernel<512><<<(n + 3) / 4, 128, 0, cur_s>>>(
+                            dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
+                            rows_ptr, n, d_off, d_est,
+                            d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf);
+                        CHECK_CUDA(cudaGetLastError());
+                    } else
                     if (g_lht && bi >= (g_lht23 ? 2 : 4) && bi <= 9 && probe_rf_on() && !d_phist && !g_wm) {
 #define SPA_LAUNCH_LHT(LHT_) hash_spa_kernel<0,1,0,0,(LHT_)><<<n, hblk, smem_flat, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
