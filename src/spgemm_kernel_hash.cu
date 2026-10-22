@@ -2081,7 +2081,14 @@ static inline bool probe_rf_on() {
 // 命中路径零 CAS;空槽才 atomicCAS 占位(占败 = 他人已入他键,前进重探)。该探测模式为领域
 // 公共形态(nsparse kernel_spgemm_hash_s.cu:298-315 / spECK HashMap.cuh 同构先例);散列用
 // 自有 Knuth 乘法常数 2654435761u 全值域映射 + mask 线性探测(pow2 表)。
-template<int MODE, int PROBE_RF = 1, int PROBE_HIST_ON = 0, int VAL_GMEM = 0, int LOG_HT = 0, int HT_P = 0>
+template<int MODE, int PROBE_RF = 1, int PROBE_HIST_ON = 0, int VAL_GMEM = 0, int LOG_HT = 0, int HT_P = 0, int PROBE2 = 0>
+// PROBE2(刀D1,study/57 §十八):熔断换位——per-probe 计数器(IADD+ISETP 每探测步 +
+// ++probes 归纳寄存器)→ per-k occupancy 余量检查(ocean hashSymbolic 同构:occ+本k
+// B行宽 ≥ 表容 bail)+ wrap 检测(slot==起点,1 ISETP/步)作挂死保护。终止性:per-k
+// 余量保证 k 扫描期间表必留空槽,read-first 探测 ≤ht 步内必遇 -1。T4b 教训对齐:
+// 熔断语义保留(仅换粒度),非 T4B_PROBE 的裸删。occupancy 维护:CAS-win 时
+// atomicAdd(s_occ)(每新 distinct 一次,~d/行,vs 每乘积旧形态零增量)。
+// 默认 0 = 原形态逐位;HASH_PROBE2 env 控制发射点实例选择。
 // PROBE_HIST_ON(spec91 ①:探测计数编译期化):1=仪器态实例(每探测环退出 atomicAdd 计数),
 // 0=生产实例,热路径计数指令整体消除(此前是逐产品运行时 if(probe_hist) 分支)。
 // 仪器态由 MODE=0 主发射点按 d_phist!=nullptr 分支实例化,其余发射点恒生产态。
@@ -2140,6 +2147,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
     int tid = threadIdx.x;
     unsigned long long rt0 = rowtime ? clock64() : 0;   // 未处理行保持 0(标记区分)
     int mask = ht_size - 1;
+    __shared__ int s_occ;   // 刀D1(PROBE2):occupancy 计数(per-k 熔断 + CAS-win 维护);非 PROBE2 实例 4B 死重
 
     extern __shared__ __align__(8) int smem[];
     int   *sh_col = smem;                      // [ht_size]
@@ -2157,6 +2165,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
 #define SPA_VAL_ADD(SLOT_, V_) do { if (VAL_GMEM) atomicAdd(&gv_arr[SLOT_], V_); else atomicAdd(&sh_val[SLOT_], V_); } while (0)
     // ↑ spec91 刀E:VAL_GMEM=1 时 atomicAdd 落在可证全局指针上,ptxas 弃返回值 → RED.E.ADD.F64 一条
     for (int s = tid; s < ht_size; s += blockDim.x) { sh_col[s] = -1; if (!VAL_GMEM) sh_val[s] = 0.0f; }
+    if (PROBE2 && tid == 0) s_occ = 0;
     __syncthreads();
 
     int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
@@ -2369,6 +2378,23 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
             double v = (MODE == 1) ? 0.0 : a_ik * bv;        /* count-only 免乘免值写 */       \
             unsigned slot = (HT_P > 0) ? ((unsigned)(j * 2654435761u) % (unsigned)HT_P)      /* 素数 magic-div */ \
                                        : (((unsigned)(j * 2654435761u)) & mask);   /* Knuth 乘法散列 pow2 */ \
+            if (PROBE2) {   /* 刀D1-v2':wrap 守卫替代计数器(v1 实测 s_occ 共享原子争用 +7.5%,已剥) */ \
+                unsigned s0 = slot;                                                           \
+                while (true) {                                                                \
+                    int entry = sh_col[slot];                                                 \
+                    if (entry == j) { if (MODE != 1) SPA_VAL_ADD(slot, v); break; }           \
+                    if (entry == -1) {                                                        \
+                        int prev = atomicCAS(&sh_col[slot], -1, j);                           \
+                        if (prev == -1 || prev == j) { if (MODE != 1) SPA_VAL_ADD(slot, v); break; } \
+                    }                                                                         \
+                    slot = (slot + 1) & mask;                                                 \
+                    if (slot == s0) {   /* 绕整圈 = 表满,语义同旧熔断(ht 步界) */           \
+                        atomicExch(overflow_flag, 1);                                         \
+                        if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; } \
+                        break;                                                                \
+                    }                                                                         \
+                }                                                                             \
+            } else {                                                                          \
             int probes = 0;                                                                   \
             while (true) {                                                                    \
                 if (PROBE_RF) {                                                               \
@@ -2390,6 +2416,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
                 }                                                                             \
             }                                                                                 \
             if (PROBE_HIST_ON) atomicAdd(&probe_hist[probes < 32 ? probes : 32], 1);          \
+            }                                                                                 \
         }                                                                                     \
     }
     if (upper_tri) { if (B16) { HASH_INNER_LOOP(1, 1) } else { HASH_INNER_LOOP(1, 0) } }
@@ -6573,21 +6600,23 @@ static void hash_product(
                         CHECK_CUDA(cudaGetLastError());
                     } else
                     if (g_lht && bi >= (g_lht23 ? 2 : 4) && bi <= 9 && probe_rf_on() && !d_phist && !g_wm) {
-#define SPA_LAUNCH_LHT(LHT_) hash_spa_kernel<0,1,0,0,(LHT_)><<<n, hblk, smem_flat, cur_s>>>( \
+                    static int g_probe2 = -1;   // 刀D1(study/57 §十八):熔断换位(per-k 余量检查+wrap 守卫,消每探测步计数器);默认关=原形态逐位
+                    if (g_probe2 < 0) { const char *e = getenv("HASH_PROBE2"); g_probe2 = (e && *e) ? atoi(e) : 0; }
+#define SPA_LAUNCH_LHT2(LHT_, P2_) hash_spa_kernel<0,1,0,0,(LHT_),0,(P2_)><<<n, hblk, smem_flat, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
         rows_ptr, n, ht, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
         g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, 0, nullptr)
-                        if (bi == 2) SPA_LAUNCH_LHT(7);        // 刀A:bin2 ht=128(几何仍 g_blk_lad 64T,仅代码形态折叠)
-                        else if (bi == 3) SPA_LAUNCH_LHT(8);   // 刀A:bin3 ht=256
-                        else if (bi == 4) SPA_LAUNCH_LHT(9);     // ht=32<<bi=2^(bi+5):LOG_HT=log2(ht)!
-                        else if (bi == 5) SPA_LAUNCH_LHT(10);
-                        else if (bi == 6) SPA_LAUNCH_LHT(11);  // 夜班#4:bins4-6 扩展(extract2 人口带折叠)
-                        else if (bi == 7) SPA_LAUNCH_LHT(12);
-                        else if (bi == 8) SPA_LAUNCH_LHT(13);
-                        else SPA_LAUNCH_LHT(14);
-#undef SPA_LAUNCH_LHT
+                        if (bi == 2) { if (g_probe2) SPA_LAUNCH_LHT2(7, 1); else SPA_LAUNCH_LHT2(7, 0); }
+                        else if (bi == 3) { if (g_probe2) SPA_LAUNCH_LHT2(8, 1); else SPA_LAUNCH_LHT2(8, 0); }
+                        else if (bi == 4) { if (g_probe2) SPA_LAUNCH_LHT2(9, 1); else SPA_LAUNCH_LHT2(9, 0); }   // ht=32<<bi=2^(bi+5):LOG_HT=log2(ht)
+                        else if (bi == 5) { if (g_probe2) SPA_LAUNCH_LHT2(10, 1); else SPA_LAUNCH_LHT2(10, 0); }
+                        else if (bi == 6) { if (g_probe2) SPA_LAUNCH_LHT2(11, 1); else SPA_LAUNCH_LHT2(11, 0); }
+                        else if (bi == 7) { if (g_probe2) SPA_LAUNCH_LHT2(12, 1); else SPA_LAUNCH_LHT2(12, 0); }
+                        else if (bi == 8) { if (g_probe2) SPA_LAUNCH_LHT2(13, 1); else SPA_LAUNCH_LHT2(13, 0); }
+                        else { if (g_probe2) SPA_LAUNCH_LHT2(14, 1); else SPA_LAUNCH_LHT2(14, 0); }
+#undef SPA_LAUNCH_LHT2
                         CHECK_CUDA(cudaGetLastError());
                     } else
                     if (probe_rf_on()) SPA_LAUNCH0(1); else SPA_LAUNCH0(0);
