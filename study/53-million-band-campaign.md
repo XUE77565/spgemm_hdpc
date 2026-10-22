@@ -333,3 +333,21 @@ ocean 窗 2048 → 26KB → 8 块 → 100%。提占用可追回差距。
 2. **atomicAdd 链**:他们对同列值累加可能用不同策略(子组封包避免跨 warp 原子)
 3. **compact**:denseCompact(原子claim+块级sort)vs 我们 warp0 串行前缀
 → 下轮改 DENSE_BLK=1024 或对齐 localLoadBalance 子组。
+
+### T6 修正:nsys 不可用于跨面计时(10-23 上午,重要方法论)
+
+**发现**:nsys 追踪开销对双方不对称(ocean 多 kernel×多迭代 → 开销放大 3-4×),
+导致之前"hash_dense 2.7-4.4× 慢"的结论被夸大。**只有 prof/stats.json 口径可作跨面对比**。
+
+**bloweybq 真实相位账(prof vs stats.json)**:
+| 相位 | 我方 | ocean | 差距 |
+|---|---|---|---|
+| 计数/估计 | 2.97 | 1.12 | 2.7×(MinHash 全链 vs HLL+精确symbolic) |
+| accumulate | 8.01 | 2.57 | 3.1× |
+| compact | 1.98 | 0.04 | **50×!** |
+| 合计 | 12.96 | 3.73 | 3.5× |
+
+**修正靶**:三块差距,不是一个 kernel 的病:
+1. 计数链:低均度阵走精确 flop(免 MinHash)→ FASTPATH 已有但可能未触发
+2. accumulate:3× 差(不是 4.4×),仍是最大块
+3. **compact 50×(2.0 vs 0.04ms)——被忽视的最大单项!**(可能是方案5直写未启用)
