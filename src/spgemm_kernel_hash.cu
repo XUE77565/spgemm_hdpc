@@ -5967,7 +5967,9 @@ static void hash_product(
                 }
             }
             int smap_cap = 128;   // T6-v5:固定 128 槽(512B);ak>128 的行 kernel 内走二分
-            int t6_multi = (A_cols * 13 > 48 * 1024);   // n 大才切窗(窗 1024×13=13KB→16块/SM)
+            // T6-v6:密度门控——est/n < 0.5 才窄窗(exdata_1 类稀疏行 8×;全密行窗开销>收益)
+            double dnsty = (A_rows > 0 && A_cols > 0) ? (double)total_est / ((double)A_rows * A_cols) : 1.0;
+            int t6_multi = (A_cols * 13 > 48 * 1024) && (dnsty < 0.5);
             size_t dsm = t6_multi
                 ? (size_t)smap_cap * 4 + (size_t)1024 * 13
                 : ((size_t)A_cols * 9 + 3) / 4 * 4 + (size_t)A_cols * sizeof(int);
