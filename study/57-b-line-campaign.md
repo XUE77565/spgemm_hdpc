@@ -193,3 +193,27 @@ Bump(1.20)需 compact 13%+acc 17%。
 - [x] tick4:失衡税证伪 + tick1 陈账反转
 - [x] tick5:今日钱图三池定谳(本节)
 - [ ] tick6:mh_merge 瘦身刀(预注册待写)
+
+## 十一、tick6(10-24 晚):刀序钦定 + T-C1 compact 拷贝提速刀
+
+**用户钦定刀序(10-24)**:① compact 融合/提速 → ② b45 acc 极简实例 → ③ mh_merge(最后)。
+(质疑对话入档:mh_merge 被 challenge 的三条——est=净赢相位(T0.1 −109ms)/单独翻不动阵
+(3-10%)/语义爆炸半径全成立;compact 翻阵最强(13-23% 端到端)且输出终态不变风险最低。)
+
+**T-C1 取证链(ncu 不可用,无 ncu 定谳协议 = nsys 分解+算术+受控实验)**:
+1. nsys 单面 kernel 表(cage15,自用合法):copy_warp 17.1ms/迭代 = compact 相位 83%
+   (csort 仅 3.3;bin4 acc 31.2/bin5 acc 44.4/mh_merge 9.0 旁证);
+2. 算术:bins≤5 条目 ~732M × 28B = 20.5GB ÷ 17.1ms = **1.20TB/s = 峰值 43%**——
+   非带宽墙,是每 lane 在飞装载不足(每迭代仅 2 独立载);
+3. 内核审计:合并访存良好,warp-per-row 形态正确(T4d 已证 flat 对长行倒贴);
+4. ncu 2026.1+570 驱动不兼容复现(计数器全 nan+LaunchFailed)——不连发,协议切换。
+
+**刀 C1**:hash_compact_copy_warp_v2_kernel——4 路独立装载展开(每 lane 在飞 8 载),
+尾段<128 回标量;5 个发射点统一 launch_copy_warp() helper;env COMPACT_COPY_V2
+默认 0=原核逐位。语义零变(同序同值构造)。
+**预注册成败线**:cage15/nlpkkt120 compact+sort ≥40% 改善 ∧ C_nnz 逐位 ∧ 行内有序
+检查 ∧ 控制阵(StocF/rgg/c-64/F2)无害 ∧ TOTAL 兑现。
+**若 <40%**:裁定期权 = 承认 ~9-11ms 结构地板(28B/条目 × C_nnz),compact 池封顶,
+按钦定序转 ② b45 acc。
+
+**电池**:bzygud823(靶 cage15/nlpkkt120 交错×2 + 控制四阵)。

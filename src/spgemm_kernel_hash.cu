@@ -4190,6 +4190,64 @@ __global__ void hash_compact_copy_warp_kernel(
     }
 }
 
+// 刀C1(study/57 tick6):4 路独立装载展开(每 lane 在飞 8 载 vs 2)。
+// nsys 实测 cage15 copy_warp 17.1ms/迭代 = 1.20TB/s(峰值 43%)——延迟遮蔽不足,非带宽墙。
+// 语义零变(同序同值);COMPACT_COPY_V2=1 启用,默认 0 = 原核逐位。
+__global__ void hash_compact_copy_warp_v2_kernel(
+    const int *rows, int n_rows,
+    const long long *row_off, const int *row_nnz, const int *row_ptr,
+    const unsigned long long *tmp_key, const double *tmp_val,
+    int *out_col, double *out_val, const int *skip)
+{
+    int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    int lane = threadIdx.x & 31;
+    if (warp >= n_rows) return;
+    int row = rows[warp];
+    if (skip && skip[row]) return;
+    long long src = row_off[row]; int n = row_nnz[row], dst = row_ptr[row];
+    int t = lane;
+    for (; t + 128 <= n; t += 128) {          // 4 段 × 32 lane,装载全部独立发射后再写
+        unsigned long long k0 = tmp_key[src + t];
+        unsigned long long k1 = tmp_key[src + t + 32];
+        unsigned long long k2 = tmp_key[src + t + 64];
+        unsigned long long k3 = tmp_key[src + t + 96];
+        double v0 = tmp_val[src + t];
+        double v1 = tmp_val[src + t + 32];
+        double v2 = tmp_val[src + t + 64];
+        double v3 = tmp_val[src + t + 96];
+        out_col[dst + t] = (int)(k0 & 0xffffffffu);
+        out_col[dst + t + 32] = (int)(k1 & 0xffffffffu);
+        out_col[dst + t + 64] = (int)(k2 & 0xffffffffu);
+        out_col[dst + t + 96] = (int)(k3 & 0xffffffffu);
+        out_val[dst + t] = v0;
+        out_val[dst + t + 32] = v1;
+        out_val[dst + t + 64] = v2;
+        out_val[dst + t + 96] = v3;
+    }
+    for (; t < n; t += 32) {                  // 尾段(<128)回标量
+        out_col[dst + t] = (int)(tmp_key[src + t] & 0xffffffffu);
+        out_val[dst + t] = tmp_val[src + t];
+    }
+}
+
+// 刀C1 发射 helper:5 个调用点统一走此门(env 读一次;默认 0 = 原核逐位)。
+static void launch_copy_warp(int n_rows, const int *rows_ptr,
+                             const long long *d_off, const int *d_row_nnz, const int *dC_rp,
+                             const unsigned long long *d_tmp_key, const double *d_tmp_val,
+                             int *dC_ci, double *d_val, const int *d_row_ovf)
+{
+    static int g_ccv2 = -1;
+    if (g_ccv2 < 0) { const char *e = getenv("COMPACT_COPY_V2"); g_ccv2 = (e && *e) ? atoi(e) : 0; }
+    int grid = (n_rows + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS;
+    if (g_ccv2)
+        hash_compact_copy_warp_v2_kernel<<<grid, HASH_BLOCK_STRUCT>>>(
+            rows_ptr, n_rows, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+    else
+        hash_compact_copy_warp_kernel<<<grid, HASH_BLOCK_STRUCT>>>(
+            rows_ptr, n_rows, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+    CHECK_CUDA(cudaGetLastError());
+}
+
 // COMPACT_FLAT 条目覆盖计数(wb-edu 教训 10-19:行数比例门漏了大 C_nnz 低覆盖阵——
 // 行过半但条目占少数时全量条目线程空转二分,wb-edu +109%/nd24k +56% 实测;改按条目比例放行)
 __global__ void k_count_copy_entries(const int *bkid, const int *row_nnz, int n, int *out, int flatb = 0)
@@ -7380,8 +7438,8 @@ static void hash_product(
                 // dense 输出全局有序:identity 行表 + 一趟 warp-batched copy
                 int *d_all = decltype(d_all)(dev_alloc((size_t)A_rows * sizeof(int)));
                 thrust::sequence(thrust::device_ptr<int>(d_all), thrust::device_ptr<int>(d_all + A_rows));
-                hash_compact_copy_warp_kernel<<<(A_rows + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(
-                    d_all, A_rows, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                launch_copy_warp(A_rows,
+                    d_all, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 break;
             }
             if (n == 0) continue;               // 空 bin 免 <<<0,TPB>>> 非法 launch(dense 重构曾吃掉此守卫)
@@ -7397,7 +7455,7 @@ static void hash_product(
                 if (flat_on) continue;   // COMPACT_FLAT 已覆盖
                 // bin0(est≤64):warp-per-row(输出可达 64/行,warp 协作最稳;线程纂在 est 33-64 行
                 // 是 32-64 次串行拷贝 → web-Google +13.6% 教训,线程纂只给 nnz≤32 的 BATCH_S 行)
-                hash_compact_copy_warp_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());   // TEMP:定位
             } else if (bi == BIN_BATCH_S || (bi >= BIN_ESC8 && bi <= BIN_ESC128)) {
                 if (flat_on) continue;   // COMPACT_FLAT 已覆盖
@@ -7405,14 +7463,14 @@ static void hash_product(
                 if (g_compact_t)
                     hash_compact_copy_thread_kernel<<<(n + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 else
-                    hash_compact_copy_warp_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                    launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());
             } else if (bi <= ilog2c(CSORT_HT / WARP_SIZE)) {
                 // 小行(ht≤CSORT_HT):accumulate 已 count-sort,这里只 compact_copy(tmp→CSR)
                 // Fix#11(审查):warp-per-row(8 行/CTA)替 1CTA/行 —— 万行级 bin 的 CTA 数砍 8×
                 // T4d(FLATB):bins2-6 已被 flat 条目级拷贝覆盖,跳过行级拷贝
                 if (flat_on && bi >= 2 && bi <= 6) { CHECK_CUDA(cudaGetLastError()); continue; }
-                hash_compact_copy_warp_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
             } else if (bi <= ilog2c(TABLE_DOUBLING_THR / WARP_SIZE)) {
                 // v37 csort 细梯(study/06 §7):CSORT_LADDER=v2 → bin6 <128,16>(CAP 2048 紧贴表容,
                 // 旧 <512,8> 冗余 2× 挤 occupancy)/ bin7 <256,16>(同 CAP 4096,IPT×2 线程减半)。
@@ -7514,7 +7572,7 @@ static void hash_product(
                 CHECK_CUDA(cudaGetLastError());
             } else {
                 // ultra(行≤32)和 subwarp8(bin12):kernel 内已插入排序 → warp copy
-                hash_compact_copy_warp_kernel<<<(n + WPR_COPY_ROWS - 1) / WPR_COPY_ROWS, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());
             }
         }
