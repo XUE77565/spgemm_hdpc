@@ -217,3 +217,24 @@ Bump(1.20)需 compact 13%+acc 17%。
 按钦定序转 ② b45 acc。
 
 **电池**:bzygud823(靶 cage15/nlpkkt120 交错×2 + 控制四阵)。
+
+## 十二、刀 C1 终审(10-24 晚):证伪归档,compact 池关账
+
+**结果**(bzygud823,交错×2,nnz 全同):
+- cage15:20.62→19.36(−6.1%)——远低于 ≥40% 预注册线
+- nlpkkt120:10.19→10.63(**+4.3% 反向**;寄存器压力吃占用症状)
+- 控制(StocF/rgg/c-64/F2)全平
+
+**定谳:ILP 展开非解——copy_warp 1.20TB/s(43% 峰值)是管线结构属性**:
+每 lane 8 载只换 −6%,排除延迟遮蔽假设。与 T4b"59% 谓词=保护"同型教训:
+**微观引擎读数(合并访存良好)≠ 可回收空间;瓶颈归因必须受控实验盖章。**
+
+**compact 池关账(两个负结果 + 一个算术死刑)**:
+1. C1 ILP 展开:证伪(本节);
+2. count-pass 融合(方案5 扩 hash 行):算术死刑——count-only 趟 ≈ 0.5-0.6× accumulate
+   (cage15 +50ms vs 省 20.7;nlpkkt120 +30 vs 省 10),无精确预计数则 compact 趟不可消除
+   (ocean 靠 estik 精确 symbolic 免票,我方 est 是估计 = 管线原罪,归 A 线成本模型领地);
+3. 12B/entry tmp 布局(col/val 分离数组):−14% 流量但动 extract/retry/heavy/k7 全链 = 
+   高爆炸半径小收益,记"考虑过并否决"。
+**compact 结构地板 = 28B/entry × C_nnz**(cage15 ~9-11ms)。C1 代码保留 env 门默认关。
+刀序 ① 关账 → 转 ② b45 acc 极简实例(原 T-B3)。
