@@ -617,7 +617,7 @@ __global__ void hash_dense_kernel(
     int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
     int ak = re - rs;
 
-    constexpr int T6_WIN = 3072;
+    constexpr int T6_WIN = 1024;   // T6-v5:窄窗 1024(13KB)→ 16 块/SM 理论上限
     const int w = multi ? T6_WIN : n;
     const int nwin = multi ? (n + w - 1) / w : 1;
 
@@ -689,8 +689,9 @@ __global__ void hash_dense_kernel(
                 int k = A_col_idx[rs + g];
                 double a = A_val[rs + g];
                 int bke = B_row_ptr[k + 1];
-                int q0 = smap[g];
-                if (q0 < 0) continue;
+                int q0;
+                if (g < smap_cap) { q0 = smap[g]; if (q0 < 0) continue; }
+                else { q0 = dev_lower_bound(B_col_idx, B_row_ptr[k], B_row_ptr[k + 1], c0); }   // ak 超 smap 帽:二分
 
                 int q_break = bke;
                 for (int q = q0 + lane; q < bke; q += 32) {
@@ -708,7 +709,7 @@ __global__ void hash_dense_kernel(
                     int v = __shfl_down_sync(0xffffffff, q_break, off);
                     if (v < q_break) q_break = v;
                 }
-                if (lane == 0) smap[g] = (q_break >= bke) ? -1 : q_break;
+                if (lane == 0 && g < smap_cap) smap[g] = (q_break >= bke) ? -1 : q_break;
             }
             __syncthreads();
 
@@ -5965,10 +5966,10 @@ static void hash_product(
                     if (l_ > maxrow_dense) maxrow_dense = l_;
                 }
             }
-            int smap_cap = (maxrow_dense + 15) & ~15;
-            int t6_multi = (smap_cap * 4 + 3072 * 13 < A_cols * 13) && (smap_cap * 4 <= 16384);
+            int smap_cap = 128;   // T6-v5:固定 128 槽(512B);ak>128 的行 kernel 内走二分
+            int t6_multi = (A_cols * 13 > 48 * 1024);   // n 大才切窗(窗 1024×13=13KB→16块/SM)
             size_t dsm = t6_multi
-                ? (size_t)smap_cap * 4 + (size_t)3072 * 13
+                ? (size_t)smap_cap * 4 + (size_t)1024 * 13
                 : ((size_t)A_cols * 9 + 3) / 4 * 4 + (size_t)A_cols * sizeof(int);
             if (dsm > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM)
                 CHECK_CUDA(cudaFuncSetAttribute(hash_dense_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)dsm));
