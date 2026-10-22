@@ -305,3 +305,29 @@ warp-per-row 批处理形态已在;扩展 = 放开 kc 约束 + bin4 路由 + ext
 刀 C2(块宽)证伪——两把负结果入论文设计空间节。
 **下一步**:C3 = hash_spa_batched 扩展 bins4-5 多行封包(设计地图 §十五,
 资产 <512,4> 已在,预注册待定稿);刀 A 捆绑 confirm 待 C3 落地后一起。
+
+## 十七、刀 C3 规格定稿(10-24 夜;batched 读码 + Bump 几何校准后)
+
+**batched 内核读码结论(三个硬冲突,不能直接路由)**:①k 串行 for p=rs..re
+(小行设计);②CAS-first 探测(无 read-first);③O(n²) rank extract。
+且 C2 已证"共享表+组数减"方向单调恶化——**ocean 赢的设计点 = warp 私有表 +
+k 串行小 G + 屏障/块摊销,C2 未测此点**(C2 的 64T 臂仍是 4 组共享表,组间
+原子争用+块屏障税是恶化源)。
+
+**Bump bin4 几何**:a_len p50=45(紧凑)/B 行长≈45/flop≈1900/est≈309(d≈172,
+表 LF≈34%)。1.99M bin5 行 est~500 同构。
+
+**新内核规格 hash_spa_packed_kernel<HT=512>**:
+- 块 128T = 4 warp,每 warp 一行(warp 私有表,**无跨行争用**);
+- k 串行 × j 32 路并行(ocean 同构;per-row 慢 2× 但 32 行/SM 在飞 vs 现 8);
+- 探测:read-first(我方资产,保逐行优势的探测半);溢出簿记全套保留(熔断器铁律);
+- extract:warp 级 CS2-lite(直方图+段扫,n≤512;O(n²) rank 判死——n≈300 时 90k op);
+- smem/块:4 warp × (512×12B 表 + 1024×4B hist) = 24.6KB + 4KB → ~29KB/块,
+  228KB 帽 → 7 块/SM = **28 行/SM(现 8,3.5×)**;
+- 路由:bin4 行 est≤448 入 packed(env HASH_B4PACK 默认关);超界/溢出行走
+  单行核(现路径=天然逃生);
+- 预期上界:Bump bin4 31ms → ~20ms(−35%,向 ocean 50ms 系统位收敛),
+  bin5 同构待 v2。
+
+**预注册(定稿)**:Bump/Hook/Geo/Serena bin4 人口 acc ≥20% ∧ nnz 逐位 ∧
+值门三件套 ∧ bin5(不走)与控制阵无害。实施预算:内核+接线半天级。
