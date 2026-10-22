@@ -292,3 +292,29 @@ bin5(179万 est 439)/bin6(25万 est 798)。**全部长行**——FLAT 经济学�
 warp-per-row 本已满流)。compact 差距机制 = **长行 warp 拷贝的单位效率**(vs ocean 的
 sortOutputFused),不是路由问题。需要:①对拍 ocean 在 cage15 上的 epilogue 耗时定差距
 ②若差距 >2× 则需 warp 拷贝 kernel 微优化(向量化/双发/对齐),非 routing 刀。
+
+### 输家逐阵 profiling(10-23 上午,nsys 双面)
+
+**7 阵共性发现**:
+| 阵 | 我方最大 kernel(ms) | ocean 对位(ms) | 差距来源 |
+|---|---|---|---|
+| bloweybq | hash_dense 8.0 | denseIter 1.83 | **4.4× dense 窗 kernel** |
+| hangGlider_3 | hash_dense 6.9 | denseIter 1.95 | **3.5×** |
+| lowThrust_4 | hash_dense 5.1 | denseIter 1.57 | **3.2×** |
+| case9/TSOPF | hash_dense 6.3 | denseIter 2.35 | **2.7×** |
+| pre2 | hash_spa(LHT10) 9.1 | denseNumeric 4.2 + hash 3.4 | **2.7× 混合** |
+| ship_001 | hash_heavy 2.6 + hash_spa 2.3 | hashNumeric 2.99+1.0 | 1.2× 均势 |
+
+**核心发现:5/7 阵的输面 = `hash_dense_window_kernel` 慢于 ocean 的 `denseNumericIterKernel` 2.7-4.4×**。
+这是 diter(dense-iter 窗口)路径的 kernel 本体效率差——不是路由问题(T4c 已修路由),
+是 dense 窗扫描 kernel 的实现差。ocean 用 `denseNumericIterKernel` 多窗口迭代 + smem 值累积;
+我方 `hash_dense_window_kernel` 同语义但实现不同。
+
+**次要发现**:
+- bloweybq/hangGlider/case9 的 hash_dense_kernel(非 window 版,可能 diter 主核)
+  也是 2-4× 慢
+- pre2 的差距分散(hash_spa + csort + copy 各慢一截)
+- ship_001 最接近均势(Σ 6.4 vs 5.5)
+
+**刀向**:dense 窗 kernel 的单位效率优化(对齐 ocean 的 denseNumericIterKernel 形态),
+或 5 阵人群改派 hash_heavy(T4c 已修 span 门)看是否更快。
