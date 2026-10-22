@@ -607,63 +607,139 @@ __global__ void hash_dense_kernel(
     const long long *row_off, const int *est,
     unsigned long long *tmp_key, double *tmp_val,
     int *row_nnz, int *overflow_flag,
-    int *ovf_rows, int *ovf_cnt, int *row_ovf)
+    int *ovf_rows, int *ovf_cnt, int *row_ovf,
+    int multi = 0, int smap_cap = 0)   // T6-v4:host 判 multi 传入(不逐行判)
 {
     int i = blockIdx.x;
     if (i >= A_rows) return;
     int tid = threadIdx.x;
-    extern __shared__ __align__(8) unsigned char dsmem[];
-    double *dval = (double*)dsmem;                    // [n]
-    unsigned char *dflag = dsmem + (size_t)n * sizeof(double);   // [n]
-    int *dpref = (int*)(dsmem + (((size_t)n * 9) + 3) / 4 * 4);  // [n](9n 向上 4 对齐;exdata n=6001 曾错位崩)
-    for (int j = tid; j < n; j += blockDim.x) { dval[j] = 0.0; dflag[j] = 0; }
-    __syncthreads();
-
-    // 累加:warp 取 k(stride nwarps),lane 并行 j;k 内 B 行列唯一 → 同 warp 内无同 j;
-    // 跨 warp 同 j → atomicAdd(链长 = dup 因子,已是下界)。
-    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
     int lane = tid & 31, warp = tid >> 5, nw = blockDim.x >> 5;
-    for (int p = rs + warp; p < re; p += nw) {
-        int k = A_col_idx[p];
-        double a = A_val[p];
-        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
-        for (int q = ks + lane; q < ke; q += 32) {
-            int j = B_col_idx[q];
-            if (upper_tri && j < i) continue;
-            atomicAdd(&dval[j], a * B_val[q]);
-            dflag[j] = 1;                              // 幂等字节写,无竞争语义
-        }
-    }
-    __syncthreads();
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    int ak = re - rs;
 
-    // 有序 extract:warp0 做 flags 的全局 exclusive 前缀(分段串行 + warp 段基址扫),全块写
-    if (warp == 0) {
-        int seglen = (n + 31) / 32;
-        int lo = lane * seglen, hi = min(lo + seglen, n);
-        int run = 0;
-        for (int j = lo; j < hi; j++) { dpref[j] = run; run += dflag[j]; }
-        int excl = run;
-        for (int off = 1; off < 32; off <<= 1) {
-            int v = __shfl_up_sync(0xffffffff, excl, off);
-            if (lane >= off) excl += v;
-        }
-        // excl(lane) = lanes < lane 的段和总和 → 写最终 dpref
-        for (int j = lo; j < hi; j++) dpref[j] += excl - run;   // excl - run = 前面所有段之和
-    }
-    __syncthreads();
-    int total_nz = dpref[n - 1] + dflag[n - 1];
+    constexpr int T6_WIN = 3072;
+    const int w = multi ? T6_WIN : n;
+    const int nwin = multi ? (n + w - 1) / w : 1;
+
+    extern __shared__ __align__(8) unsigned char dsmem[];
+    int *smap = multi ? (int*)dsmem : nullptr;                         // [smap_cap]
+    double *dval = multi ? (double*)(dsmem + (size_t)smap_cap * 4) : (double*)dsmem;
+    unsigned char *dflag = (unsigned char*)((char*)dval + (size_t)w * 8);
+    int *dpref = (int*)((char*)dval + ((((size_t)w * 9) + 3) / 4 * 4));   // ceil4(9w) 对齐(exdata n=6001 教训)
+
     long long base2 = row_off[i];
     int cap = est[i];
-    for (int j = tid; j < n; j += blockDim.x) {
-        if (dflag[j]) {
-            int rank = dpref[j];
-            if (rank >= cap) {                          // SAFETY:欠估守卫(同族)
-                if (!atomicExch(&row_ovf[i], 1)) { int q = atomicAdd(ovf_cnt, 1); ovf_rows[q] = i; }
-                atomicExch(overflow_flag, 1);
-                continue;
+    int total_nz = 0;
+    bool ovf = false;
+
+    if (!multi) {
+        for (int j = tid; j < n; j += blockDim.x) { dval[j] = 0.0; dflag[j] = 0; }
+        __syncthreads();
+        for (int p = rs + warp; p < re; p += nw) {
+            int k = A_col_idx[p];
+            double a = A_val[p];
+            int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
+            for (int q = ks + lane; q < ke; q += 32) {
+                int j = B_col_idx[q];
+                if (upper_tri && j < i) continue;
+                atomicAdd(&dval[j], a * B_val[q]);
+                dflag[j] = 1;
             }
-            tmp_key[base2 + rank] = ((unsigned long long)i << 32) | (unsigned int)j;
-            tmp_val[base2 + rank] = dval[j];
+        }
+        __syncthreads();
+        if (warp == 0) {
+            int seglen = (n + 31) / 32;
+            int lo = lane * seglen, hi = min(lo + seglen, n);
+            int run = 0;
+            for (int j = lo; j < hi; j++) { dpref[j] = run; run += dflag[j]; }
+            int excl = run;
+            for (int off = 1; off < 32; off <<= 1) {
+                int v = __shfl_up_sync(0xffffffff, excl, off);
+                if (lane >= off) excl += v;
+            }
+            for (int j = lo; j < hi; j++) dpref[j] += excl - run;
+        }
+        __syncthreads();
+        total_nz = dpref[n - 1] + dflag[n - 1];
+        for (int j = tid; j < n; j += blockDim.x) {
+            if (dflag[j]) {
+                int rank = dpref[j];
+                if (rank >= cap) {
+                    if (!atomicExch(&row_ovf[i], 1)) { int q = atomicAdd(ovf_cnt, 1); ovf_rows[q] = i; }
+                    atomicExch(overflow_flag, 1);
+                    continue;
+                }
+                tmp_key[base2 + rank] = ((unsigned long long)i << 32) | (unsigned int)j;
+                tmp_val[base2 + rank] = dval[j];
+            }
+        }
+    } else {
+        // T6-v4:多窗 + 游标(host 判,全行统一)
+        for (int j = tid; j < ak && j < smap_cap; j += blockDim.x)
+            smap[j] = B_row_ptr[A_col_idx[rs + j]];
+        __syncthreads();
+
+        for (int wi = 0; wi < nwin; wi++) {
+            int c0 = wi * w, c1 = min(c0 + w, n);
+            int ww = c1 - c0;
+            for (int j = tid; j < ww; j += blockDim.x) { dval[j] = 0.0; dflag[j] = 0; }
+            __syncthreads();
+
+            for (int g = warp; g < ak && g < smap_cap; g += nw) {
+                int k = A_col_idx[rs + g];
+                double a = A_val[rs + g];
+                int bke = B_row_ptr[k + 1];
+                int q0 = smap[g];
+                if (q0 < 0) continue;
+
+                int q_break = bke;
+                for (int q = q0 + lane; q < bke; q += 32) {
+                    int bcol = B_col_idx[q];
+                    if (bcol >= c1) { q_break = q; break; }
+                    int j = bcol - c0;
+                    if (j >= 0 && j < ww) {
+                        if (!upper_tri || bcol >= i) {
+                            atomicAdd(&dval[j], a * B_val[q]);
+                            dflag[j] = 1;
+                        }
+                    }
+                }
+                for (int off = 16; off > 0; off >>= 1) {
+                    int v = __shfl_down_sync(0xffffffff, q_break, off);
+                    if (v < q_break) q_break = v;
+                }
+                if (lane == 0) smap[g] = (q_break >= bke) ? -1 : q_break;
+            }
+            __syncthreads();
+
+            if (warp == 0) {
+                int seglen = (ww + 31) / 32;
+                int lo = lane * seglen, hi = min(lo + seglen, ww);
+                int run = 0;
+                for (int j = lo; j < hi; j++) { dpref[j] = run; run += dflag[j]; }
+                int excl = run;
+                for (int off = 1; off < 32; off <<= 1) {
+                    int v = __shfl_up_sync(0xffffffff, excl, off);
+                    if (lane >= off) excl += v;
+                }
+                for (int j = lo; j < hi; j++) dpref[j] += excl - run;
+            }
+            __syncthreads();
+            int wnz = (ww > 0) ? dpref[ww - 1] + dflag[ww - 1] : 0;
+            for (int j = tid; j < ww; j += blockDim.x) {
+                if (dflag[j]) {
+                    int rank = total_nz + dpref[j];
+                    if (rank >= cap) { ovf = true; continue; }
+                    tmp_key[base2 + rank] = ((unsigned long long)i << 32) | (unsigned int)(c0 + j);
+                    tmp_val[base2 + rank] = dval[j];
+                }
+            }
+            total_nz += wnz;
+            __syncthreads();
+        }
+        if (ovf) {
+            atomicExch(overflow_flag, 1);
+            if (!atomicExch(&row_ovf[i], 1)) { int q2 = atomicAdd(ovf_cnt, 1); ovf_rows[q2] = i; }
         }
     }
     if (tid == 0) row_nnz[i] = (total_nz <= cap) ? total_nz : cap;
@@ -5880,13 +5956,26 @@ static void hash_product(
             CHECK_CUDA(cudaMemset(d_overflow, 0, sizeof(int)));
             CHECK_CUDA(cudaMemset(d_ovf_cnt, 0, sizeof(int)));
             CHECK_CUDA(cudaMemset(d_row_ovf, 0, (size_t)A_rows * sizeof(int)));
-            size_t dsm = ((size_t)A_cols * 9 + 3) / 4 * 4 + (size_t)A_cols * sizeof(int);
+            // T6-v4:host 判 multi:窗 3072×13≈40KB + smap(maxrow×4);
+            // multi 条件:省 smem(窗+map < n×13)且 map 装得下(≤16KB)
+            int maxrow_dense = 0;
+            {   const int *hrp_ = (const int*)A_buffer;   // A_buffer = [row_ptr | col | val]
+                for (int r_ = 0; r_ < A_rows; r_++) {
+                    int l_ = hrp_[r_+1] - hrp_[r_];
+                    if (l_ > maxrow_dense) maxrow_dense = l_;
+                }
+            }
+            int smap_cap = (maxrow_dense + 15) & ~15;
+            int t6_multi = (smap_cap * 4 + 3072 * 13 < A_cols * 13) && (smap_cap * 4 <= 16384);
+            size_t dsm = t6_multi
+                ? (size_t)smap_cap * 4 + (size_t)3072 * 13
+                : ((size_t)A_cols * 9 + 3) / 4 * 4 + (size_t)A_cols * sizeof(int);
             if (dsm > SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM)
                 CHECK_CUDA(cudaFuncSetAttribute(hash_dense_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)dsm));
             hash_dense_kernel<<<A_rows, DENSE_BLK, dsm>>>(
                 dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, A_cols,
                 d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
-                d_ovf_rows, d_ovf_cnt, d_row_ovf);
+                d_ovf_rows, d_ovf_cnt, d_row_ovf, t6_multi, smap_cap);
             CHECK_CUDA(cudaGetLastError());
         });
     } else if (dense_win_mode && k7_nr == 0) {   // 同上:k7 接管时禁入

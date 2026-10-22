@@ -351,3 +351,18 @@ ocean 窗 2048 → 26KB → 8 块 → 100%。提占用可追回差距。
 1. 计数链:低均度阵走精确 flop(免 MinHash)→ FASTPATH 已有但可能未触发
 2. accumulate:3× 差(不是 4.4×),仍是最大块
 3. **compact 50×(2.0 vs 0.04ms)——被忽视的最大单项!**(可能是方案5直写未启用)
+
+### T6 进展(10-23,多窗+游标:三轮迭代,对齐 bug 修复,基础设施就绪)
+
+**已修复**:
+1. 逐行 multi 判的 smem 越界(ak>帽的行走原路径但 smem 是 multi 尺寸)→ host 统一判;
+2. **3 字节 dpref 对齐差**(原版 ceil4(9n) 被丢,n%4≠0 的阵错果——exdata n=6001 教训重演);
+3. 游标 break 记录(每 lane 的实际 break 位置 warp 归约,不是 lane 起点近似)。
+**nnz 全对**(bloweybq 100M/hangGlider 83M/case9 52M/c-64 155M ✓)。
+
+**当前限制**:multi 激活条件 = maxrow×4≤16KB(即 maxrow≤4096);bloweybq maxrow=10001
+→ 不激活,走原路径。要让这类阵受益,需 gmem smap(ocean 同款:start_map 超帽走
+gmem buffer)或混合路径(短 ak 行 smem / 长 ak 行二分)。**下轮方向**。
+
+**方法论**:nsys 跨面计时不可用(追踪开销不对称)——只用 prof/stats.json 口径;
+3 字节对齐 = 连续两轮踩同一个坑(原版注释"exdata n=6001 曾错位崩"应该当作活文档)。
