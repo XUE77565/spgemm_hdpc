@@ -284,3 +284,11 @@ confirm12 的 0.9010(+0.7% 倒退)经同会话对账:**eu-2005 5.55× 为夜级�
 rajat28)抵消。三度批级三度回滚的教训:**跨夜单阵不可作 K7 人群归因依据**——K7 的人群
 效应(±20-30%)被夜噪声(±40%+)完全淹没,只有多夜配对或同会话大电池才能定谳。
 维持默认关,素材保留。
+
+### cage15 compact 取证(10-23 上午)
+
+cage15 compact+sort = 20.6ms;行分布:bin3(83万行 est p50=132)/bin4(215万 est 251)/
+bin5(179万 est 439)/bin6(25万 est 798)。**全部长行**——FLAT 经济学确认不适用(est≫64,
+warp-per-row 本已满流)。compact 差距机制 = **长行 warp 拷贝的单位效率**(vs ocean 的
+sortOutputFused),不是路由问题。需要:①对拍 ocean 在 cage15 上的 epilogue 耗时定差距
+②若差距 >2× 则需 warp 拷贝 kernel 微优化(向量化/双发/对齐),非 routing 刀。
