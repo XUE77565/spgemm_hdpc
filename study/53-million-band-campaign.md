@@ -318,3 +318,18 @@ sortOutputFused),不是路由问题。需要:①对拍 ocean 在 cage15 上的 e
 
 **刀向**:dense 窗 kernel 的单位效率优化(对齐 ocean 的 denseNumericIterKernel 形态),
 或 5 阵人群改派 hash_heavy(T4c 已修 span 门)看是否更快。
+
+### T6 首轮:多窗提占用——证伪(10-23 上午)
+
+**假设**:hash_dense_kernel smem=13×n(bloweybq 127KB)→ 1 块/SM → 25% 占用;
+ocean 窗 2048 → 26KB → 8 块 → 100%。提占用可追回差距。
+**实现**:hash_dense_kernel 改多窗(窗宽 2048,跨窗位次累计),nnz 全对。
+**结果**:全反向——bloweybq 8.0→9.0(+13%)/case9 6.3→9.5(+50%)/hangGlider 6.9→8.3(+20%)。
+**定谳**:这人群**计算密度高,25% 占用已够喂饱**(原子链长=dup 因子是瓶颈,不是 warp 数);
+切窗加的同步+窗界过滤+多趟前缀扫是纯开销。**占用理论仅适用于访存受限人群**(如 FLAT 的拷贝)。
+
+**修正靶向**:ocean 优势不在占用,在:
+1. **块宽**:1024 线程/块(LOG_NTHR=10)vs 我们 512 → 每行并行度 2×
+2. **atomicAdd 链**:他们对同列值累加可能用不同策略(子组封包避免跨 warp 原子)
+3. **compact**:denseCompact(原子claim+块级sort)vs 我们 warp0 串行前缀
+→ 下轮改 DENSE_BLK=1024 或对齐 localLoadBalance 子组。
