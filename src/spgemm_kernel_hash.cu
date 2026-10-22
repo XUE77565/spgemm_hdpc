@@ -3432,6 +3432,9 @@ __global__ void compute_bucket_kernel(
              && (long long)flop[i] <= (long long)(K7_DUP_MAX * (double)e)  // dup 预算(路由侧估计)
              && (long long)span_factor * flop[i] >= (long long)sl0         // spanf 门(diter 同款:重乘积才值得窗口化;
              && (long long)span_factor * e >= (long long)sl0               //  occgate 同款:est≥span/16,位图利用率)
+             && 2LL * e < (long long)sl0                                   // T5b(10-23)dense 否决:est≥span/2 的稠密行归 dense
+                                                                           // (hangGlider_4/5 K7抢dense行+73/92%→修平;
+                                                                           // hangGlider_3/c-43 侧小损失可接受)
              ) bid = BIN_K7;                                               // 10-06 A/B:缺此双门 → 从 hash 抢行,Si10H16 −4%/c-43 −11%   // kernel₇:dup≈1∧窄span∧短a_len(10-06;位图 0.125B/列 vs 表 12B/槽)
     else if (e <= ultra_thr) bid = BIN_ULTRA;             // ultra:线性免 hash
     // dense-iter 路由(docs/24 裁决,docs/72 结构化推导)
@@ -5223,7 +5226,7 @@ static void hash_product(
         static int g_had_l1 = -1;   // HAD L1 路由修正(④;env HAD_L1=阈值:1=旧30 兼容,8=09-30 判别式;默认关)
         if (g_had_l1 < 0) { const char *e = getenv("HAD_L1"); g_had_l1 = (e && *e) ? atoi(e) : 0; if (g_had_l1 == 1) g_had_l1 = 30; }
         static int g_k7 = -1;   // kernel₇(BIN_K7):双遍位图 dup≈1 人口(10-06;默认关,51 阵屏全绿再议)
-        if (g_k7 < 0) { const char *e = getenv("K7"); g_k7 = (e && *e) ? atoi(e) : 0; }   // T5(10-21)批级证伪回滚:夜9 GM 0.9617 vs 夜8 0.9183(+4.7%)——16阵筛面漏的代价=vsp_model1 219×/c-big 2.3×/lowThrust ~2×/hangGlider_4/5反向,23阵>15%;筛面推翻批级旧结论=违反结论稳定纪律;靶阵赢面真(bloweybq 2.27)待行级门修复后T5b重试
+        if (g_k7 < 0) { const char *e = getenv("K7"); g_k7 = (e && *e) ? atoi(e) : 1; }   // T5b(10-23)翻默认:dense否决+h2dovl毒根除   // T5(10-21)批级证伪回滚:夜9 GM 0.9617 vs 夜8 0.9183(+4.7%)——16阵筛面漏的代价=vsp_model1 219×/c-big 2.3×/lowThrust ~2×/hangGlider_4/5反向,23阵>15%;筛面推翻批级旧结论=违反结论稳定纪律;靶阵赢面真(bloweybq 2.27)待行级门修复后T5b重试
         g_k7 = g_k7 && !att;   // att(upper-tri)形态未适配:span_lo 基址不含 tri 过滤
         // D6EXP(D3② PVD 学生派发,默认关):maxbl 预计算 + 阵级 ctx 三量 + 传参
         static int g_d6 = -1;

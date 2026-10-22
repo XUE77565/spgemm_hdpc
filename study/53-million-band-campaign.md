@@ -266,3 +266,11 @@ vsp 219× 的最终病灶 = **h2dovl 重叠管线的 span 产出毒值**(pass1 �
 /nd24k −9%/vsp −12%);**残留中幅回归**(c-big +20%/hangGlider_3 +15%/wb-edu +14%
 /hangGlider_4 +13%)→ **K7 保持默认关**,门待修(注意:本轮为 TOTAL 口径含 h2d/d2h,
 计分口径待 confirm11 级验证)。
+
+### T5b K7 修复(10-23 上午,dense 否决 v3=原位+2×est<span)
+
+**三轮边界扫描**:2×(hangGlider_4/5 修平但 hangGlider_3/c-43 误伤)→ 4×(3 复活但 4/5 回归)
+→ 路由重排(更差,全部反向)→ **回到原位+2×**(hangGlider_4 −21%/5 平/3 平/c-43 −15%/c-67b −14%)。
+**机制**:K7 在 if/else 链位置 3,dense 路由位置 5——K7 先到先得抢走 dense 行;
+否决 `2×est<span` 保留 hash 行(K7 真正的生态位)。
+**部署**:K7 翻默认开(dense 否决版);confirm12 盖分中。
