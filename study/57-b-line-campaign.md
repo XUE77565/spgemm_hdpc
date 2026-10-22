@@ -454,3 +454,22 @@ nnz 全同。**G 交错粒度轴死**——小 G 的"更多独立链"不兑现�
 负结果七把(C1/C2/C3/D1×2/G×2)全入论文设计空间节;定律 1 条(跨度不变量);
 档案纠错 4 处;GPU 零事故;三池+每轮指令战全部关账。记分未动(GM 0.8873),
 刀 A 待用户裁量 confirm 时机。
+
+## 二十四、工作流攻击实测死刑 + 护城河再定位(10-25 凌晨,D5H 复活一发)
+
+**纠正两个自己的错账**(对用户"还是打不下去吗"的深挖):
+1. ocean wf 分层真相:**b45 人口(Bump/Geo/Serena/Hook)ocean 走 wf=1 估计工作流**——
+   不用精确 symbolic!同样付 epilogue 排序(Bump 9.3ms ≈ 我方 compact 11.4)。
+   "symbolic 护城河"对 b45 不成立;b45 差距 = 纯 numeric 本体 65.1 vs 78.4。
+2. count-pass 成本模型:我估 0.5×acc 错 20 倍(ocean symbolic 实为 1-1.8 cyc/乘积);
+   但**我方 MODE=1 count pass 实测 46.7ms(cage15)= ocean symbolic 14.2 的 3.3 倍**。
+
+**D5H 全流程实测**(机具复活,nnz 逐位 ✓):count 46.7 + direct 96.6 + csort 36.9
++ est 13.6 = **194.3ms vs 基线 122(+59%)**——count pass 3.3× 贵 + MODE=2 无序写
+csort 善后比有序 extract+copy 更贵。**精确计数工作流在我方形态上算术死刑(实测版)。**
+
+**护城河终定位**:不在 symbolic(他们 b45 不用),在**瘦内核本体**——他们的
+symbolic(1.6 cyc/乘积)和 numeric(65ms 含核内排序)都是瘦的;我方 hash_spa
+四轴局部最优 = "肥内核的局部最优"。四轴探针每次只改一处、肥体不变,故全负。
+**b45 终局 = 瘦内核重写**(现成资产:spec99 重行同构复刻 kernel,env 默认关,
+bins7-8 接管——当年的 lean 方向,未批)。这是明确的工程决策,交用户裁决。
