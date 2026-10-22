@@ -368,3 +368,24 @@ hist 瘦身(小刀)+ 每轮指令形态(大仗,下会话)。
 与 bin5(24KB,线程帽 8<smem 帽 9)在 256T 下均线程帽,smem 非 binding;hist 减负
 只在窄块有效而窄块已被定律判死。表故事的真残余只有 LF/探测链(512 表 34% vs 673
 表 26%),属每轮指令战的一部分。**②的几何侧全数出清,剩余=每轮指令形态大仗。**
+
+## 十九、③mh_merge 开档(10-24 深夜):旋钮地图 + 行级门判死
+
+**常数与机制**:MH_M=128(sketch 128 寄存器=512B/B行);merge 税=A_nnz×512B
+(cage15 25.6GB÷2.8=9.1ms✓);fastpath 门=avg_product(=total_flop/行数!)≤64 →
+est=flop 免 MinHash。
+
+**旋钮盘点(零代码)**:
+- **MH_K env 已存在**(默认 128,接受 32/64/128,实例全编译)——注释自带警示
+  "CV 9%→18%,est 噪声改变 binning/retry,须 A/B 验证"(docs/57 挂起作业);
+- MHSAMP(2048 行采样投影,dense_win 候选专用);
+- avg_gate est=flop 直填(矩阵级)。
+
+**行级 fastpath 判死(磁盘)**:Bump 逐行数据——97.8% 行 flop>1024 载 99.9%
+merge 流量;任何阈值(≤256)行级门释放 0.0% 流量。 paying 人口全是重行,
+行级 est=flop 无肉。
+
+**探针(跑中)**:MH_K=32 vs 128,七阵(S_Berkeley/cage15/c-73/rajat28/Bump/
+rgg/nlpkkt120)交错×2;风险指标=overflow/ovf_cnt(est 噪声的下游信号),
+nnz 必须逐位(est 只动表尺寸不动输出)。诚实预期:merge −50~75%,端到端 1-3%/阵,
+margin 加宽器非翻阵刀(用户质疑三条之二仍成立)。
