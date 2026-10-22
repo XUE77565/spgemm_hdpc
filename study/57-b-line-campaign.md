@@ -52,7 +52,7 @@
 - flop 口径不一致 11 阵(Bump/Flan/Cube_Coup/audikw/bone010 等,upper_tri 口径癖)——
   拍数比仅供方向,gap(ms)不受影响。
 
-## 四、tick2 定谳(10-24,SASS 静态对账 + 发射点考古)
+## 四、tick2 定谳[beat 列已于 tick4 作废,见 §八](10-24,SASS 静态对账 + 发射点考古)
 
 **核心发现:生产数据里已经跑着一个受控 A/B——b45 走 LHT 常量折叠实例(HASH_LHT
 默认 1,09-24 翻默认,服务 bins 4-9;夜班#4 扩到 bin4-6),b23 永远走运行时 ht 形态
@@ -124,7 +124,36 @@ env HASH_LHT23 默认 0(=现行为);几何不动(g_blk_lad 64T 不变),期望逐
 study/54 §十的 7.22 复现一致——bare env 的 9.46 是环境抬高的绝对值,相对差仍真)vs
 B=6.851(−3.6%)。**刀 A 终账:9 阵全绿 −1.2~−4.4%,零伤害,攒刀待捆绑。**
 
-## 七、战报
+## 八、tick4 定谳(10-24 晚):失衡税证伪 + tick1 陈账反转(重要修正)
+
+**① 静态失衡税证伪**(scripts/enum_imbalance_tax.py,组功=Σ⌈len_k/G⌉,税=max/mean):
+
+| 阵 | 带 | 税 mean | p90 | beat(旧账) |
+|---|---|---|---|---|
+| CurlCurl_4 | b23 | 1.44 | 1.46 | 2.26 |
+| rgg | b23/45 | 1.42/1.65 | 1.74/2.07 | 1.88 |
+| af_1_k101 / af_shell10 | b45 | 1.37 | 1.37 | 1.7/1.74 |
+| cage15 | b23/45 | 1.36/1.51 | 1.60/1.88 | 1.24 |
+| nlpkkt120 | b45 | **1.17** | 1.14 | **1.52** |
+
+**反转对:nlpkkt120 税最低(1.17)却 beat 高(1.52);cage15 税高(1.51)却 beat 低
+(1.24)——静态组失衡税不是拍数差主驱动**,枚举失衡假设(静态形)证伪。
+(SM 级驻留块重叠也会吸收行内失衡,静态税本就是上界;但方向性反转已足够否决主因。)
+
+**② tick1 陈账反转(重要)**:reanchor 的 beat_ns/beat_ratio 列用的是 batch437
+**七刀前** accumulate——对 T4a 覆盖人群严重虚高。今日实测:
+- StocF:7.108ms(电池 env,与 study/54 §十 7.22 复现)= **1.16×**(非 2.88×)
+- rgg:20.6ms → ~1.17×(非 1.88×)
+- CurlCurl_4:8.46(bare)×0.751(StocF 校准的 env 因子)≈6.4ms vs ocean 7.91 =
+  **~0.8×,accumulate 可能在赢面**(待电池 env 直测确认)
+
+**结论:b23"拍数带 1.9-2.3×"大部分是 T4a 前的陈账;b23 accumulate 已接近/达到平。**
+111 带的真实残余在哪(相位?未覆盖阵?)必须用**今日数据**重定位——tick1 表的
+beat 列作废,gap_now 列(刀折算)仍有效。
+
+**③ tick5(进行中)**:现役配置(A 臂,电池 env)12 代表阵全相位分解 × ocean
+ocn_stats 逐相位对账 → 今日钱图。覆盖 b23(CurlCurl/rgg/StocF)+ b45(nlpkkt120/
+Bump/Geo/Serena/Hook)+ 未覆盖阵(af_1_k101/af_shell10)+ cage15/nlpkkt80。
 
 - [x] tick1(10-24):重锚完成,微输带结构定谳(b23 拍数带 + b45 人口带 + 病理名单);
   脚本 scripts/reanchor_bins_beats.py;数据 compare/batch437/reanchor_bins.csv。
