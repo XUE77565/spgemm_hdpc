@@ -5967,9 +5967,11 @@ static void hash_product(
                 }
             }
             int smap_cap = 128;   // T6-v5:固定 128 槽(512B);ak>128 的行 kernel 内走二分
-            // T6-v6:密度门控——est/n < 0.5 才窄窗(exdata_1 类稀疏行 8×;全密行窗开销>收益)
-            double dnsty = (A_rows > 0 && A_cols > 0) ? (double)total_est / ((double)A_rows * A_cols) : 1.0;
-            int t6_multi = (A_cols * 13 > 48 * 1024) && (dnsty < 0.5);
+            // T6-v7:窗数门控——密度不判(41.6%赢 vs 40.5%输,非密度问题);
+            // 窗数∝n 决定开销(exdata n=6001→6窗赢 8×;case9 n=14454→15窗输 72%)。
+            // n≤8192(8 窗)为甜点位:smem 已够小(13×8192=107KB→2块/SM 原路径),
+            // 切到窄窗(13×1024=13KB→16块/SM)的占用跳跃最大而窗开销尚低。
+            int t6_multi = (A_cols * 13 > 48 * 1024) && (A_cols <= 8192);
             size_t dsm = t6_multi
                 ? (size_t)smap_cap * 4 + (size_t)1024 * 13
                 : ((size_t)A_cols * 9 + 3) / 4 * 4 + (size_t)A_cols * sizeof(int);
