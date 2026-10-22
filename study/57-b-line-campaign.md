@@ -161,3 +161,35 @@ Bump/Geo/Serena/Hook)+ 未覆盖阵(af_1_k101/af_shell10)+ cage15/nlpkkt80。
   LHT vs runtime 对照);刀 A 定义(bins2-3 LHT 扩展);scripts/sass_account.sh。
 - [ ] tick3:刀 A 探针(GPU,同会话 A/B)
 - [ ] T-B3:极简实例刀(动态仪器定嫌疑后)
+
+## 十、tick5 定谳(10-24 晚):今日钱图——B 线主攻方向重定位
+
+**方法**:现役配置(A 臂,电池 env)12 代表阵全相位 × ocean ocn_stats 对账
+(/tmp/phase_now/,scripts/phase_gap_today.py)。
+
+**结论:accumulate 已不是主战场**(1.07-1.29×,nlpkkt80 1.55 例外)。钱在三池:
+
+| 池 | 人口 | 规模 | 机制 | 修法方向 |
+|---|---|---|---|---|
+| **compact+sort** | wf0 工作流 hash 阵(cage15 20.6/nlpkkt120 10.0/Bump 11.4/Cube_Coup 11.6/wb-edu 32) | 12 阵 Σ51ms | 我方独立全幅 compact 趟 vs ocean 排序融合在 numeric 内(epilogue≈0.03ms) | sortOutputFused 对位/方案5 直写扩 hash 行(T4d 族谨慎,一次证伪在档) |
+| **est 链(mh_merge)** | 177 阵>0.3ms,Σ273ms;**微输带 72 阵 Σ79ms** | S_Berkeley 19.7/cage15 9.1/c-73×2 6.5/rajat 族 6×4.7 | **带宽税 = A_nnz×K×4B 重读**(cage15 50M×512B=25.6GB÷2.8TB/s=9.1ms ✓算术验证);est 链七刀未碰 | per-row K 降档/est=flop 直填扩界(avg_gate 机制已有)/MHSAMP 采样已有 |
+| **acc 残余(b45)** | Bump/Geo/Serena/Hook/af 族 1.2-1.3× | 12 阵 Σ78ms 但 ≤20% 可收 | 原 B 线主攻,现诚实有界 | 极简实例(原 T-B3) |
+
+**逐阵翻转算术**(GM 视角):nlpkkt120(1.23)=est 5.5+cmp 10.0+accΔ 8.8 各占
+13/16/21%——**任两池修掉即翻平**;cage15(1.34)需 compact(23%)+est(12%);
+Bump(1.20)需 compact 13%+acc 17%。
+
+**刀序修订(tick6 起)**:B 线"指令流瘦身"主攻降级为三池之一;推荐下一刀
+=**mh_merge 瘦身**(人口最广 72 带阵/机制已破案/旋钮已有/处女地),预注册成败线
+(见 tick6);compact 融合刀随后(单阵收益最大但 T4d 前科);acc 极简实例最后。
+
+**方法论**:ocean wf0 的 epilogue≈0 是口径陷阱——其排序融合在 numeric 内,
+单比 acc 或单比 compact 都会错;必须 (acc+compact+ddirect) vs (numcore+epi) 整池比。
+
+## 战报(滚动)
+- [x] tick1:重锚(b23/b45/病理;beat 列后被 tick4 作废)
+- [x] tick2:SASS 对账+受控 A/B 发现;刀 A 定义
+- [x] tick3:刀 A 探针(9 阵 −1.2~−4.4%,攒刀)
+- [x] tick4:失衡税证伪 + tick1 陈账反转
+- [x] tick5:今日钱图三池定谳(本节)
+- [ ] tick6:mh_merge 瘦身刀(预注册待写)
