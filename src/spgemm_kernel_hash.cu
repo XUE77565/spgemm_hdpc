@@ -6402,14 +6402,18 @@ static void hash_product(
                     } else {
                     static int g_lht = -1;
                     if (g_lht < 0) { const char *e = getenv("HASH_LHT"); g_lht = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }   // 09-24 用户授权翻默认:bins4-9 常量折叠(八阵屏 0.878-0.990 全≤1+值门逐位);HASH_LHT=0 逃生门
-                    if (g_lht && bi >= 4 && bi <= 9 && probe_rf_on() && !d_phist && !g_wm) {
+                    static int g_lht23 = -1;
+                    if (g_lht23 < 0) { const char *e = getenv("HASH_LHT23"); g_lht23 = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 0; }   // 刀A(study/57 tick2):bins2-3 常量折叠扩展——生产内生对照(b45 LHT 拍数比 1.1-1.35 vs b23 运行时 1.9-2.3)指向折叠收益;默认 0=现行为逐位;HASH_LHT23=1 探针
+                    if (g_lht && bi >= (g_lht23 ? 2 : 4) && bi <= 9 && probe_rf_on() && !d_phist && !g_wm) {
 #define SPA_LAUNCH_LHT(LHT_) hash_spa_kernel<0,1,0,0,(LHT_)><<<n, hblk, smem_flat, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
         rows_ptr, n, ht, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
         g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, 0, nullptr)
-                        if (bi == 4) SPA_LAUNCH_LHT(9);     // ht=32<<bi=2^(bi+5):LOG_HT=log2(ht)!
+                        if (bi == 2) SPA_LAUNCH_LHT(7);        // 刀A:bin2 ht=128(几何仍 g_blk_lad 64T,仅代码形态折叠)
+                        else if (bi == 3) SPA_LAUNCH_LHT(8);   // 刀A:bin3 ht=256
+                        else if (bi == 4) SPA_LAUNCH_LHT(9);     // ht=32<<bi=2^(bi+5):LOG_HT=log2(ht)!
                         else if (bi == 5) SPA_LAUNCH_LHT(10);
                         else if (bi == 6) SPA_LAUNCH_LHT(11);  // 夜班#4:bins4-6 扩展(extract2 人口带折叠)
                         else if (bi == 7) SPA_LAUNCH_LHT(12);
