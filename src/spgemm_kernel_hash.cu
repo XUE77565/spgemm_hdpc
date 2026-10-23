@@ -2077,10 +2077,17 @@ static inline bool probe_rf_on() {
     return v != 0;
 }
 
-// 刀E1(study/57 §廿五):bin4→hash_heavy 试点门(compact 侧同读;发射侧在 spec99 门内联判)
+// 刀E1/E2(study/57 §廿五/廿六):bin4 被无序写内核接管(hash_heavy 或 VG)→ compact 侧 csort 载体
 static inline bool h45_pilot_on() {
     static int v = -1;
-    if (v < 0) { const char *e = getenv("HASH_H45"); v = (e && *e && atoi(e) > 0) ? 1 : 0; }
+    if (v < 0) {
+        const char *e = getenv("HASH_H45");
+        int e1 = (e && *e && atoi(e) > 0) ? 1 : 0;
+        const char *g = getenv("HASH_VG45");          // E2 需 HYB_TIER 同开(VG 门前置条件)
+        const char *h = getenv("HYB_TIER");
+        int e2 = (g && *g && atoi(g) > 0 && h && *h && atoi(h) > 0) ? 1 : 0;
+        v = e1 || e2;
+    }
     return v != 0;
 }
 
@@ -2454,7 +2461,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
     if (tid == 0) cnt = 0;
     __syncthreads();
     long long base = row_off[i];
-    if (ht_size <= CSORT_HT && !(uo_extract && MODE == 0)) {   // HASH_UO_XTRACT:口径对齐仪器(签名注)
+    if (ht_size <= CSORT_HT && !VAL_GMEM && !(uo_extract && MODE == 0)) {   // HASH_UO_XTRACT:口径对齐仪器;刀E2:VG 实例键区独占 smem,有序 extract 走无序分支(val_rd)
         // compact 到前部:chunked 读进寄存器→sync→写前部(read-before-write 防 race)
         for (int it = 0; it < (ht_size + blockDim.x - 1) / blockDim.x; it++) {
             int s = it * blockDim.x + tid;
@@ -6450,7 +6457,9 @@ static void hash_product(
                     g_blk_init = 1;
                 }
                 int hblk = g_blk_lad[bi <= HASH_LADDER_MAX_BIN ? bi : HASH_LADDER_MAX_BIN];
-                if (g_hyb_tier && !att && ht >= TABLE_DOUBLING_THR && probe_rf_on()) {
+                static int g_vg45 = -1;   // 刀E2(study/57 §廿六):bin4→VG 空格补测——VAL_GMEM(L2 原生 RED.E.ADD.F64,免 smem CAST.SPIN 模拟税)×128T 窄块 = ocean <7,673> 耦合配置;默认关
+                if (g_vg45 < 0) { const char *e = getenv("HASH_VG45"); g_vg45 = (e && *e) ? atoi(e) : 0; }
+                if (g_hyb_tier && !att && (ht >= TABLE_DOUBLING_THR || (g_vg45 && bi == 4)) && probe_rf_on()) {
                     // spec91 刀E:大表 bin 值区 gmem 池 + 主力内核模板实例(VAL_GMEM=1)。
                     // 取代 hash_spa_hkv_kernel(2026-08-27 否决的残缺形态:无 read-first 每乘积必
                     // CAS/无 B16/固定块宽;刀E 保留探测全套现代机构,仅值区几何换 gmem——累加
@@ -6473,7 +6482,9 @@ static void hash_product(
                         rows_ptr, n, ht, d_off,
                         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
                         d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr,
-                        g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, (int)nbuf, d_gv_bins[bi]);
+                        g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox,
+                        (ht < TABLE_DOUBLING_THR) ? 0 : g_extract2,   // 刀E2:bin4 VG 无 CS2 hist smem → legacy rank extract(T4a:d≤384 rank 优)
+                        (int)nbuf, d_gv_bins[bi]);
                     CHECK_CUDA(cudaGetLastError());   // 发射即时检查(opt-in/表大小问题即抓)
                 } else if (!att && g_priv && smem_priv <= (size_t)PRIV_SMEM_MAX) {
                     hash_spa_priv_kernel<<<n, PRIV_W * WARP_SIZE, smem_priv>>>(
