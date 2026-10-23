@@ -2077,6 +2077,8 @@ static inline bool probe_rf_on() {
     return v != 0;
 }
 
+__device__ int g_xbit_d = 0;   // 刀E5(study/57 §三一):HASH_XBIT → host cudaMemcpyToSymbol;extract 每行一次分支,零热径成本
+
 // 刀E1/E2(study/57 §廿五/廿六):bin4 被无序写内核接管(hash_heavy 或 VG)→ compact 侧 csort 载体
 static inline bool h45_pilot_on() {
     static int v = -1;
@@ -2463,6 +2465,53 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
     __syncthreads();
     long long base = row_off[i];
     if (ht_size <= CSORT_HT && !VAL_GMEM && !(uo_extract && MODE == 0)) {   // HASH_UO_XTRACT:口径对齐仪器;刀E2:VG 实例键区独占 smem,有序 extract 走无序分支(val_rd)
+        // ── 刀E5(study/57 §三一):表内 bitonic extract(C3 已验 nnz 逐位的形态移植)──
+        // 消:①atomicAdd 抢位压缩(每行 ~d 次串行共享原子)②CS2 五趟 ③rank O(d²) 回退。
+        // 全表 bitonic(col/val 成对交换,-1 哨兵升序沉头)+ 有序直写;45 趟 × ht/256 交换/线程。
+        if (g_xbit_d && MODE == 0) {
+            __shared__ int xn; __shared__ int xw[32];
+            int cntl = 0;
+            for (int s = tid; s < ht_size; s += blockDim.x) cntl += (sh_col[s] != -1);
+            for (int off = 16; off; off >>= 1) cntl += __shfl_down_sync(0xffffffffu, cntl, off);
+            if ((tid & 31) == 0) xw[tid >> 5] = cntl;
+            __syncthreads();
+            if (tid == 0) { int t = 0; for (int w = 0; w < (int)(blockDim.x >> 5); w++) t += xw[w]; xn = t; }
+            __syncthreads();
+            const int n = xn;
+            for (int ksz = 2; ksz <= ht_size; ksz <<= 1)
+                for (int jj = ksz >> 1; jj > 0; jj >>= 1) {
+                    for (int idx = tid; idx < ht_size; idx += blockDim.x) {
+                        int l = idx ^ jj;
+                        if (l > idx) {
+                            bool up = ((idx & ksz) == 0);
+                            int a = sh_col[idx], b = sh_col[l];
+                            if (a != b && (a > b) == up) {
+                                sh_col[idx] = b; sh_col[l] = a;
+                                double va = sh_val[idx], vb = sh_val[l];
+                                sh_val[idx] = vb; sh_val[l] = va;
+                            }
+                        }
+                    }
+                    __syncthreads();
+                }
+            long long base2 = row_off[i];
+            long long cap2 = row_off[i + 1] - row_off[i];
+            for (int s = tid; s < ht_size; s += blockDim.x) {
+                int c = sh_col[s];
+                if (c != -1) {
+                    int rank = s - (ht_size - n);
+                    if (rank < (int)cap2) {
+                        tmp_key[base2 + rank] = ((unsigned long long)i << 32) | (unsigned)c;
+                        tmp_val[base2 + rank] = sh_val[s];
+                    }
+                }
+            }
+            __syncthreads();
+            if (tid == 0) {
+                row_nnz[i] = (n <= (int)cap2) ? n : (int)cap2;
+                if (n > (int)cap2) { atomicExch(overflow_flag, 1); if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; } }
+            }
+        } else {
         // compact 到前部:chunked 读进寄存器→sync→写前部(read-before-write 防 race)
         for (int it = 0; it < (ht_size + blockDim.x - 1) / blockDim.x; it++) {
             int s = it * blockDim.x + tid;
@@ -2607,6 +2656,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
             if (count > cap) { if (!atomicExch(&row_ovf[i], 1)) { int p = atomicAdd(ovf_cnt, 1); ovf_rows[p] = i; } }
             row_nnz[i] = (count <= cap) ? count : (int)cap;
         }
+        }   /* 刀E5:legacy extract else 闭合 */
     } else if (MODE == 2) {
         // 大行 MODE=2:无序直写 dC(精确偏移;行内乱序 → 原地 csort 善后)
         int base2 = exact_rp[i];
@@ -5360,6 +5410,13 @@ static void hash_product(
     int *d_ovf_rows; d_ovf_rows = decltype(d_ovf_rows)(dev_alloc(A_rows * sizeof(int)));
     int *d_ovf_cnt;  d_ovf_cnt  = decltype(d_ovf_cnt)(dev_alloc(sizeof(int)));
     int *d_row_ovf;  d_row_ovf  = decltype(d_row_ovf)(dev_alloc(A_rows * sizeof(int)));   // 重试行标记(compact 路由)
+    // 刀E5(study/57 §三一):HASH_XBIT → g_xbit_d 符号装载(extract 每行一次分支,零热径成本)
+    static int g_xbit_host = -1;
+    if (g_xbit_host < 0) {
+        const char *e = getenv("HASH_XBIT");
+        g_xbit_host = (e && *e && atoi(e) > 0) ? 1 : 0;
+        CHECK_CUDA(cudaMemcpyToSymbol(g_xbit_d, &g_xbit_host, sizeof(int)));
+    }
     // HASH_ROWTIME=path:hash_spa 逐行执行周期(docs/66 采数,判 merge3 路由);null=生产零开销
     unsigned long long *d_rt = nullptr; FILE *hrt_f = nullptr; const char *hrt_path = getenv("HASH_ROWTIME");
     if (hrt_path && *hrt_path) {
