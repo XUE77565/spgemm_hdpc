@@ -6672,6 +6672,8 @@ static void hash_product(
                     if (g_lht23 < 0) { const char *e = getenv("HASH_LHT23"); g_lht23 = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 0; }   // 刀A(study/57 tick2):bins2-3 常量折叠扩展;默认 0=现行为逐位
                     static int g_ocnk = -1;   // 刀E6(study/57 §三十三):ocean hashNumeric 字面移植替换消融(枚举+探测环逐行原样,接口适配见 port 头注);默认关=零生产影响
                     if (g_ocnk < 0) { const char *e = getenv("HASH_OCNK"); g_ocnk = (e && *e) ? atoi(e) : 0; }
+                    static int g_b5to6 = -1;   // 刀A3α(study/57 §三六,A1曲面):bin5→bin6 配置——d384-512 带 ht1024 LF 税 18-40%,argmin=ht2048@512T(=g_blk_lad[6]);默认关
+                    if (g_b5to6 < 0) { const char *e = getenv("HASH_B5TO6"); g_b5to6 = (e && *e) ? atoi(e) : 0; }
                     static int g_b4pack = -1;   // 刀C3(study/57 §十七):bin4 多行封包内核(warp 私有表,36 行/SM vs 8);默认关
                     if (g_b4pack < 0) { const char *e = getenv("HASH_B4PACK"); g_b4pack = (e && *e) ? atoi(e) : 0; }
                     if (g_ocnk && bi == 4) {
@@ -6702,7 +6704,25 @@ static void hash_product(
                         if (bi == 2) { if (g_probe2) SPA_LAUNCH_LHT2(7, 1); else SPA_LAUNCH_LHT2(7, 0); }
                         else if (bi == 3) { if (g_probe2) SPA_LAUNCH_LHT2(8, 1); else SPA_LAUNCH_LHT2(8, 0); }
                         else if (bi == 4) { if (g_probe2) SPA_LAUNCH_LHT2(9, 1); else SPA_LAUNCH_LHT2(9, 0); }   // ht=32<<bi=2^(bi+5):LOG_HT=log2(ht)
-                        else if (bi == 5) { if (g_probe2) SPA_LAUNCH_LHT2(10, 1); else SPA_LAUNCH_LHT2(10, 0); }
+                        else if (bi == 5) {
+                            if (g_b5to6) {   // 刀A3α:bin5 行按 bin6 配置(LHT11=ht2048 @ g_blk_lad[6]=512T)发射;compact 路径不变(extract 有序)
+                                int hb6 = g_blk_lad[6];
+                                size_t sm6 = (size_t)2048 * (sizeof(int) + sizeof(double)) + (g_extract2 ? 3 * 1024 * sizeof(int) : 0);
+                                if (g_probe2) hash_spa_kernel<0,1,0,0,11,0,1,0><<<n, hb6, sm6, cur_s>>>( \
+        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
+        rows_ptr, n, 2048, d_off, \
+        d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
+        d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
+        g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, 0, nullptr);
+                                else hash_spa_kernel<0,1,0,0,11,0,0,0><<<n, hb6, sm6, cur_s>>>( \
+        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
+        rows_ptr, n, 2048, d_off, \
+        d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
+        d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
+        g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, 0, nullptr);
+                            }
+                            else { if (g_probe2) SPA_LAUNCH_LHT2(10, 1); else SPA_LAUNCH_LHT2(10, 0); }
+                        }
                         else if (bi == 6) { if (g_probe2) SPA_LAUNCH_LHT2(11, 1); else SPA_LAUNCH_LHT2(11, 0); }
                         else if (bi == 7) { if (g_probe2) SPA_LAUNCH_LHT2(12, 1); else SPA_LAUNCH_LHT2(12, 0); }
                         else if (bi == 8) { if (g_probe2) SPA_LAUNCH_LHT2(13, 1); else SPA_LAUNCH_LHT2(13, 0); }
