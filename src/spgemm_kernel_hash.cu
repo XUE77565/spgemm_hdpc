@@ -2077,6 +2077,13 @@ static inline bool probe_rf_on() {
     return v != 0;
 }
 
+// 刀E1(study/57 §廿五):bin4→hash_heavy 试点门(compact 侧同读;发射侧在 spec99 门内联判)
+static inline bool h45_pilot_on() {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("HASH_H45"); v = (e && *e && atoi(e) > 0) ? 1 : 0; }
+    return v != 0;
+}
+
 // PROBE_RF(read-first 探测,模板参默认开):命中先普通读 sh_col,相等即 atomicAdd(val)——
 // 命中路径零 CAS;空槽才 atomicCAS 占位(占败 = 他人已入他键,前进重探)。该探测模式为领域
 // 公共形态(nsparse kernel_spgemm_hash_s.cu:298-315 / spECK HashMap.cuh 同构先例);散列用
@@ -6538,7 +6545,9 @@ static void hash_product(
                     if (g_s99och < 0) { const char *e = getenv("SPEC99_OCH"); g_s99och = (e && *e) ? atoi(e) : 0; }
                     static int g_s99rot = -1;   // 刀11 旋转总闸:默认 0 关(nd24k −1.7%但 crankseg +1.7%,三行级门(cnt/maxbl/dup)均无区分力=人口整体行为;SPEC99_ROT=1 开)
                     if (g_s99rot < 0) { const char *e = getenv("SPEC99_ROT"); g_s99rot = (e && *e) ? atoi(e) : 0; }
-                    if (g_s99 && bi >= 7 && bi <= 8 && !g_wm && !g_pht) {
+                    static int g_h45 = -1;   // 刀E1 试点(study/57 §廿五):bin4→hash_heavy 瘦核窄块(ocean <7,673> 对位 128T);默认关=原 LHT 路径逐位
+                    if (g_h45 < 0) { const char *e = getenv("HASH_H45"); g_h45 = (e && *e) ? atoi(e) : 0; }
+                    if (g_s99 && ((bi >= 7 && bi <= 8) || (g_h45 && bi == 4)) && !g_wm && !g_pht) {
 #define HH_LAUNCH2(LNT_, P_, OCH_, LO_, HI_, ROT_) do { \
     const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
     CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1, (OCH_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
@@ -6555,7 +6564,8 @@ static void hash_product(
                         // 刀6:pow2 档终极 A/B(4096/8192=hash_spa 同表经济,mask 1 条 vs magic-div 6 条)——
                         // 隔离 3 栅栏结构 vs 18 栅栏的净价值;刀5 素数版(4111/8209)留 git 史
                         if (bi == 7)      HH_LAUNCH(9, 4096);
-                        else              HH_LAUNCH(10, 8192);
+                        else if (bi == 8) HH_LAUNCH(10, 8192);
+                        else              HH_LAUNCH(7, 512);   // 刀E1:bin4 ht=512 pow2(deployed 形态同款),128T=16 块/SM
 #undef HH_LAUNCH
 #undef HH_LAUNCH2
                         CHECK_CUDA(cudaGetLastError());
@@ -7603,6 +7613,10 @@ static void hash_product(
                     hash_compact_copy_thread_kernel<<<(n + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 else
                     launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                CHECK_CUDA(cudaGetLastError());
+            } else if (bi == 4 && h45_pilot_on()) {
+                // 刀E1:bin4 行走 hash_heavy(无序写 tmp)→ csort 善后(CAP 512 紧贴 bin4 表容)
+                launch_csort<128, 4>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());
             } else if (bi <= ilog2c(CSORT_HT / WARP_SIZE)) {
                 // 小行(ht≤CSORT_HT):accumulate 已 count-sort,这里只 compact_copy(tmp→CSR)
