@@ -2095,7 +2095,7 @@ static inline bool h45_pilot_on() {
 // 命中路径零 CAS;空槽才 atomicCAS 占位(占败 = 他人已入他键,前进重探)。该探测模式为领域
 // 公共形态(nsparse kernel_spgemm_hash_s.cu:298-315 / spECK HashMap.cuh 同构先例);散列用
 // 自有 Knuth 乘法常数 2654435761u 全值域映射 + mask 线性探测(pow2 表)。
-template<int MODE, int PROBE_RF = 1, int PROBE_HIST_ON = 0, int VAL_GMEM = 0, int LOG_HT = 0, int HT_P = 0, int PROBE2 = 0>
+template<int MODE, int PROBE_RF = 1, int PROBE_HIST_ON = 0, int VAL_GMEM = 0, int LOG_HT = 0, int HT_P = 0, int PROBE2 = 0, int WM_T = -1>
 // PROBE2(刀D1,study/57 §十八):熔断换位——per-probe 计数器(IADD+ISETP 每探测步 +
 // ++probes 归纳寄存器)→ per-k occupancy 余量检查(ocean hashSymbolic 同构:occ+本k
 // B行宽 ≥ 表容 bail)+ wrap 检测(slot==起点,1 ISETP/步)作挂死保护。终止性:per-k
@@ -2195,7 +2195,8 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
     int G = 1 << logG;
     int num_groups = blockDim.x / G;
     int my_group = tid / G, my_id = tid % G;
-    if (warp_merge == 4) {
+    const int wm_eff = (WM_T >= 0) ? WM_T : warp_merge;   // 刀E3:WM_T≥0 = 编译期定死(LHT 热实例 WM×3 死兄弟枚举环整体消码,REG 压力与调度空间同收);-1 = 运行时(legacy 发射点不变)
+    if (wm_eff == 4) {
         // spec95 WM v4(§3.1s 三件套):①原生 q 环索引(消 WM2 走位平方税)②MATCH.ANY 单指令
         // dup 探针,无伙伴=原路径零附加③G=8 配套(HASH_WM=4+GFORCE=8):warp 跨 4 组×连续 k,
         // 网格阵 B 行重叠 → 同 j 在 warp 内可见。warp 均匀界=__reduce_max 趟数(免碎片化死锁)。
@@ -2259,7 +2260,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
                 }
             }
         }
-    } else if (warp_merge == 2) {
+    } else if (wm_eff == 2) {
         // ⑤ v3 WPM 窗口化乘积合并(inno/80 终局形态):按乘积序号切 32/窗,一 lane 一乘积。
         // uniformity 平凡(每 lane 恒有槽);同 j 乘积(块结构下 k 相邻→乘积序相邻)落同窗 →
         // match 归约 → 热 j 原子 26→1-3 次 = 时间串行窗口化消灭;B 读 = 每 k 段内连续。
@@ -2315,7 +2316,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
             }
         }
     } else
-    if (warp_merge) {
+    if (wm_eff) {
         // ⑤ v2(inno/80):双层 uniform 谓词化 + full-mask match 聚合 —— 同 warp 不同 k 的并发同列乘积
         // rank-butterfly 归约,leader 单探测+单原子(dup 高时原子/探测双坍缩)。
         // v1 死因 = activemask 碎片化;此版全程 0xffffffff,无同步边界漂移。
@@ -6623,7 +6624,7 @@ static void hash_product(
                     if (g_lht && bi >= (g_lht23 ? 2 : 4) && bi <= 9 && probe_rf_on() && !d_phist && !g_wm) {
                     static int g_probe2 = -1;   // 刀D1(study/57 §十八):熔断换位(per-k 余量检查+wrap 守卫,消每探测步计数器);默认关=原形态逐位
                     if (g_probe2 < 0) { const char *e = getenv("HASH_PROBE2"); g_probe2 = (e && *e) ? atoi(e) : 0; }
-#define SPA_LAUNCH_LHT2(LHT_, P2_) hash_spa_kernel<0,1,0,0,(LHT_),0,(P2_)><<<n, hblk, smem_flat, cur_s>>>( \
+#define SPA_LAUNCH_LHT2(LHT_, P2_) hash_spa_kernel<0,1,0,0,(LHT_),0,(P2_),0><<<n, hblk, smem_flat, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
         rows_ptr, n, ht, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
