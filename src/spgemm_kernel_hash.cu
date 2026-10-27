@@ -37,6 +37,15 @@ extern __global__ void dense_struct_count_kernel(
 
 // docs/72 Phase 1b:numeric 直写(位图字级 popcount 前缀发射,无 warp0 串行)
 void dsn_rt_attach(unsigned long long *p);        // §26 采数代理(struct.cu 内 device symbol)
+
+// ===== P1 per-file 三层(study/58 附录A.1 v2,探针定谳 0964aa8)=====
+// 本文件双编:TU-90(缺省/显式 =90,sm_90 原生,全 host 区)= 现行为;
+// TU-61(=61,compute_61 gencode)= 仅 device 模板区 + 大表(bins≥4)accumulate 发射器。
+// 探针三定谳:非模板 kernel 已全 static(P3);host 发射区整域门防未打签模板实例弱合并(P2);
+// 运行时形态实例重叠由 TB_TAG 模板参解(cutover 段)。
+#ifndef HASH_TB
+#define HASH_TB 90
+#endif
 template<int TPB>
 extern __global__ void dense_struct_numeric_kernel(
     const int *A_rp, const int *A_ci, const double *A_val,
@@ -3588,7 +3597,7 @@ __global__ __launch_bounds__(TPB, 2048 / (TPB * 2)) void hash_compact_sort_kerne
 // (REXP=1 耦合版教训:crankseg −8.5 实为 occgate 门槛迁移,in-2004 +58.7 实为
 //  direct 写入人口翻倍 —— 都是路由副作用,不是压表红利;解耦版量纯压表收益)。
 // E≤elo → g=glo(默认=eref,恒等不碰);E≥ehi → g=ghi;中间 log 插值。
-SP_HD int tbl_target_rexp(int e, int alpha_pct, double glo, double ghi,
+static SP_HD int tbl_target_rexp(int e, int alpha_pct, double glo, double ghi,
                           int elo, int ehi, double eref) {
     int target = (e <= TABLE_DOUBLING_THR) ? (int)((long long)e * alpha_pct / 100) : e;
     if (ehi <= 0 || e <= 0) return target;
@@ -4445,6 +4454,10 @@ static __global__ void hash_compact_copy_warp_v2_kernel(
     }
 }
 
+// ===== P1 G1(study/58 附录A.1 v2):compact/csort host 助手区 = TU-90 独占 =====
+// TU-61 编译这些发射器会实例化未打签 csort 模板 → 探针P2 弱合并雷(静默错 codegen)。
+// 区内全为 compact 侧家族,TU-61 accumulate 梯零引用(已核函数地图 4449-4880)。
+#if HASH_TB != 61
 // 刀C1 发射 helper:5 个调用点统一走此门(env 读一次;默认 0 = 原核逐位)。
 static void launch_copy_warp(int n_rows, const int *rows_ptr,
                              const long long *d_off, const int *d_row_nnz, const int *dC_rp,
@@ -4878,6 +4891,8 @@ static void launch_csort(int n, const int *rows_ptr, const long long *d_off, con
 }
 
 // DBG 校验:输出 CSR 每行 col 严格升序(验证 compact_sort 排序正确)。
+#endif   // P1 G1 结束(compact/csort host 助手区;hash_check_sorted 起 TU-61 可见——死码无害)
+
 static __global__ void hash_check_sorted_kernel(const int *row_ptr, const int *col, int A_rows, int *violations) {
     int r = blockIdx.x * blockDim.x + threadIdx.x;
     if (r >= A_rows) return;
@@ -5073,8 +5088,17 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     if (rowtime && tid == 0) rowtime[i] = clock64() - rt0;
 }
 
+// ===== P1 TU-61 出口(study/58 附录A.1 v2)=====
+// cutover 段将在此移入 bi≥4 accumulate 梯(HashAccumCtx + 名字别名,移动体文本不动)
+// + HH_SORTED loader(本 TU cubin 的 g_hh_sorted_d 副本,探针P3)+ TB_TAG 版 SPA_LAUNCH0。
+// B1 骨架:仅证 TU-61 符号层(device 模板区在 compute_61 下可编、门内零 host 发射)。
+#if HASH_TB == 61
+void hash_accum_ge4_c61(int bi);   // 骨架声明(未定义亦未引用——TU-61 .o 仅 device 码)
+#endif
+
 // Host
 
+#if HASH_TB != 61   // ===== P1 G2:hash_product 全域(含 compact/diter/retry/公共入口)= TU-90 独占 =====
 static void hash_product(
     void *A_buffer, int A_rows, int A_cols, int A_nnz, bool att,
     void **C_buffer_out, int *C_rows, int *C_cols, int *C_nnz)
@@ -8027,3 +8051,5 @@ void spgemm_att_hash(void *A_buffer, int A_rows, int A_cols, int A_nnz,
                      void **C_buffer_out, int *C_rows, int *C_cols, int *C_nnz) {
     hash_product(A_buffer, A_rows, A_cols, A_nnz, /*att=*/true, C_buffer_out, C_rows, C_cols, C_nnz);
 }
+
+#endif   // P1 G2 结束(hash_product 全域;TU-61 到此为止)
