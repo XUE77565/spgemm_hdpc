@@ -5371,7 +5371,9 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
         g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, 0, nullptr)
-                        if (bi == 4) { if (g_probe2) SPA_LAUNCH_LHT2(9, 1); else SPA_LAUNCH_LHT2(9, 0); }   // ht=32<<bi=2^(bi+5):LOG_HT=log2(ht)
+                        if (bi == 2) { if (g_probe2) SPA_LAUNCH_LHT2(7, 1); else SPA_LAUNCH_LHT2(7, 0); }   // §五十六:bins2-3 托付形态(tagged 实例;TU-90 untagged=雷,runtime=病理)
+                        else if (bi == 3) { if (g_probe2) SPA_LAUNCH_LHT2(8, 1); else SPA_LAUNCH_LHT2(8, 0); }
+                        else if (bi == 4) { if (g_probe2) SPA_LAUNCH_LHT2(9, 1); else SPA_LAUNCH_LHT2(9, 0); }   // ht=32<<bi=2^(bi+5):LOG_HT=log2(ht)
                         else if (bi == 5) {
                             if (g_b5to6) {   // 刀A3α:bin5 行按 bin6 配置(LHT11=ht2048 @ g_blk_lad[6]=512T)发射;compact 路径不变(extract 有序)
                                 int hb6 = g_blk_lad[6];
@@ -6945,11 +6947,13 @@ static void hash_product(
                     // 实例集不相交:本 TU 仅实例化 LHT2 LHT∈{7,8};运行时形态只在 TU-61(免 TB_TAG)。
                     static int g_lht = -1;
                     if (g_lht < 0) { const char *e = getenv("HASH_LHT"); g_lht = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }
-                    static int g_lht23 = -1;   // 刀A(study/57 tick2):bins2-3 常量折叠;默认 0=运行时形态(托 TU-61);
-                    if (g_lht23 < 0) { const char *e = getenv("HASH_LHT23"); g_lht23 = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 0; }   // =1 激活本 TU sm90 LHT2(7/8)(银行刀,confirm15 翻默认)
+                    static int g_lht23 = -1;   // 刀A(study/57 tick2):bins2-3 常量折叠(sm90 LHT2 本 TU)。
+                    // P1 电池定谳(§五十六):默认必须 1——bins2-3 走 TU-61 运行时形态=病理(F2 acc 16×/c-64 9×);
+                    // =1 时 F2/TSOPF/c-64/bcsstk17 全部追平或超越双参考(刀A 九阵银行数据复现)。HASH_LHT23=0 逃生门(诊断用)。
+                    if (g_lht23 < 0) { const char *e = getenv("HASH_LHT23"); g_lht23 = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }
                     static int g_probe2 = -1;
                     if (g_probe2 < 0) { const char *e = getenv("HASH_PROBE2"); g_probe2 = (e && *e) ? atoi(e) : 0; }
-                    if (bi <= 3 && g_lht && g_lht23 && probe_rf_on() && !d_phist && !g_wm) {
+                    if (false && bi <= 3 && g_lht && g_lht23 && probe_rf_on() && !d_phist && !g_wm) {   // §五十六:TU-90 untagged LHT7/8 = web-Google smem 越界雷(正确性级编译条件),封;bins2-3 全托 TU-61 tagged
 #define SPA_LAUNCH_LHT2(LHT_, P2_) hash_spa_kernel<0,1,0,0,(LHT_),0,(P2_),0><<<n, hblk, smem_flat, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
         rows_ptr, n, ht, d_off, \

@@ -1072,3 +1072,37 @@ on/off A/B——若去签恢复=第9参是毒(改传递方式);若仍病=TU 内�
 (results/p1_battery_1027.csv 断点续跑,其余阵 case9 三方平 6.2x 已绿)。
 **P1 验收"TSOPF 回 sm90 级"当前 FAIL——判据本身需按今日同会话基准重写
 (整c61=5.61 才是今日靶)**。
+
+## 五十六、P1 病灶定谳与第三条路(10-27 深夜,loop 切片3 续)
+
+**电池 v1 全表(15 阵 × 3 构建 × 2 轮,nnz 三方逐位同)**:
+pf 复现 c61:Bump 1.000/cage15 0.999/Hook 1.004/ldoor·rgg·pre2 ~1.015/case9·bloweybq 平;
+pf 病态(全是 bins2-3 人口阵,acc 停 ~5.8ms 可疑常数):F2 16×/bcsstk17 12×/c-64 9×/web-Google 2.2×/TSOPF 1.6×/StocF 1.26×。
+
+**病灶=TU-61 运行时形态实例**(bins2-3 默认托付路):HASH_LHT23=1 一键复活全部
+(F2 0.244<c61 0.35 / c-64 0.358<0.57 / bcsstk17 0.257<0.49 / TSOPF 5.52≈5.61)。
+
+**但刀A 翻默认撞正确性雷**:web-Google(bins 2:63471 3:138119 4:40670 6:1295 7:51 8:4)
+WARMUP 即崩——memcheck 定位 `hash_spa_kernel<0,1,0,0,8,0,0,0,0>`(**TU-90 untagged
+LHT8**)smem 越界写 @2213(表初始化循环);**整 sm90/整 c61 + LHT23=1 同阵不崩**
+= 雷是 per-file TU-90 特有的正确性级编译条件雷(TU-90 的 untagged 实例 codegen 变体)。
+
+**第三条路(落地)**:bins2-3 全托 TU-61 **tagged LHT2(7/8)**(TU-90 本地 LHT 封
+`if(false)`;TU-61 链加回 bi2/3 分支;tag 隔离 → 审计仍零相交)。六阵裁决全绿:
+| 阵 | pf acc | 整c61 | 整sm90 | 判 |
+|---|---|---|---|---|
+| F2 | 0.244 | 0.35 | 0.36 | 赢 31% |
+| bcsstk17 | 0.258 | 0.49 | 0.50 | 赢 47% |
+| c-64 | 0.359 | 0.57 | 0.63 | 赢 37% |
+| web-Google | 2.556 | 2.68 | 3.02 | 赢 5%(nnz 29,710,164 三方同 ✓) |
+| StocF | 8.516 | 8.69 | 9.64 | 赢 2% |
+| TSOPF | 5.567 | 5.61 | 6.69 | 平 c61 |
+F2/bcsstk17/c-64 大幅赢 = 刀A 银行收益(−1.2~4.4%)之上叠加 per-file 红利。
+
+**架构定谳(P1 终形态)**:hash 主路径(bins2-9 generic)全走 TU-61 compute_61
+tagged;TU-90 = special bins(bin0/批处理/esc/diter/重行)+ compact/extract 全家
++ retry 簇。三层=「generic c61 / special-bin+compact sm90 / tag 隔离」。
+**方法论第五例编译器承载一切**:同一源码同一 flags,实例的 codegen/正确性随
+编译单位内容(TU 边界、tag 参存在性)漂移——性能轮盘(TSOPF)之上还有正确性轮盘
+(web-Google);check_disjoint 符号审计门 + memcheck spot 是唯一制度化解药。
+电池 v2 重跑中(results/p1_battery_1027.csv;v1 病理版留证 .v1_病理版.csv)。
