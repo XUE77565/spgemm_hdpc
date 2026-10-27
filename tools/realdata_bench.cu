@@ -3,6 +3,11 @@
 //   输入:/tmp/bump_{rp,ci,val,rows,est,flop}.npy(np 标准头,小端)
 #include "../src/spgemm_kernel_hash.cu"
 #include "../src/ocean_hash_port.cuh"
+// 终极对照:直接编译他们原始内核头(非移植)——排除移植差异的最后一丝可能
+namespace theirs { 
+#define NUM_HASH_INPLACE_SORT_THRESHOLD 673
+#include "../ocean/kernels/AccumulatorHash.cuh"
+}
 #include <cstdio>
 #include <vector>
 #include <cstring>
@@ -29,7 +34,8 @@ static void* npy_load(const char* path, size_t* n) {
 }
 
 int main() {
-    size_t nr, nc, nv, nrows, nest, nflop, nmb, ns1, ns2, ne1, ne2;
+    size_t nr, nc, nv, nrows, nest, nflop, nmb, ns1, ns2, ne1, ne2, nd;
+    int* h_dn = (int*)npy_load("/tmp/bump_d.npy", &nd);
     int* h_rows_small = (int*)npy_load("/tmp/bump_rows_small.npy", &ns1);
     int* h_rows_big   = (int*)npy_load("/tmp/bump_rows_big.npy", &ns2);
     int* h_est_small  = (int*)npy_load("/tmp/bump_est_small.npy", &ne1);
@@ -44,20 +50,26 @@ int main() {
     int ADIM = 2911419;
     printf("真数据:%zu nnz,%zu 行(bin4+5)\n", nc, nrows);
     int N = (int)nrows;
-    std::vector<long long> off(ADIM + 1, 0);   // 按行号全长(核按 my_row 索引——此前按人口序是 bug,两侧核同染,已修)
+    std::vector<long long> off(ADIM + 1, 0), dense_off(ADIM + 1, 0);
+    long long dtot = 0; { std::vector<long long> dp(ADIM,-1); for(int i=0;i<N;i++){dp[h_rows[i]]=h_dn[i]+8;} for(int r=0;r<ADIM;r++) if(dp[r]>0) dtot+=dp[r]; }
+// 按行号全长(核按 my_row 索引——此前按人口序是 bug,两侧核同染,已修)
     long long tot = 0;
     { std::vector<long long> pos(ADIM, -1);
       for (int i = 0; i < N; i++) pos[h_rows[i]] = tot, tot += (long long)h_est[i] * 2 + 64;
       for (int r = 0; r < ADIM; r++) off[r] = pos[r] < 0 ? 0 : pos[r];
+      { std::vector<long long> p2(ADIM,-1); long long t2=0;
+        for (int i=0;i<N;i++){ p2[h_rows[i]]=t2; t2+=h_dn[i]+8; }
+        for (int r=0;r<ADIM;r++) dense_off[r] = p2[r]<0?0:p2[r]; dense_off[ADIM]=t2; }
       off[ADIM] = tot; }
-    printf("tmp 槽总额 %.2f G\n", tot / 1e9);
+    printf("tmp 槽总额:稀疏 %.2f G / 致密 %.2f G\n", tot / 1e9, dtot / 1e9);
+    long long *d_off_dense; CHK(cudaMalloc(&d_off_dense,(ADIM+1)*8)); CHK(cudaMemcpy(d_off_dense,dense_off.data(),(ADIM+1)*8,cudaMemcpyHostToDevice));
 
 
     int *d_rp,*d_ci,*d_rows,*d_rnz,*d_ovf,*d_ovfr,*d_ovfc,*d_rovf,*d_flop,*d_maxbl;
     double *d_val,*d_tval; unsigned long long *d_tkey; long long *d_off;
     CHK(cudaMalloc(&d_rp,(ADIM+1)*4)); CHK(cudaMalloc(&d_ci,nc*4)); CHK(cudaMalloc(&d_val,nv*8));
-    CHK(cudaMalloc(&d_rows,N*4)); CHK(cudaMalloc(&d_rnz,N*4)); CHK(cudaMalloc(&d_ovf,4));
-    CHK(cudaMalloc(&d_ovfr,N*4)); CHK(cudaMalloc(&d_ovfc,4)); CHK(cudaMalloc(&d_rovf,N*4));
+    CHK(cudaMalloc(&d_rows,N*4)); CHK(cudaMalloc(&d_rnz,ADIM*4)); CHK(cudaMalloc(&d_ovf,4));
+    CHK(cudaMalloc(&d_ovfr,ADIM*4)); CHK(cudaMalloc(&d_ovfc,4)); CHK(cudaMalloc(&d_rovf,ADIM*4));
     CHK(cudaMalloc(&d_flop,ADIM*4)); CHK(cudaMalloc(&d_maxbl,ADIM*4));
     CHK(cudaMalloc(&d_tkey,(size_t)tot*8)); CHK(cudaMalloc(&d_tval,(size_t)tot*8));
     CHK(cudaMalloc(&d_off,(ADIM+1)*8));
@@ -82,7 +94,7 @@ int main() {
     CHK(cudaMalloc(&d_of1,(ADIM+1)*8)); CHK(cudaMalloc(&d_of2,(ADIM+1)*8));
     CHK(cudaMalloc(&d_fl1,ADIM*4)); CHK(cudaMalloc(&d_fl2,ADIM*4));
     CHK(cudaMalloc(&d_mb1,ADIM*4)); CHK(cudaMalloc(&d_mb2,ADIM*4));
-    CHK(cudaMalloc(&d_rnz,N*4)); CHK(cudaMemcpy(d_rs1,h_rows_small,N1*4,cudaMemcpyHostToDevice));
+    CHK(cudaMemcpy(d_rs1,h_rows_small,N1*4,cudaMemcpyHostToDevice));
     CHK(cudaMemcpy(d_rs2,h_rows_big,N2*4,cudaMemcpyHostToDevice));
     { std::vector<long long> o1(N1+1),o2(N2+1); long long t1=0,t2=0;
       for(int i=0;i<N1;i++){o1[i]=t1;t1+=(long long)h_est_small[i]*2+64;} o1[N1]=t1;
@@ -105,6 +117,9 @@ int main() {
         {"ours bin5核 全人口 ht1024@256T", 1, 10, 256, (size_t)1024*12+12*1024},
         {"ocn 673@128T 全人口",            0, 7,  128, 16 + (size_t)674*4 + (size_t)673*8 + 16},
         {"ocn 673@128T 拆2发射(split2)",   2, 7,  128, 16 + (size_t)674*4 + (size_t)673*8 + 16},
+        {"ocn 673@128T 致密槽",           3, 7,  128, 16 + (size_t)674*4 + (size_t)673*8 + 16},
+        {"ours ht1024@256T 致密槽",       4, 10, 256, (size_t)1024*12+12*1024},
+        {"★their 真身 673@128T(直编)", 5, 7, 128, 4096},
     };
     for (auto& c : cfgs) {
         float best = 1e9;
@@ -115,6 +130,19 @@ int main() {
                 int half = N/2;
                 ocean_hash_kernel<7,673,true,long long><<<half,c.blk,c.smem>>>(d_rp,d_ci,d_val,ADIM,ADIM,0,d_rp,d_ci,d_val,ADIM,ADIM,0,d_flop,d_maxbl,d_rows,half,d_off,d_tkey,d_tval,d_rnz,d_ovf,d_ovfr,d_ovfc,d_rovf,0);
                 ocean_hash_kernel<7,673,true,long long><<<N-half,c.blk,c.smem>>>(d_rp,d_ci,d_val,ADIM,ADIM,0,d_rp,d_ci,d_val,ADIM,ADIM,0,d_flop,d_maxbl,d_rows+half,N-half,d_off,d_tkey,d_tval,d_rnz,d_ovf,d_ovfr,d_ovfc,d_rovf,0);
+            } else if (c.mode == 3) {
+                ocean_hash_kernel<7,673,true,long long><<<N,c.blk,c.smem>>>(d_rp,d_ci,d_val,ADIM,ADIM,0,d_rp,d_ci,d_val,ADIM,ADIM,0,d_flop,d_maxbl,d_rows,N,d_off_dense,d_tkey,d_tval,d_rnz,d_ovf,d_ovfr,d_ovfc,d_rovf,0);
+            } else if (c.mode == 4) {
+                hash_spa_kernel<0,1,0,0,10,0,0,0><<<N,c.blk,c.smem>>>(d_rp,d_ci,d_val,d_rp,d_ci,d_val,0,d_rows,N,1024,d_off_dense,d_tkey,d_tval,d_rnz,d_ovf,d_ovfr,d_ovfc,d_rovf);
+            } else if (c.mode == 5) {
+                int *d_dummy; CHK(cudaMalloc(&d_dummy,16)); CHK(cudaMemset(d_dummy,0,16));
+                theirs::somespgemm::hashNumericKernel<7,673,true,false,unsigned int><<<N,128,8192>>>(
+                    (unsigned*)d_rp,(unsigned*)d_ci,d_val,ADIM,ADIM,(int)nc,
+                    (unsigned*)d_rp,(unsigned*)d_ci,d_val,ADIM,ADIM,(int)nc,
+                    (unsigned*)d_flop,(unsigned*)d_maxbl,(unsigned*)d_rows,(unsigned*)d_off,
+                    (unsigned*)d_tkey,d_tval,(unsigned*)d_rnz,(unsigned*)d_dummy,(unsigned*)d_ovfr,(unsigned*)d_dummy,
+                    nullptr,nullptr,0,0);
+                CHK(cudaGetLastError()); CHK(cudaFree(d_dummy));
             } else if (c.mode) {
                 if (c.lht==9)  hash_spa_kernel<0,1,0,0,9,0,0,0><<<N,c.blk,c.smem>>>(d_rp,d_ci,d_val,d_rp,d_ci,d_val,0,d_rows,N,512,d_off,d_tkey,d_tval,d_rnz,d_ovf,d_ovfr,d_ovfc,d_rovf);
                 else           hash_spa_kernel<0,1,0,0,10,0,0,0><<<N,c.blk,c.smem>>>(d_rp,d_ci,d_val,d_rp,d_ci,d_val,0,d_rows,N,1024,d_off,d_tkey,d_tval,d_rnz,d_ovf,d_ovfr,d_ovfc,d_rovf);
