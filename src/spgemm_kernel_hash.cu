@@ -2095,7 +2095,8 @@ static inline bool probe_rf_on() {
     return v != 0;
 }
 
-__device__ int g_xbit_d = 0;   // 刀E5(study/57 §三一):HASH_XBIT → host cudaMemcpyToSymbol;extract 每行一次分支,零热径成本
+__device__ int g_xbit_d = 0;
+__device__ int g_hh_sorted_d = 0;   // 刀Gv3(study/57 §五十):HH_SORTED → host 装载;hash_heavy 表内有序 rank 直写   // 刀E5(study/57 §三一):HASH_XBIT → host cudaMemcpyToSymbol;extract 每行一次分支,零热径成本
 
 // 刀E1/E2/G(study/57 §廿五/廿六/四十九):bin 被无序写内核接管(hash_heavy 或 VG)→ compact 侧 csort 载体
 static inline bool h45_pilot_on() {
@@ -4911,6 +4912,8 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     extern __shared__ int smem_hh[];                        // [HT_P]=sh_col(int);对齐后 sh_val(double)
     const int tid = threadIdx.x;
     const unsigned long long rt0 = rowtime ? clock64() : 0;
+    // 刀Gv3(study/57 §五十):hash_heavy 表内有序 rank 直写——env 经已有的 rt_pre_extract
+    // 参数位传入不便,新增参数侵入大;改用 __device__ 全局符号 host 装载(同 g_xbit_d 模式)
     int *sh_col = smem_hh;
     double *sh_val = (double *)(smem_hh + ((HT_P + 1) & ~1));   // 8B 对齐(素数奇表必需,spec91 修复)
     for (int s = tid; s < HT_P; s += blockDim.x) { sh_col[s] = -1; sh_val[s] = 0.0; }   // 清表(ids+vals 同遍,彼同构)
@@ -5010,7 +5013,54 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     // 之前在探测环后测 = 不含提取,跟彼方 ROWCYCLES(含提取)不同窗 → 偏向我们
     // 现在两边都是"从 kernel 开始到 kernel 结束"的完整时间
 
-    // 提取:无序 compact 写(hash_spa 大行同款;行内有序由下游 compact_sort_kernel 保证)
+    // 提取:刀Gv3(study/57 §五十)有序写——表内 O(count²/warp) rank 直写
+    // (compactAndSort 机理同源、代码自研;rank=warp 内小于自己的键数+跨 warp 归约;
+    //  免下游 counting sort 独立载体趟)。HH_SORTED=1 开;默认 0=无序写逐位不变。
+    if (g_hh_sorted_d) {
+        __shared__ int warp_cnt[32];
+        int lane5 = tid & 31, wid = tid >> 5, nw = (int)(blockDim.x >> 5);
+        // 每线程持槽计数(warp 聚合:一个 warp 一次扫连续 32 槽)
+        __shared__ int hh_pos[HT_P > 0 ? HT_P : 1];   // 每槽的有序位次(仅有效槽写)
+        int my_cnt = 0;
+        for (int s = tid * 32; s < HT_P; s += blockDim.x * 32) {
+            int lo = s + lane5;
+            unsigned ball = 0;
+            int c = -1;
+            if (lo < HT_P) { c = sh_col[lo]; ball = (c != -1) ? (1u << lane5) : 0; }
+            // 本 warp 有效槽数(每 warp 一段 32 连续槽)
+            unsigned valid = __ballot_sync(0xffffffffu, ball != 0);
+            my_cnt += __popc(valid);
+            // 段内 rank:比 c 小的有效键数(表内扫描,per warp 段)
+            if (c != -1) {
+                int r = 0;
+                for (int q = s; q < s + 32 && q < HT_P; q++) {
+                    int cc = sh_col[q];
+                    if (cc != -1 && cc < c) r++;
+                }
+                hh_pos[lo] = r;
+            }
+        }
+        // 跨 warp 偏移:各 warp 计数前缀(小 nw,warp0 串行)
+        for (int off = 16; off; off >>= 1) my_cnt += __shfl_down_sync(0xffffffffu, my_cnt, off);
+        if (lane5 == 0) warp_cnt[wid] = my_cnt;
+        __syncthreads();
+        if (tid == 0) { int acc2 = 0; for (int w = 0; w < nw; w++) { int t2 = warp_cnt[w]; warp_cnt[w] = acc2; acc2 += t2; } row_nnz[i] = acc2; }
+        __syncthreads();
+        // 写出:rank = warp 基址 + 段内位次
+        long long base2 = base;
+        int cap2 = INT_MAX;   // est 帽在外层 retry 语义(此处行已过熔断,cap 即 tmp 槽宽)
+        for (int s = tid * 32; s < HT_P; s += blockDim.x * 32) {
+            int lo = s + lane5;
+            if (lo < HT_P && sh_col[lo] != -1) {
+                int r = warp_cnt[tid >> 5] + hh_pos[lo];
+                if (r < cap2) {
+                    tmp_key[base2 + r] = ((unsigned long long)i << 32) | (unsigned int)sh_col[lo];
+                    tmp_val[base2 + r] = sh_val[lo];
+                }
+            }
+        }
+    } else
+    // 提取(legacy):无序 compact 写(hash_spa 大行同款;行内有序由下游 compact_sort_kernel 保证)
     for (int s = tid; s < HT_P; s += blockDim.x) {
         if (sh_col[s] != -1) {
             const int pos = atomicAdd(&row_nnz[i], 1);
@@ -5437,6 +5487,13 @@ static void hash_product(
         const char *e = getenv("HASH_XBIT");
         g_xbit_host = (e && *e && atoi(e) > 0) ? 1 : 0;
         CHECK_CUDA(cudaMemcpyToSymbol(g_xbit_d, &g_xbit_host, sizeof(int)));
+    }
+    // 刀Gv3:HH_SORTED 装载(hash_heavy 有序写)
+    static int g_hhs_host = -1;
+    if (g_hhs_host < 0) {
+        const char *e = getenv("HH_SORTED");
+        g_hhs_host = (e && *e && atoi(e) > 0) ? 1 : 0;
+        CHECK_CUDA(cudaMemcpyToSymbol(g_hh_sorted_d, &g_hhs_host, sizeof(int)));
     }
     // HASH_ROWTIME=path:hash_spa 逐行执行周期(docs/66 采数,判 merge3 路由);null=生产零开销
     unsigned long long *d_rt = nullptr; FILE *hrt_f = nullptr; const char *hrt_path = getenv("HASH_ROWTIME");
