@@ -285,6 +285,24 @@ __global__ void row_span_only_kernel(
 #define STREAMLINE_NNZ STREAMLINE_NNZ_STRUCT  // MinHash 两阶段 vs flop count 交叉
 #define WARP_SIZE 32  // NVIDIA 架构常数(硬件手册)
 
+// ── 刀F 前置(study/57 §四十五):compute_61 兼容层——sm_80+ warp 原语的软件回退。
+// 生产(-arch=sm_90)走硬件原语零变更;compute_61 编译(编译 flags 实验刀)走软件版。
+// WM/warp-merge 与 scatter 聚合路径在实验刀中默认关,软件版保编译通过+语义正确。
+#if __CUDA_ARCH__ && __CUDA_ARCH__ < 800
+SP_HD static unsigned sp_match_any_sync(unsigned mask, unsigned val) {
+    unsigned parts = __activemask() & mask, r = 0;
+    for (int off = 0; off < 32; off++)
+        if ((parts >> off) & 1) { unsigned ov = __shfl_sync(parts, val, off); if (ov == val) r |= (1u << off); }
+    return r & mask;
+}
+SP_HD static unsigned sp_reduce_max_sync(unsigned mask, unsigned val) {
+    for (int off = 16; off; off >>= 1) { unsigned o = __shfl_down_sync(mask, val, off); if (o > val) val = o; }
+    return __shfl_sync(mask, val, 0);
+}
+#define __match_any_sync(mask, val)  sp_match_any_sync((mask), (val))
+#define __reduce_max_sync(mask, val) sp_reduce_max_sync((mask), (val))
+#endif
+
 // MurmurHash3(full mix body+fmix32);MinHash 两阶段复用,SPA 累加暂仍用 Knuth 乘法
 __device__ __forceinline__ unsigned int rotl32(unsigned int x, int r) { return (x << r) | (x >> (32 - r)); }
 __device__ __forceinline__ unsigned int murmur_hash3(unsigned int key) {

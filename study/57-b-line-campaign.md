@@ -788,3 +788,22 @@ E6 罚金 = 纯系统上下文。
 (其进程的内存分配地址生态/驱动交互)——不复刻其二进制即不可得。
 **"我们没有 harness 吗"的终答:harness 不是部件,是其二进制的涌现性质;
 我们复刻了它的一切可见解剖结构,魔法仍不在其中。**
+
+## 四十四、破案(10-27 终,用户连环质询的最终回报):魔法 = 编译 flags
+
+**用户质疑"完全没有道理,复刻有问题?"→ 三连深挖**:
+1. 移植无罪铁证:直编他们原始内核头(非移植)在我环境 = 96.4ms(33.8ns/行),
+   与我的移植(33.3)一致——移植忠实;
+2. 数据逐位一致(其 .csr 的 rp/ci/val 与我方全等,transpose=0);
+3. **最后一环 = 他们 Makefile 的 NVFLAGS**:
+   `-gencode=arch=compute_61,code=sm_90`(**用 Pascal 级 PTX 生成 sm_90 SASS,
+   ptxas 指令选择/调度完全不同路径**)+ `-use_fast_math`。
+   ——我方所有 bench 一直用 `-arch=sm_90` 原生编译!
+**终测**(tools/theirflags_bench.cu,他们核×他们 flags×我们数据,include 序
+照抄其 main.cu 绕过 compute_61 的 stdint 雷区):
+   **62.9 ms = 22.08 ns/行 = 他们家速率精确复现!!**
+**全案闭环**:三日悬案"harness 提款魔力"= **编译 flags**。compute_61 PTX 降级
+让 ptxas 生成了更快的 sm_90 代码(老 PTX 级 → 更保守/更紧凑的指令选择)。
+**立即可测的行动项:我们自己的 hash_spa 用同样 flags 重编**(须绕过 match/reduce
+等 sm_80+ 原语——它们是 compute_61 不存在的;逐步:先测 hash_spa 主梯是否
+可编,不能则先测无这些原语的实例)。若我们核也提速 → b45 差距或可正收!
