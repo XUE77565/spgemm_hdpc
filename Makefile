@@ -11,7 +11,7 @@ SRCS = src/main.cu src/matrix_utils.cu src/spgemm_kernel_cusparse.cu src/spgemm_
 OBJS = $(SRCS:.cu=.o) src/spgemm_kernel_hash_c61.o
 HEADERS = $(wildcard include/*.h)   # 任何头文件改动都触发重编
 
-all: $(TARGET)
+all: $(TARGET) check-disjoint
 
 $(TARGET): $(OBJS)
 	$(NVCC) $(NVCC_FLAGS) -o $@ $^ $(LIBS)
@@ -52,3 +52,6 @@ run_all: $(TARGET)
 	bash scripts/run_all.sh
 
 .PHONY: all clean test run_all
+# P1 符号审计门(探针P2:同参实例弱合并=静默错codegen;study/58 附录A.1 保命件4)
+check-disjoint: src/spgemm_kernel_hash.o src/spgemm_kernel_hash_c61.o
+	tools/arch_probe/check_disjoint.sh

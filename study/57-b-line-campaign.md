@@ -1015,3 +1015,32 @@ compute_61 codegen——与 Bump(bin4/5 改善)相反方向。**hash_spa 在 c61
 4. 明早 loop 未完成项补齐:小表回归人口边界(bins0-3 行占比统计)。
 工具资产:spgemm_test_sm90(修复后)/spgemm_test_c61 双二进制 +
 tools/{realdata_bench,theirflags_bench,calib_station,replay_bench}。
+
+## 五十四、P1 cutover 落地(10-27 深夜,loop 切片2):per-file 生产形态首证
+
+**手术**(commits 4c57832/3d78e4f/本条):static-sed 79 处 → 双 TU 骨架(G1/G2 门)
+→ 梯移动(HashAccumCtx + auto 别名,移动体文本不动)→ TU-90 只留 bi≤3 LHT2 主路
+(刀A=env 激活,默认托 TU-61)→ **TB_TAG 模板参**(TU-61 wrapper 内 7 发射点全打签)
+→ check_disjoint.sh 符号审计门进 `make all`。
+
+**审计门两次实战**:
+1. 首跑抓获 TU-90 侧 22 个遗漏发射点(6077-6108 retry/重跑簇,PHT/VG/LHT9-14 形态)
+   ——"免 TB_TAG 靠发射点拓扑 disjoint"设计死于现实:retry 簇与主梯同参,
+   弱合并=主梯 codegen 变链接顺序彩票;
+2. TB_TAG 打签后:TU-90 26 实例 / TU-61 41 实例,**零相交** ✓。
+
+**Bump_2911 三构建对拍(同卡同会话,METHOD=hash WARMUP_N=1)**:
+| 构建 | accumulate | TOTAL | nnz |
+|---|---|---|---|
+| 整 sm90 | 79.12 | 555+ | 560,173,611 |
+| **per-file** | **71.87** | 596.3(d2h 289 主导) | ✓ 逐位同 |
+| 整 c61 | 71.92 | — | ✓ |
+**刀F +9% 在 per-file 生产形态精确兑现;per-file≈整c61(Δ0.07%)=cutover 无损。**
+Hook_1498:TOTAL 319.9(per-file)vs 321.5(整sm90),nnz 312,415,749 逐位同 ✓。
+
+**附带**:main 全方法巡游在 Hook/Bump exit=1 = **预存在**(整sm90 参考同崩;
+电池口径 METHOD 门控本就不走全巡游)——非本刀引入,GPU 哨兵全程清,零事故。
+
+**遗留(下一切片)**:15 阵三构建电池(TSOPF 4.26ms 恢复判据/F2/merge3 零回归/
+bins0-3 占比统计)+ c-64 memcheck spot + 整 c61 参考重建(现 spgemm_test_c61
+为 10-27 构建,E3 修复后)对齐。
