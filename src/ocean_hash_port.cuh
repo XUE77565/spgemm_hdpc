@@ -11,7 +11,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 #pragma once
 
-// ── localLoadBalance(ocean AccumulatorCommon.cuh:67 原样)─────────────────
+// ── localLoadBalance(ocean AccumulatorCommon.cuh:67-106 完整逐行原样;审计修复:首轮移植漏了下行/第三调整循环与钳位)──
 __device__ __forceinline__ unsigned oc_localLoadBalance(unsigned n_element_a, unsigned num_products,
                                                         unsigned max_elements_b, unsigned lbound, unsigned ubound) {
     if (num_products == 0) return 0;
@@ -24,10 +24,23 @@ __device__ __forceinline__ unsigned oc_localLoadBalance(unsigned n_element_a, un
     while (max_sub_iter > num_iters * 2) {
         if (log_nthr >= ubound) break;
         log_nthr += 1;
+        max_sub_iter = (max_elements_b + (1<<log_nthr) - 1) >> log_nthr;
         a_elem_per_iter = 1 << (ubound - log_nthr);
         num_iters = (n_element_a + a_elem_per_iter - 1) / a_elem_per_iter;
-        max_sub_iter = (max_elements_b + (1<<log_nthr) - 1) >> log_nthr;
     }
+    while (num_iters > max_sub_iter * 2) {
+        if (log_nthr <= lbound) break;
+        log_nthr -= 1;
+        max_sub_iter = (max_elements_b + (1<<log_nthr) - 1) >> log_nthr;
+        a_elem_per_iter = 1 << (ubound - log_nthr);
+        num_iters = (n_element_a + a_elem_per_iter - 1) / a_elem_per_iter;
+    }
+    while (a_elem_per_iter > n_element_a && (1 << log_nthr) < max_elements_b) {
+        log_nthr += 1;
+        a_elem_per_iter = 1 << (ubound - log_nthr);
+    }
+    if (log_nthr < lbound) log_nthr = lbound;
+    if (log_nthr > ubound) log_nthr = ubound;
     return log_nthr;
 }
 
