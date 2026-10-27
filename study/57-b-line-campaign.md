@@ -991,3 +991,27 @@ compute_61 codegen——与 Bump(bin4/5 改善)相反方向。**hash_spa 在 c61
 **定谳:compute_61 是孤峰不是梯**——61/70/80 三档中只有 61 有布局魔法,
 70/80 已回 sm_90 原生水平。无更优档可扫(compute_50 以下无 fp64 原子
 保证,风险档)。**刀 F 的 gencode 选型定案:compute_61。**
+
+## 五十三、今夜终态与交接(10-27 深夜,loop 收束)
+
+**今夜完整收获(commits b52d880/7ff9445 + E3 跨build实锤)**:
+1. Phase 0 广谱审计:merge3/first100 零回归/垫片税≈0/dense 仅 TSOPF +4.2%;
+2. TSOPF 回归定位:hash_spa 小表实例 c61 分裂 codegen(accumulate +30%,
+   与 bin4/5 反向)→ per-file 三层方案(大表 c61/小表 sm90/门控);
+3. PTX 梯定案:compute_61 孤峰(70/80 双回落),选型关闭;
+4. E3 opt-in 回归跨 build 实锤(旧 sm90 生产二进制同崩 c-64),已修复。
+
+**银行现状**:
+- 已验待入账:刀 F(c61 编译,hash 核 +9%)+ 刀 A(HASH_LHT23,−1.2~4.4%)
+  ——捆绑 428 confirm = 入账通道(未跑);
+- hash_heavy 复活(E1 翻案)但刀 G 载体税未解(Gv3v2 ballot rank 未写);
+- 记分链未动:GM 0.8873(10-23 至今)。
+
+**下一会话起手清单(按序)**:
+1. per-file 三层实施(Makefile:仅 spgemm_kernel_hash.cu 编 c61 + 小表
+   实例保 sm90 的编译期分离——可用 #pragma/__CUDA_ARCH__ 或拆文件);
+2. Gv3 v2(ballot+popc 位移 rank + cap 守卫)——载体悖论正解;
+3. 刀 F + 刀 A(+幸存刀)捆绑 428 confirm(同夜同卡 ocean 配对);
+4. 明早 loop 未完成项补齐:小表回归人口边界(bins0-3 行占比统计)。
+工具资产:spgemm_test_sm90(修复后)/spgemm_test_c61 双二进制 +
+tools/{realdata_bench,theirflags_bench,calib_station,replay_bench}。
