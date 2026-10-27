@@ -6670,13 +6670,13 @@ static void hash_product(
                     if (g_lht < 0) { const char *e = getenv("HASH_LHT"); g_lht = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }   // 09-24 用户授权翻默认:bins4-9 常量折叠;HASH_LHT=0 逃生门
                     static int g_lht23 = -1;
                     if (g_lht23 < 0) { const char *e = getenv("HASH_LHT23"); g_lht23 = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 0; }   // 刀A(study/57 tick2):bins2-3 常量折叠扩展;默认 0=现行为逐位
-                    static int g_ocnk = -1;   // 刀E6(study/57 §三十三):ocean hashNumeric 字面移植替换消融(枚举+探测环逐行原样,接口适配见 port 头注);默认关=零生产影响
+                    static int g_ocnk = -1;   // 刀E6/E7(study/57 §三十三/四十一):ocean hashNumeric 字面移植;=1 bin4 替换;=2 bin4+bin5 全 hash 人口替换(整路线单元实验)
                     if (g_ocnk < 0) { const char *e = getenv("HASH_OCNK"); g_ocnk = (e && *e) ? atoi(e) : 0; }
                     static int g_b5to6 = -1;   // 刀A3α(study/57 §三六,A1曲面):bin5→bin6 配置——d384-512 带 ht1024 LF 税 18-40%,argmin=ht2048@512T(=g_blk_lad[6]);默认关
                     if (g_b5to6 < 0) { const char *e = getenv("HASH_B5TO6"); g_b5to6 = (e && *e) ? atoi(e) : 0; }
                     static int g_b4pack = -1;   // 刀C3(study/57 §十七):bin4 多行封包内核(warp 私有表,36 行/SM vs 8);默认关
                     if (g_b4pack < 0) { const char *e = getenv("HASH_B4PACK"); g_b4pack = (e && *e) ? atoi(e) : 0; }
-                    if (g_ocnk && bi == 4) {
+                    if (g_ocnk >= 1 && (bi == 4 || (g_ocnk >= 2 && bi == 5))) {
                         const size_t osmem = 4 * sizeof(unsigned) + (size_t)(((673 + 1) / 2 * 2)) * sizeof(unsigned) + (size_t)673 * sizeof(double) + 4 * sizeof(unsigned);
                         ocean_hash_kernel<7, 673, true, long long><<<n, 128, osmem, cur_s>>>(
                             dA_rp, dA_ci, dA_val, A_rows, A_cols, 0,
