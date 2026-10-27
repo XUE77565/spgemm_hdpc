@@ -63,7 +63,8 @@ int main(int argc, char** argv) {
     size_t ANZ = aci.size(), BNZ = bci.size();
     CHK(cudaMalloc(&d_arp,(N+1)*4)); CHK(cudaMalloc(&d_aci,ANZ*4)); CHK(cudaMalloc(&d_aval,ANZ*8));
     CHK(cudaMalloc(&d_brp,(adim+1)*4)); CHK(cudaMalloc(&d_bci,BNZ*4)); CHK(cudaMalloc(&d_bval,BNZ*8));
-    CHK(cudaMalloc(&d_rows,N*4)); CHK(cudaMalloc(&d_rnz,N*4)); CHK(cudaMalloc(&d_ovf,4));
+    CHK(cudaMalloc(&d_rows,N*4)); int *d_rows_rev; CHK(cudaMalloc(&d_rows_rev,N*4));
+    { std::vector<int> rv(N); for(int i=0;i<N;i++) rv[i]=N-1-i; CHK(cudaMemcpy(d_rows_rev,rv.data(),N*4,cudaMemcpyHostToDevice)); } CHK(cudaMalloc(&d_rnz,N*4)); CHK(cudaMalloc(&d_ovf,4));
     CHK(cudaMalloc(&d_ovfr,N*4)); CHK(cudaMalloc(&d_ovfc,4)); CHK(cudaMalloc(&d_rovf,N*4));
     CHK(cudaMalloc(&d_flop,N*4)); CHK(cudaMalloc(&d_maxbl,N*4));
     long long SLOT = 4200; CHK(cudaMalloc(&d_tkey,(size_t)N*SLOT*8)); CHK(cudaMalloc(&d_tval,(size_t)N*SLOT*8));
@@ -86,6 +87,7 @@ int main(int argc, char** argv) {
         {"ours ht2048@256T",       1, 11, 2048, 256},
         {"ocn 673@128T",           0, 7, 673, 128},
         {"ocn 1327@128T",          0, 8, 1327, 128},
+        {"ours ht1024@256T 行反序", 2, 10, 1024, 256},
     };
     double ref_nnz = -1;
     for (auto& c : cfgs) {
@@ -95,7 +97,8 @@ int main(int argc, char** argv) {
             CHK(cudaMemset(d_ovf,0,4)); CHK(cudaMemset(d_ovfc,0,4)); CHK(cudaMemset(d_rovf,0,N*4));
             cudaEventRecord(t0);
             if (c.ours) {
-                if (c.lht==10) hash_spa_kernel<0,1,0,0,10,0,0,0><<<N,c.blk,smem>>>(d_arp,d_aci,d_aval,d_brp,d_bci,d_bval,0,d_rows,N,c.ht,d_off,d_tkey,d_tval,d_rnz,d_ovf,d_ovfr,d_ovfc,d_rovf);
+                const int *rwp = (c.ours==2) ? d_rows_rev : d_rows;
+                if (c.lht==10) hash_spa_kernel<0,1,0,0,10,0,0,0><<<N,c.blk,smem>>>(d_arp,d_aci,d_aval,d_brp,d_bci,d_bval,0,rwp,N,c.ht,d_off,d_tkey,d_tval,d_rnz,d_ovf,d_ovfr,d_ovfc,d_rovf);
                 else          hash_spa_kernel<0,1,0,0,11,0,0,0><<<N,c.blk,smem>>>(d_arp,d_aci,d_aval,d_brp,d_bci,d_bval,0,d_rows,N,c.ht,d_off,d_tkey,d_tval,d_rnz,d_ovf,d_ovfr,d_ovfc,d_rovf);
             } else if (c.lht==7) ocean_hash_kernel<7,673,true,long long><<<N,c.blk,smem>>>(d_arp,d_aci,d_aval,N,adim,0,d_brp,d_bci,d_bval,adim,adim,0,d_flop,d_maxbl,d_rows,N,d_off,d_tkey,d_tval,d_rnz,d_ovf,d_ovfr,d_ovfc,d_rovf,0);
             else                ocean_hash_kernel<8,1327,true,long long><<<N,c.blk,smem>>>(d_arp,d_aci,d_aval,N,adim,0,d_brp,d_bci,d_bval,adim,adim,0,d_flop,d_maxbl,d_rows,N,d_off,d_tkey,d_tval,d_rnz,d_ovf,d_ovfr,d_ovfc,d_rovf,0);
