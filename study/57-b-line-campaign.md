@@ -1127,3 +1127,10 @@ tagged;TU-90 = special bins(bin0/批处理/esc/diter/重行)+ compact/extract �
 二进制的冷启动是否存在真实生产代价(428 批每阵独立进程 → 每阵付一次 6ms?)
 ——428 口径 TOTAL(GPU) 为 warm 轮均值则无;confirm15 前用 c-64 单阵验证
 WARMUP_N=3 下计时窗口是否含首轮。§五十六 六阵手测全绿表即为稳态真值。
+
+### §五十七补(档案纠错):§五十五 TSOPF"per-file 2× 病态"结论撤回
+§五十五 的 per-file TSOPF 10-11ms 为**首轮冷态值**(电池 v1/v2 同窗口),稳态
+per-file TSOPF = 5.52-5.57(§五十六 六阵表)= 追平整 c61 ✓。"TU-61 bin6/8 实例
+病态"的判断不成立;§五十五 仍有效的部分:bins 大表主导直方图(推翻"纯小表")、
+Phase 0 TSOPF 值跨会话漂移的警示。第五例"编译器承载一切"的**正确性级**证据
+(web-Google TU-90 untagged LHT8 越界,§五十六)不受影响、依然成立。
