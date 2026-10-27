@@ -1106,3 +1106,24 @@ tagged;TU-90 = special bins(bin0/批处理/esc/diter/重行)+ compact/extract �
 编译单位内容(TU 边界、tag 参存在性)漂移——性能轮盘(TSOPF)之上还有正确性轮盘
 (web-Google);check_disjoint 符号审计门 + memcheck spot 是唯一制度化解药。
 电池 v2 重跑中(results/p1_battery_1027.csv;v1 病理版留证 .v1_病理版.csv)。
+
+## 五十七、口径破案:电池"病理"= per-file 首轮模块冷态(10-28 凌晨,loop 切片4)
+
+**现象**:电池 v2 表 F2/bcsstk17/c-64/web-Google/TSOPF pf 列复现 ~6-11ms"病理",
+但命令行手测同二进制同 env 三连绿(0.244);python 直跑也绿;唯独 scripts/p1_battery.py
+恒慢——"稳定分叉"。
+
+**破案(子进程全输出对拍)**:WARMUP 第 1 轮 acc=6.557ms,第 2/3 轮 0.243 全绿——
+**per-file 构建每进程首次 accumulate 有 ~6ms 模块冷态(tagged 实例/fatbin 首加载级),
+稳态全绿**。电池脚本 `re.search`=首轮匹配,手测 `tail -1`=末轮——分叉=**计时窗口**,
+非程序。v1/v2 电池 pf 列全为首轮值;大阵(Bump 70ms 级)首轮冷态不可见故 1.000 复现,
+小阵(0.2-3ms 级)被 25× 放大。
+
+**口径教训(口径先行铁律的电池版)**:首轮 vs 末轮 = 冷态 vs 稳态;计分口径
+(compute-only WARMUP_N=3 计时)= 稳态 → 电池一律末轮(findall[-1]);v1/v2 CSV
+留档改名(.v1_病理版/.v2_首轮口径),v3(稳态口径)重跑中。
+
+**遗留判定**:首轮 6ms 冷态不进计分账(confirm 口径 warm 后计时),但 per-file
+二进制的冷启动是否存在真实生产代价(428 批每阵独立进程 → 每阵付一次 6ms?)
+——428 口径 TOTAL(GPU) 为 warm 轮均值则无;confirm15 前用 c-64 单阵验证
+WARMUP_N=3 下计时窗口是否含首轮。§五十六 六阵手测全绿表即为稳态真值。

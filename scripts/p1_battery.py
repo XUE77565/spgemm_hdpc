@@ -63,13 +63,17 @@ for name, path, method in MATS:
             if p.returncode != 0:
                 print(f"[FAIL] {name}/{bname}/r{rnd} exit={p.returncode}", flush=True)
                 sys.exit(2)
-            nnz = RE_NNZ.search(out)
-            tot = RE_TOT.search(out); acc = RE_ACC.search(out); cmp_ = RE_CMP.search(out)
-            d2h = RE_D2H.search(out); m3 = RE_M3.search(out)
+            # §五十七口径修正:re.search=首轮(per-file 构建首轮含 ~6ms 模块冷态病理);
+            # 计分口径=稳态,一律取末轮匹配(findall[-1]);nnz 取末次
+            def last(rx):
+                m = rx.findall(out)
+                return m[-1] if m else None
+            nnz = last(RE_NNZ); tot = last(RE_TOT); acc = last(RE_ACC)
+            cmp_ = last(RE_CMP); d2h = last(RE_D2H); m3 = last(RE_M3)
             row = [name, bname, rnd, method,
-                   tot.group(1) if tot else "", acc.group(1) if acc else "",
-                   cmp_.group(1) if cmp_ else "", d2h.group(1) if d2h else "",
-                   m3.group(1) if m3 else "", nnz.group(1) if nnz else ""]
+                   tot if tot else "", acc if acc else "",
+                   cmp_ if cmp_ else "", d2h if d2h else "",
+                   m3 if m3 else "", nnz if nnz else ""]
             w.writerow(row); fout.flush()
             # 值门1:nnz 三构建一致(同阵同轮),不一致即停
             rows[key] = dict(zip(["mat","bin","round","method","total","acc","cmp","d2h","m3","nnz"], row))
