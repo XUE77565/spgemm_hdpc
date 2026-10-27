@@ -5697,6 +5697,17 @@ static void hash_product(
         CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,12>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
         CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,13>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
         CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,14>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        // E3 修复(study/57 §四十六):WM_T 模板参后 LHT2 发射的是 <...,P2,0> 独立符号,
+        // 上面默认参(WM_T=-1)实例的 opt-in 不覆盖它们 → bins7-9 大表 launch invalid argument
+        // (c-64 实证,两 build 同崩;10-23 后只跑 Bump bins4/5 小表未暴露——批跑禁重建的活教训)
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,7,0,0,0>,  cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,8,0,0,0>,  cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,9,0,0,0>,  cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,10,0,0,0>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,11,0,0,0>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,12,0,0,0>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,13,0,0,0>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+        CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,14,0,0,0>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
         // 刀F-主刀:素数紧档实例 opt-in(5449 档 64KB/16253 档 195KB 超 48K;2719 档 32KB 免)
         CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,0,5449>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
         CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,0,16253>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));

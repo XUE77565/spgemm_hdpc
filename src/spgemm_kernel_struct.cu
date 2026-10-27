@@ -11,6 +11,15 @@
 
 #include "spgemm.h"
 #include "structural_params.cuh"
+// ── 刀F 前置(study/57 §四十六):compute_61 兼容层(与 spgemm_kernel_hash.cu 同款;
+//    生产 sm_90 走硬件原语零变更)──
+#if __CUDA_ARCH__ && __CUDA_ARCH__ < 800
+SP_HD static unsigned sp_reduce_min_sync(unsigned mask, unsigned val) {
+    for (int off = 16; off; off >>= 1) { unsigned o = __shfl_down_sync(mask, val, off); if (o < val) val = o; }
+    return __shfl_sync(mask, val, 0);
+}
+#define __reduce_min_sync(mask, val) sp_reduce_min_sync((mask), (val))
+#endif
 #include <cstdio>
 
 #define CHECK_CUDA_ST(call) do { \
