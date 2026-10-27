@@ -2097,7 +2097,7 @@ static inline bool probe_rf_on() {
 
 __device__ int g_xbit_d = 0;   // 刀E5(study/57 §三一):HASH_XBIT → host cudaMemcpyToSymbol;extract 每行一次分支,零热径成本
 
-// 刀E1/E2(study/57 §廿五/廿六):bin4 被无序写内核接管(hash_heavy 或 VG)→ compact 侧 csort 载体
+// 刀E1/E2/G(study/57 §廿五/廿六/四十九):bin 被无序写内核接管(hash_heavy 或 VG)→ compact 侧 csort 载体
 static inline bool h45_pilot_on() {
     static int v = -1;
     if (v < 0) {
@@ -2106,7 +2106,9 @@ static inline bool h45_pilot_on() {
         const char *g = getenv("HASH_VG45");          // E2 需 HYB_TIER 同开(VG 门前置条件)
         const char *h = getenv("HYB_TIER");
         int e2 = (g && *g && atoi(g) > 0 && h && *h && atoi(h) > 0) ? 1 : 0;
-        v = e1 || e2;
+        const char *g5 = getenv("HASH_H55");          // 刀G:bin5→hash_heavy(无序写)
+        int e3 = (g5 && *g5 && atoi(g5) > 0) ? 1 : 0;
+        v = e1 || e2 || e3;
     }
     return v != 0;
 }
@@ -6646,7 +6648,9 @@ static void hash_product(
                     if (g_s99rot < 0) { const char *e = getenv("SPEC99_ROT"); g_s99rot = (e && *e) ? atoi(e) : 0; }
                     static int g_h45 = -1;   // 刀E1 试点(study/57 §廿五):bin4→hash_heavy 瘦核窄块(ocean <7,673> 对位 128T);默认关=原 LHT 路径逐位
                     if (g_h45 < 0) { const char *e = getenv("HASH_H45"); g_h45 = (e && *e) ? atoi(e) : 0; }
-                    if (g_s99 && ((bi >= 7 && bi <= 8) || (g_h45 && bi == 4)) && !g_wm && !g_pht) {
+                    static int g_h55 = -1;   // 刀G(study/57 §四十九):bin5→hash_heavy<10,2048> 1024T(compute_61 复活后扩覆盖;bin5 est≤1024→2048 素数梯);默认关
+                    if (g_h55 < 0) { const char *e = getenv("HASH_H55"); g_h55 = (e && *e) ? atoi(e) : 0; }
+                    if (g_s99 && ((bi >= 7 && bi <= 8) || (g_h45 && bi == 4) || (g_h55 && bi == 5)) && !g_wm && !g_pht) {
 #define HH_LAUNCH2(LNT_, P_, OCH_, LO_, HI_, ROT_) do { \
     const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
     CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1, (OCH_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
@@ -6664,6 +6668,7 @@ static void hash_product(
                         // 隔离 3 栅栏结构 vs 18 栅栏的净价值;刀5 素数版(4111/8209)留 git 史
                         if (bi == 7)      HH_LAUNCH(9, 4096);
                         else if (bi == 8) HH_LAUNCH(10, 8192);
+                        else if (bi == 5) HH_LAUNCH(8, 2048);   // 刀G:bin5 ht=2048 档 256T×8/SM
                         else              HH_LAUNCH(7, 512);   // 刀E1:bin4 ht=512 pow2(deployed 形态同款),128T=16 块/SM
 #undef HH_LAUNCH
 #undef HH_LAUNCH2
@@ -7747,6 +7752,11 @@ static void hash_product(
             } else if (bi == 4 && h45_pilot_on()) {
                 // 刀E1:bin4 行走 hash_heavy(无序写 tmp)→ csort 善后(CAP 512 紧贴 bin4 表容)
                 launch_csort<128, 4>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                CHECK_CUDA(cudaGetLastError());
+            } else if (bi == 5 && h45_pilot_on()) {
+                // 刀G:bin5 行走 hash_heavy(无序写)→ 两级计数排序善后(spec84 同款;
+                // d~200 → CAP 2048 counting O(nnz+CAP) 免 radix padding 税,crankseg bin6/7 已转正同型)
+                launch_csort_counting<CSC_TPB, CSC_CAP>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
                 CHECK_CUDA(cudaGetLastError());
             } else if (bi <= ilog2c(CSORT_HT / WARP_SIZE)) {
                 // 小行(ht≤CSORT_HT):accumulate 已 count-sort,这里只 compact_copy(tmp→CSR)
