@@ -928,3 +928,13 @@ counting sort 38ms 是当前最优但仍是税。候选:①hash_heavy 改有序�
 Gv3 A臂已出(acc 66.9/compact 37.7,Σ=104.6,同亏)——B臂(有序)若
 compact 不回落到 ~11 基线级,刀G整体判死回退(hash_heavy 不接管 bins4/5)。
 教训:相位账必须列表核算,结论行禁止心算。
+
+## 五十、刀Gv3 首版:病理性慢(16 分钟卡 acc 相位),已杀,判 v1 死
+
+**现象**:HH_SORTED=1(Bump)acc 相位 16 分钟不结束(正常 ~8ms/迭代),
+GPU 100% 计算 bound——表内 rank 实现的并行 bug(HT_P=2048 时仅 tid<64
+线程进扫描环,rank O(32×count)/槽 全串在 1/4 线程上)+ 无 cap 守卫。
+按 GPU 保护纪律杀进程(报错即停的病理版)。v1 判死;v2 若做需:
+warp 段扫描改 ballot+popc 位移 rank(免逐槽比较)+cap 守卫。
+**当前净账(诚实)**:刀G链现状 = 基线 83.5(刀F 后)最优;hash_heavy
+acc 优势被载体全吞,Gv3 未解。追平未在即——见 §五十一阶梯。
