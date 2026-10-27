@@ -71,7 +71,7 @@ __device__ __forceinline__ int dev_lower_bound(const int *arr, int lo, int hi, i
 }
 
 // 并行 count flop_ub:warp-per-row(2026-08-25 重映射;旧版每行一 block,3.7M 行矩阵 launch 5.4ms → 此版 O(rows/8) blocks)
-__global__ void count_intermediates_par_kernel(
+static __global__ void count_intermediates_par_kernel(
     const int *A_row_ptr, const int *A_col_idx, int A_rows, int *ub)
 {
     int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
@@ -90,7 +90,7 @@ __global__ void count_intermediates_par_kernel(
 
 // 融合版(docs/27 §4.6):warp-per-row 一趟出 flop + span_lo/len + max_b_len(省 1 launch + 一趟 A×B 遍历)
 // ⚠ 仅 AA 路径(count 的外层 = dB_rp 与 row_span 的 dA_rp 在 att 下语义不同,att 保留双核)
-__global__ void count_flop_span_kernel(
+static __global__ void count_flop_span_kernel(
     const int *A_row_ptr, const int *A_col_idx, int A_rows,
     const int *B_row_ptr, const int *B_col_idx,
     int *ub, int *span_lo, int *span_len, int *max_b_len)
@@ -126,7 +126,7 @@ __global__ void count_flop_span_kernel(
 
 // count 小行线程版(docs/13 v2):avg row ≤ 8 的 road/OSM 族 —— warp 版 27/32 lane 闲;
 // 线程级行串行 4-8 次访存,MLP 由 64 行/warp 在飞补(count 7.6ms → 目标 ~4)
-__global__ void count_flop_tiny_kernel(
+static __global__ void count_flop_tiny_kernel(
     const int *A_row_ptr, const int *A_col_idx, int A_rows,
     const int *B_row_ptr, const int *B_col_idx,
     int *ub, int *span_lo, int *span_len, int *max_b_len)
@@ -148,7 +148,7 @@ __global__ void count_flop_tiny_kernel(
 }
 
 // span-only tiny 形(avg≤8;线程级行)
-__global__ void row_span_only_tiny_kernel(
+static __global__ void row_span_only_tiny_kernel(
     const int *A_row_ptr, const int *A_col_idx, int A_rows,
     const int *B_row_ptr, const int *B_col_idx,
     int *span_lo, int *span_len)
@@ -171,7 +171,7 @@ __global__ void row_span_only_tiny_kernel(
 
 // h2d 重叠管线的行区间版(docs/71):只算 flop + max_b_len —— 数据依赖 = row_ptr(先行小拷贝)
 // + 本 chunk 的 A_ci 行区间;span(B_ci 随机访问,须全量)由同步后的 row_span_only_kernel 补。
-__global__ void count_flop_range_kernel(
+static __global__ void count_flop_range_kernel(
     const int *A_row_ptr, const int *A_col_idx, int r0, int r1,
     const int *B_row_ptr, int *ub, int *max_b_len)
 {
@@ -199,7 +199,7 @@ __global__ void count_flop_range_kernel(
 
 // 重叠管线 tiny 形(avg≤8 矩阵):线程级行 + 行区间(与 COUNT_TINY 正交组合;
 // H2DOVL 曾旁路 COUNT_TINY → M6/HTC 族 warp 形 count 超窗 +23% 回归,2026-09-04 隔离电池实证)
-__global__ void count_flop_range_tiny_kernel(
+static __global__ void count_flop_range_tiny_kernel(
     const int *A_row_ptr, const int *A_col_idx, int r0, int r1,
     const int *B_row_ptr, int *ub, int *max_b_len)
 {
@@ -217,7 +217,7 @@ __global__ void count_flop_range_tiny_kernel(
 }
 
 // span-only 补趟(h2d 重叠管线;A_ci/B_ci 已全量在 device):每 k 只读 B 行首/末 2 元素
-__global__ void row_span_only_kernel(
+static __global__ void row_span_only_kernel(
     const int *A_row_ptr, const int *A_col_idx, int A_rows,
     const int *B_row_ptr, const int *B_col_idx,
     int *span_lo, int *span_len)
@@ -322,7 +322,7 @@ __device__ __forceinline__ unsigned int murmur_hash3(unsigned int key) {
 #define MH_EMPTY 0xffffffffu
 
 // Phase 1:对 B(=A)每行建 MinHash sketch(线性扫 CSR,O(nnz))。每元素 atomicMin keep 最小完整 hash(uint32)。
-__global__ void mh_construct_kernel(
+static __global__ void mh_construct_kernel(
     const int *B_row_ptr, const int *B_col_ind,
     int B_rows, int B_nnz,
     unsigned int *global_mh,           // [B_rows * MH_M] uint32
@@ -477,7 +477,7 @@ __global__ void mh_merge_kernel(
     }
 }
 
-__global__ void est_fill_kernel(const int *row_flop, int n, int *est, int A_rows) {
+static __global__ void est_fill_kernel(const int *row_flop, int n, int *est, int A_rows) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < A_rows) { int f = row_flop[i]; est[i] = f < n ? f : n; }
 }
@@ -486,7 +486,7 @@ __global__ void est_fill_kernel(const int *row_flop, int n, int *est, int A_rows
 // 一行一块;行太轻(est<512)/太重(distinct 装不下 8192 表)→ 写 0 = 无效样本。
 // host 取 q05 → 数据驱动 expand 替换手调 1.15/1.4(Ana2 的 safe=avg−z·√var 同哲学)。
 #define OC_TAB OC_TABLE  // 采样精确计数表(结构推导见 structural_params)
-__global__ void oc_sample_kernel(
+static __global__ void oc_sample_kernel(
     const int *A_row_ptr, const int *A_col_idx, const int *B_row_ptr, const int *B_col_idx,
     const int *est, const int *row_flop, int A_rows, int stride,
     int *ratio_fp)   // [S] = est_i * 4096 / exact_i(定点);0 = 无效
@@ -537,7 +537,7 @@ __global__ void oc_sample_kernel(
 }
 
 // Ocean-C est 统一缩放(en/ed 定点);flop 紧界仍成立(est ≤ flop 恒真)
-__global__ void oc_rescale_kernel(int *est, const int *row_flop, int A_rows, int en, int ed) {
+static __global__ void oc_rescale_kernel(int *est, const int *row_flop, int A_rows, int en, int ed) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= A_rows) return;
     long long e2 = (long long)est[i] * en / ed;
@@ -548,7 +548,7 @@ __global__ void oc_rescale_kernel(int *est, const int *row_flop, int A_rows, int
 // PIPEFUSE step-1(docs/58):count_flop 后不再回传 host —— device 侧规约 total_flop + avg_product
 // 门,construct/merge 无条件背靠背 launch(门命中时自退化),host 读数推迟到 binning 已有同步。
 // 动机:reduce 的 host 空档是 DVFS toll 源之一(345MHz 冷频率下小 kernel 全家变慢)。
-__global__ void flop_reduce_kernel(const int *d_flop, int A_rows, unsigned long long *d_total) {
+static __global__ void flop_reduce_kernel(const int *d_flop, int A_rows, unsigned long long *d_total) {
     __shared__ unsigned long long s[256];
     int t = threadIdx.x;
     unsigned long long p = 0;
@@ -564,7 +564,7 @@ __global__ void flop_reduce_kernel(const int *d_flop, int A_rows, unsigned long 
         if (t == 0) atomicAdd(d_total, v);
     }
 }
-__global__ void avg_gate_kernel(const unsigned long long *d_total, int A_rows, int thr, int *d_gate) {
+static __global__ void avg_gate_kernel(const unsigned long long *d_total, int A_rows, int thr, int *d_gate) {
     if (threadIdx.x == 0 && blockIdx.x == 0)
         *d_gate = (A_rows > 0 && (double)*d_total / A_rows <= (double)thr) ? 1 : 0;
 }
@@ -618,7 +618,7 @@ __device__ __forceinline__ int local_load_balance(int n_element_a, int num_produ
 #define DENSE_MAX_N DENSE_MAX_N_STRUCT  // 190KB÷13B/列
 #define DENSE_MIN_FRAC DENSE_MIN_FRAC_STRUCT  // 位图字利用率
 
-__global__ void hash_dense_kernel(
+static __global__ void hash_dense_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri, int A_rows, int n,
@@ -842,7 +842,7 @@ __global__ void hash_sspan2_kernel(
 // n > SMEM 预算但输出稠密的矩阵:每行一 CTA,列域切成 ≤ DENSE_MAX_N 的窗口,
 // 逐窗口 SMEM 稠密累加(每 k 用 lower_bound 切出窗口内切片,免重复处理),
 // 窗口升序 → 提取拼接天然全局有序,零跨 CTA 同步。对标 Ocean denseNumericIterKernel。
-__global__ void hash_dense_window_kernel(
+static __global__ void hash_dense_window_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri, int A_rows, int n,
@@ -943,7 +943,7 @@ __global__ void hash_dense_window_kernel(
 // 为位图置位+popcount(免 CAS 探测),复活 D5H 经济学。行级门 span ≤ 8×est ∧ 位图装得下
 // (成本律:位图 O(span/32) vs 表 O(est),宽 span 低 est 行位图反亏 38×,in-2004 教训);
 // 不合格行由 hash_spa<1> 双 launch 各司其职(bcnt_mode=1 只处理合格行,=0 只处理其余)。
-__global__ void hash_row_bcnt_kernel(
+static __global__ void hash_row_bcnt_kernel(
     const int *A_row_ptr, const int *A_col_idx,
     const int *B_row_ptr, const int *B_col_idx,
     int upper_tri, int A_rows, int n,
@@ -995,7 +995,7 @@ __global__ void hash_row_bcnt_kernel(
     if (tid == 0) { int s = 0; for (int x = 0; x < nw; x++) s += wcnt[x]; row_nnz[i] = s; }
 }
 
-__global__ void hash_dense_bcnt_kernel(
+static __global__ void hash_dense_bcnt_kernel(
     const int *A_row_ptr, const int *A_col_idx,
     const int *B_row_ptr, const int *B_col_idx,
     int upper_tri, int A_rows, int n,
@@ -1052,7 +1052,7 @@ __global__ void hash_dense_bcnt_kernel(
 // 故 SMEM 按上限静态定尺寸(W=K7_SPAN_MAX/32 字),无需 per-launch gather。
 constexpr int K7_W = K7_SPAN_MAX / 32;                    // 1024 字 = mark/claim/cum 各一区
 constexpr int K7_SMEM_W = K7_FIX_OFF_W + 3 * K7_W + 2;    // 总字数(含 fcnt+pad)
-__global__ void k7_count_kernel(
+static __global__ void k7_count_kernel(
     const int *A_row_ptr, const int *A_col_idx,
     const int *B_row_ptr, const int *B_col_idx,
     int A_rows, const int *bucket_rows, const int *span_lo,
@@ -1091,7 +1091,7 @@ __global__ void k7_count_kernel(
 
 // numeric:Pass1 标记+flop 计 → 核内证书(flop−distinct ≤ K7_FIX_MAX ? 快道 : exch 慢道)
 // → Pass2 写终态(有序+精确位)。快道 = 胜者纯普通写 + 败者 SMEM fixup 表 + 屏障后统一加。
-__global__ void k7_numeric_kernel(
+static __global__ void k7_numeric_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int A_rows, const int *bucket_rows, const int *span_lo,
@@ -1178,7 +1178,7 @@ __global__ void k7_numeric_kernel(
     __syncthreads();
 }
 
-__global__ void hash_dense_count_kernel(
+static __global__ void hash_dense_count_kernel(
     const int *A_row_ptr, const int *A_col_idx,
     const int *B_row_ptr, const int *B_col_idx,
     int upper_tri, int A_rows, int n,
@@ -1252,20 +1252,20 @@ __global__ void hash_dense_count_kernel(
 #define PB2_STAGE 4
 #endif
 // dense 行 a_len 采集/散射(全局 cursor 区偏移构造)
-__global__ void span_gather_kernel(const int *rows, int nr, const int *span_len, int *out) {
+static __global__ void span_gather_kernel(const int *rows, int nr, const int *span_len, int *out) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j < nr) out[j] = span_len[rows[j]];   // docs/70 BCNT:dense 行 span 收集
 }
 
 // §22d 分流体:span+行号 融合收集到 [nr, 2nr) 单缓冲(单次 D2H 取双数组,省 2 个同步点)
-__global__ void span_row_gather_kernel(const int *rows, int nr, const int *span_len, int *out2n) {
+static __global__ void span_row_gather_kernel(const int *rows, int nr, const int *span_len, int *out2n) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j < nr) { out2n[j] = span_len[rows[j]]; out2n[nr + j] = rows[j]; }
 }
 
 // §25 密度三元组 → §26 四元组:span+行号+est+a_len → [nr,4nr)
 // (a_len = A_row_ptr 差分,在内核里算免多传一数组)
-__global__ void span_row_est_gather_kernel(const int *rows, int nr, const int *span_len, const int *est,
+static __global__ void span_row_est_gather_kernel(const int *rows, int nr, const int *span_len, const int *est,
                                            const int *A_rp, int *out4n) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j < nr) {
@@ -1276,7 +1276,7 @@ __global__ void span_row_est_gather_kernel(const int *rows, int nr, const int *s
 }
 
 // docs/70 §6②:合格行(span≤8×est ∧ ≤cap)的 span,否则 0 —— 供 host 定位图 SMEM 上限
-__global__ void elig_span_kernel(const int *rows, int nr, const int *est, const int *span_len,
+static __global__ void elig_span_kernel(const int *rows, int nr, const int *est, const int *span_len,
                                  long long cap, int *out) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j < nr) {
@@ -1286,11 +1286,11 @@ __global__ void elig_span_kernel(const int *rows, int nr, const int *est, const 
     }
 }
 
-__global__ void alen_gather_kernel(const int *rows, int nr, const int *A_rp, int *alen) {
+static __global__ void alen_gather_kernel(const int *rows, int nr, const int *A_rp, int *alen) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j < nr) { int r = rows ? rows[j] : j; alen[j] = A_rp[r + 1] - A_rp[r]; }
 }
-__global__ void scatter_alen_kernel(const int *rows, int nr, const int *alen, int *off_by_row /*[A_rows],已清零*/) {
+static __global__ void scatter_alen_kernel(const int *rows, int nr, const int *alen, int *off_by_row /*[A_rows],已清零*/) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j < nr) off_by_row[rows ? rows[j] : j] = alen[j];
 }
@@ -1311,7 +1311,7 @@ __device__ int g_dflag_probe_row = -1;   // DFLAG_PROBE 探针行(diter 雷判�
 // (溢出换 2× 占用的交易,电池裁决)。
 // K1 首写免原子(study/31):认领制——首写者普通写+fence,重复者才 atomicAdd(原子占比 100%→dup 比)
 #define K1_ACC(dval_, j_, flag_, v_) atomicAdd(&(dval_)[j_], (v_))   // K1 判负废弃:降级原样(k1fw 死码)
-__global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel(
+static __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri, int A_rows, int n,
@@ -1571,7 +1571,7 @@ __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct_kernel
 
 // dense 行集合的 Σest / Σrow_nnz / Σflop(方案5:tmp 缩容 + est 下溢检查改 hash 侧口径 + dup 门)
 // sum 用 unsigned ll 原子(sm_90 无 signed ll atomicAdd 重载;值为非负,位型等同)
-__global__ void dense_sum_kernel(const int *rows, int nr, const int *est, const int *row_nnz,
+static __global__ void dense_sum_kernel(const int *rows, int nr, const int *est, const int *row_nnz,
                                  const int *flop /*nullable:方案5 dup 门 pre-pass*/,
                                  unsigned long long *sum_est, unsigned long long *sum_nnz) {
     int r = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1582,7 +1582,7 @@ __global__ void dense_sum_kernel(const int *rows, int nr, const int *est, const 
 }
 
 // dense 行 est 置 0(方案5:d_off 重扫前坍缩 gapped 空间;binning 已完成,est 无后续消费者)
-__global__ void zero_est_kernel(int *est, const int *rows, int nr) {
+static __global__ void zero_est_kernel(int *est, const int *rows, int nr) {
     int r = blockIdx.x * blockDim.x + threadIdx.x;
     if (r < nr) est[rows[r]] = 0;
 }
@@ -1598,7 +1598,7 @@ __global__ void zero_est_kernel(int *est, const int *rows, int nr) {
 //   → flop 封顶行(est==flop,dup≈1 人口)是【精确上界零低估】,直接 ×margin(若除
 //   expand 会把上界砍成 0.56×flop 的欠估 → dup≈1 行必溢出);MinHash 行才做 ÷expand
 //   还原始估计。V2 的 est×1.2 隐含 raw×2.16(1.8 泄漏)→ V3 = raw×margin。
-__global__ void dcest_fill_kernel(int *row_nnz, const int *est, const int *flop, const int *rows,
+static __global__ void dcest_fill_kernel(int *row_nnz, const int *est, const int *flop, const int *rows,
                                    int nr, int expand_pct, int margin_pct) {
     int r = blockIdx.x * blockDim.x + threadIdx.x;
     if (r < nr) {
@@ -1616,7 +1616,7 @@ __global__ void dcest_fill_kernel(int *row_nnz, const int *est, const int *flop,
 //   cursor 核 rank≥cap 截断(drop_cnt 同语义)。附带 alloc/actual 比值直方图 —— margin
 //   选择的实测依据(桶界 = ×8 后 2/4/6/8/10/12/16 → ratio <0.25/<0.5/<0.75/<1.0/<1.25/<1.5/<2/≥2)。
 //   ovf_dbg[5*8](取证探针 10-13):前 8 个溢出行各 {row,alloc,act,flop,a_len}。
-__global__ void dcest_ovf_check_kernel(const int *dense_rows, int nr,
+static __global__ void dcest_ovf_check_kernel(const int *dense_rows, int nr,
                                         const int *dC_rp, const int *row_nnz,
                                         const int *row_flop, const int *A_rp,
                                         int *n_ovf, int *hist8, int *ovf_dbg) {
@@ -1644,7 +1644,7 @@ __global__ void dcest_ovf_check_kernel(const int *dense_rows, int nr,
 // ③ 紧凑拷贝:dense 行 gapped 旧布局 → exact 新布局。写全部落新 buffer(与所有读源
 //   不相交,V2 in-place shift 的行内/跨行两类竞态结构性根除)。链位置保证此刻 dC 里
 //   只有 dense 行有数据(k7/D5H 在链后写 exact 基址)→ 只搬 dense 行,不动行早退。
-__global__ void dcest_compact_copy_kernel(const int *rows, int nr,
+static __global__ void dcest_compact_copy_kernel(const int *rows, int nr,
                                           const int *rp_old, const int *rp_new,
                                           const int *row_nnz,
                                           const int *ci_src, const double *v_src,
@@ -1668,7 +1668,7 @@ __global__ void dcest_compact_copy_kernel(const int *rows, int nr,
 #define SUBW_HT SUBW_HT_STRUCT  // warp_size/4
 
 // 干净版:8 线程/行,SMEM 小表(32 slot),warp 内 4 行不共享表
-__global__ void hash_subwarp8_kernel(
+static __global__ void hash_subwarp8_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri,
@@ -1755,7 +1755,7 @@ __global__ void hash_subwarp8_kernel(
 // 两阶段: symbolic 收集列集合并排序 -> numeric 二分定位 + 直接 atomicAdd
 // 零 CAS(位置由二分确定), 零冲突(列集合唯一), 输出天然有序
 
-__global__ void bsearch_symbolic_kernel(
+static __global__ void bsearch_symbolic_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri,
@@ -1830,7 +1830,7 @@ __global__ void bsearch_symbolic_kernel(
     }
 }
 
-__global__ void bsearch_numeric_kernel(
+static __global__ void bsearch_numeric_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri,
@@ -2079,7 +2079,7 @@ __global__ __launch_bounds__(128) void hash_spa_packed_kernel(
 // 方案5 扩展到 hash 行,docs/31)2=direct(exact_rp 精确偏移直写 dC_ci/d_val,行内无序,原地 csort 善后)
 // ④ 交织 B(inno/79):B 的 (col,val) 两窄流 → 16B 对齐 uint4 单条(col 4|pad 4|val 8);行结构/下标不变。
 // 靶:B 流 L1 9%/sec-req 3.51/请求 2.5×(study/15 尸检);一次 LDG.128 携带双域,载入指令减半。
-__global__ void b_interleave_kernel(const int *col, const double *val, int n, uint4 *out) {
+static __global__ void b_interleave_kernel(const int *col, const double *val, int n, uint4 *out) {
     int q = blockIdx.x * blockDim.x + threadIdx.x;
     if (q >= n) return;
     unsigned long long bits; double v = val[q]; memcpy(&bits, &v, 8);
@@ -2138,9 +2138,9 @@ template<int MODE, int PROBE_RF = 1, int PROBE_HIST_ON = 0, int VAL_GMEM = 0, in
 // 512thr 档 3 块(75%,crankseg 主发射 31,770 块实测 74.7%)。压 ≤32 regs → 1024 档 2 块/512 档 4 块。
 // ⚠ 本 kernel 是三阵全胜主力,溢出风险高,须全套守门+电池;对照 = spgemm_lb2t。
 #ifdef REGCAP
-__global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4) hash_spa_kernel(   /* REGCAP 试验:去 minBlocks(它覆盖 maxrregcount),硬帽经 NVCC -maxrregcount 传入 */
+static __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4) hash_spa_kernel(   /* REGCAP 试验:去 minBlocks(它覆盖 maxrregcount),硬帽经 NVCC -maxrregcount 传入 */
 #else
-__global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
+static __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
 #endif
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,   // 内层 j 来源:AA=A,ATT=Aᵀ(CSC)
@@ -2713,7 +2713,7 @@ __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kernel(
 // hash_spa_hkv_kernel:Hybrid Value 全 bin 版(docs/24 §4.1,治大表行低占用):
 // keys 留 SMEM(4B/槽,occupancy ×3)+ values 走全局 L2 atomicAdd(Ocean HYBRID_HASHMAP 同款)。
 // 仅用于 ht ≥ 4096 的 bin(ht > CSORT_HT 恒真)→ 只保留无序 extract 路径(compact 走 csort)。
-__global__ void hash_spa_hkv_kernel(
+static __global__ void hash_spa_hkv_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri,
@@ -2789,7 +2789,7 @@ __global__ void hash_spa_hkv_kernel(
 // spec98 轮1:WMA 重行归并累积器(分列段多 warp 流式归并;一 block 一行,8 warp 各认一个
 // 列子区间;两阶段=count→块内前缀→re-merge 直写 tmp_key 兼容 hash 下游;dup 在归并中合并)。
 // 底版=merge3 v2(warp k-way)×列区间并行 − 单 warp 串行死穴;SMEM=8×num_k×12B 描述符。
-__global__ void __launch_bounds__(1024, 1) wma_kernel(
+static __global__ void __launch_bounds__(1024, 1) wma_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     int A_cols,
     const int *bucket_rows, int n_in_bucket,
@@ -2889,7 +2889,7 @@ __global__ void __launch_bounds__(1024, 1) wma_kernel(
 
 // compact 原地化守卫:margin[j] = E_off[j] − C_rp[j](≥0 全体成立 → 前缀紧缩安全,docs/21 Fix2)
 // spec90-候选2 二维梯:tier 行群 Σest 归约(工作量轴原料;与 dense_tier_block 的 span 轴解耦)
-__global__ void tier_est_stat_kernel(const int *est, const int *rows, int n, unsigned long long *sum_est) {
+static __global__ void tier_est_stat_kernel(const int *est, const int *rows, int n, unsigned long long *sum_est) {
     unsigned long long acc = 0;
     for (int r = blockIdx.x * blockDim.x + threadIdx.x; r < n; r += gridDim.x * blockDim.x)
         acc += (unsigned long long)est[rows[r]];
@@ -2897,7 +2897,7 @@ __global__ void tier_est_stat_kernel(const int *est, const int *rows, int n, uns
 }
 
 // spec92-A:bin 行群 Σa_len 归约(宽窄判据原料;单块,256 线程 atomic 累加)
-__global__ void bin_alen_stat_kernel(const int *A_row_ptr, const int *bucket_rows, int n,
+static __global__ void bin_alen_stat_kernel(const int *A_row_ptr, const int *bucket_rows, int n,
                                      unsigned long long *sum_alen) {
     int s = threadIdx.x;
     unsigned long long acc = 0;
@@ -2906,7 +2906,7 @@ __global__ void bin_alen_stat_kernel(const int *A_row_ptr, const int *bucket_row
     if (acc) atomicAdd(sum_alen, acc);
 }
 
-__global__ void margin_kernel(const long long *eoff, const int *crp, int n, long long *marg)
+static __global__ void margin_kernel(const long long *eoff, const int *crp, int n, long long *marg)
 {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j >= n) return;
@@ -2914,7 +2914,7 @@ __global__ void margin_kernel(const long long *eoff, const int *crp, int n, long
 }
 
 // 每行 HT 梯表尺寸(与 compute_bucket 同梯;hybrid value 池的 scan 输入)
-__global__ void ladder_ht_kernel(const int *est, int A_rows, int *lht)
+static __global__ void ladder_ht_kernel(const int *est, int A_rows, int *lht)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= A_rows) return;
@@ -2926,7 +2926,7 @@ __global__ void ladder_ht_kernel(const int *est, int A_rows, int *lht)
 }
 
 // hash_spa_priv_kernel:warp 私有 SPA(HASH_PRIV 门控):k 按 warp 分区→Phase A 无 atomicAdd 累加,Phase B 跨 warp merge,Phase C extract
-__global__ void hash_spa_priv_kernel(
+static __global__ void hash_spa_priv_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *bucket_rows, int n_in_bucket, int ht_size, int W,
     const long long *row_off,
@@ -3029,7 +3029,7 @@ __global__ void hash_spa_priv_kernel(
 }
 
 // ultrasparse:est≤EST_ULTRA_THR,不建 hash,每线程一行寄存器小数组线性去重累加;CAP=32 留 2× 余量,不够→overflow_flag
-__global__ void hash_ultra_kernel(
+static __global__ void hash_ultra_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri,
@@ -3094,7 +3094,7 @@ __global__ void hash_ultra_kernel(
 // 每行一张 next_pow2(est) 表(≥2×HASH_CAP),表区 arena 按 scan 偏移切分;
 // probe 有上界(必终止);extract 无序写 tmp → host 侧 cub 分段排序 → compact_copy。
 
-__global__ void heavy_prep_kernel(
+static __global__ void heavy_prep_kernel(
     const int *rows, int n, const int *est,
     long long *row_ht, int *overflow_flag)
 {
@@ -3111,7 +3111,7 @@ __global__ void heavy_prep_kernel(
     row_ht[t] = h;
 }
 
-__global__ void hash_global_kernel(
+static __global__ void hash_global_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri,
@@ -3187,7 +3187,7 @@ __global__ void hash_global_kernel(
 // __syncthreads 假设单 block 独占行(R0 解剖:3 行鲸鱼 1 block/行 = GPU 尾 ~190µs 真源)。
 // 拆段:init(host memsetAsync)/probe(grid.y=S 段并行,共表原子 CAS——块内并发本依赖原子,
 // 跨 block 天然成立)/extract(单 block/行,流序保证 probe 全落)。仅 retry 路径调用,原 kernel 不动。
-__global__ void retry2_gprobe_kernel(
+static __global__ void retry2_gprobe_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val, int upper_tri,
     const int *bucket_rows, int n_in_bucket, int S,
@@ -3232,7 +3232,7 @@ __global__ void retry2_gprobe_kernel(
         }
     }
 }
-__global__ void retry2_gextract_kernel(
+static __global__ void retry2_gextract_kernel(
     const int *bucket_rows, int n_in_bucket,
     const long long *row_ht, const long long *tab_off,
     int *tab_col, double *tab_val,
@@ -3271,7 +3271,7 @@ __global__ void retry2_gextract_kernel(
 // host 按 ht ≤ HYBRID_HT_MAX 分两批launch。
 #define HYBRID_HT_MAX HYBRID_HT_MAX_STRUCT  // = HASH_CAP×2(半档留 val 池)
 
-__global__ void hash_global_hybrid_kernel(
+static __global__ void hash_global_hybrid_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri,
@@ -3342,7 +3342,7 @@ __global__ void hash_global_hybrid_kernel(
 }
 
 // heavy 拆分辅助:从全表 gather (ht, tab_off) 到子表(按子表行号)
-__global__ void heavy_gather_kernel(
+static __global__ void heavy_gather_kernel(
     int *sub_rows, int n_sub, const int *full_rows,
     const long long *full_ht, const long long *full_off,
     long long *sub_ht, long long *sub_off)
@@ -3356,7 +3356,7 @@ __global__ void heavy_gather_kernel(
 }
 
 // heavy 行分段排序的 begin/end 偏移(基于 gapped d_off + 真实 row_nnz)
-__global__ void heavy_seg_kernel(
+static __global__ void heavy_seg_kernel(
     const int *rows, int n, const long long *row_off, const int *row_nnz,
     int *seg_beg, int *seg_end)
 {
@@ -3370,7 +3370,7 @@ __global__ void heavy_seg_kernel(
 // ---- 行级重试 kernels(2026-08-26) ----
 // 每行真实列跨度(docs/24 跨度窗口):B(CSR 有序)每行首/末元素即该行最小/最大列 →
 // 行 i 的乘积列集合 ⊆ [min_k ci[rp[k]], max_k ci[rp[k+1]-1]]。O(nnz_row) 两次寻址,免费。
-__global__ void row_span_kernel(
+static __global__ void row_span_kernel(
     const int *A_row_ptr, const int *A_col_idx, int A_rows,
     const int *B_row_ptr, const int *B_col_idx,
     int *span_lo, int *span_len,
@@ -3402,7 +3402,7 @@ struct ToLL {   // thrust scan 输入升 64 位(thrust 按输入 value_type 累�
 // prep:ht = pow2(2×min(flop, ncols))(每行 distinct ≤ min(flop,n),高 dup 行 flop 是 distinct 的
 // 几千倍,裸 flop 定表 = 内存爆炸根源之一,docs/21);超全局表上限 → 不可重试(保持 overflow → 整阵回退)
 // v40 SMEM 重试车配套:ovf 行的 flop 收集(host 求 max 定重试表)
-__global__ void gather_flop_kernel(const int *rows, int n, const int *flop, int *out, int ncols)
+static __global__ void gather_flop_kernel(const int *rows, int n, const int *flop, int *out, int ncols)
 {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= n) return;
@@ -3411,7 +3411,7 @@ __global__ void gather_flop_kernel(const int *rows, int n, const int *flop, int 
     out[t] = (int)f;
 }
 
-__global__ void retry_prep_kernel(
+static __global__ void retry_prep_kernel(
     const int *rows, int n, const int *flop,
     long long *rht, int *row_ovf, int *overflow_flag, int ncols)
 {
@@ -3430,7 +3430,7 @@ __global__ void retry_prep_kernel(
     row_ovf[row] = 1;   // 已在 accumulate 记录时置位;此处幂等
 }
 // slot:重试区按行 id 的槽位数(=min(flop, ncols);非重试行为 0,先 memset)
-__global__ void retry_slot_kernel(const int *rows, int n, const int *flop, int *rslot, int ncols)
+static __global__ void retry_slot_kernel(const int *rows, int n, const int *flop, int *rslot, int ncols)
 {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= n) return;
@@ -3441,7 +3441,7 @@ __global__ void retry_slot_kernel(const int *rows, int n, const int *flop, int *
 
 // R1 子集快路(spec85 RETRY2=1):重试区偏移只在溢出行子集上求,替代全 A_rows memset+inclusive_scan
 // (R0 解剖:全 A_rows 扫+memset ≈195μs 是 host 编排最大项;消费者只按 ovf 行列表读 d_roff/d_rslot)
-__global__ void retry_rsub_gather_kernel(const int *rows, int n, const int *flop, long long *rsub, int ncols)
+static __global__ void retry_rsub_gather_kernel(const int *rows, int n, const int *flop, long long *rsub, int ncols)
 {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= n) return;
@@ -3449,7 +3449,7 @@ __global__ void retry_rsub_gather_kernel(const int *rows, int n, const int *flop
     if (f > ncols) f = ncols;
     rsub[t] = f;
 }
-__global__ void retry_suboff_scatter_kernel(const int *rows, int n, const long long *rosub, const long long *rsub,
+static __global__ void retry_suboff_scatter_kernel(const int *rows, int n, const long long *rosub, const long long *rsub,
                                             int *rslot, long long *roff)
 {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
@@ -3506,7 +3506,7 @@ __global__ void retry_fused_off_kernel(
 }
 
 // compact:每行 row_nnz 项从 tmp(row_off 起)拷到连续 CSR(C_row_ptr 起)
-__global__ void diter_gapped_copy_kernel(   // spec89-#4'-L2b⑤:CNT_FUSE 老段行 tmp→dC 挤压拷贝
+static __global__ void diter_gapped_copy_kernel(   // spec89-#4'-L2b⑤:CNT_FUSE 老段行 tmp→dC 挤压拷贝
     const int *rows, int n, const long long *gap_off, const int *row_nnz,
     const int *tmp_col, const double *tmp_val,
     const int *C_row_ptr, int *out_col, double *out_val)
@@ -3520,7 +3520,7 @@ __global__ void diter_gapped_copy_kernel(   // spec89-#4'-L2b⑤:CNT_FUSE 老段
     for (int j = 0; j < k; j++) { out_col[dst + j] = tmp_col[src + j]; out_val[dst + j] = tmp_val[src + j]; }
 }
 
-__global__ void hash_compact_kernel(
+static __global__ void hash_compact_kernel(
     int A_rows, const long long *row_off, const int *row_nnz, const int *C_row_ptr,
     const unsigned long long *tmp_key, const double *tmp_val,
     unsigned long long *out_key, double *out_val)
@@ -3535,7 +3535,7 @@ __global__ void hash_compact_kernel(
 }
 
 // 拆 key 低 32 位 → col
-__global__ void split_key_kernel(const unsigned long long *key, int *col, int n) {
+static __global__ void split_key_kernel(const unsigned long long *key, int *col, int n) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t < n) col[t] = (int)(key[t] & 0xffffffffu);
 }
@@ -3606,7 +3606,7 @@ SP_HD int tbl_target_rexp(int e, int alpha_pct, double glo, double ghi,
 #include "ocean_hash_port.cuh"    // 刀E6(study/57 §三十三):ocean hashNumeric 移植替换消融(HASH_OCNK 默认关)
 
 // maxbl 预计算:行内最长 B 链长(平方阵 B=A;LLB 同源量,学生特征 #19);O(nnz) 一发
-__global__ void row_maxbl_kernel(const int *A_rp, const int *A_ci, int A_rows, int *maxbl) {
+static __global__ void row_maxbl_kernel(const int *A_rp, const int *A_ci, int A_rows, int *maxbl) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= A_rows) return;
     int mb = 0;
@@ -3619,7 +3619,7 @@ __global__ void row_maxbl_kernel(const int *A_rp, const int *A_ci, int A_rows, i
 }
 
 // GPU 端分桶(无 host 往返):每行算 bucket_id 并直方图计数(融合省 1 launch)
-__global__ void compute_bucket_kernel(
+static __global__ void compute_bucket_kernel(
     const int *est, const int *A_row_ptr, int A_rows, int ultra_thr,
     const int *flop, int diter_thr,
     const int *span_len,   // 每行真实列跨度(docs/24:替代 n 近似)
@@ -3927,12 +3927,12 @@ __global__ void compute_bucket_kernel(
 // scatter:把行号按 bucket 写到预分配大 buffer 的对应位置
 // 1c-②a(10-14,审计弹药①安全面):binning 链双计数器(d_cnt/d_pos)清零合一
 // (原为两次 cudaMemset,每次一个 driver 往返;N_BINS=16×2 个 int,单线程一发足够)。
-__global__ void binning_zero2_kernel(int *cnt, int *pos, int n) {
+static __global__ void binning_zero2_kernel(int *cnt, int *pos, int n) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     if (i < n) { cnt[i] = 0; pos[i] = 0; }
 }
 
-__global__ void scatter_rows_kernel(
+static __global__ void scatter_rows_kernel(
     const int *bucket_id, int A_rows,
     const int *offsets, int *pos, int *sorted_rows)
 {
@@ -3971,7 +3971,7 @@ __global__ void scan_inclusive_kernel(const int *x, T *y, int n) {
 }
 
 // 小行专用:accumulate 已在 SMEM 内 count-sort 写有序,这里只把 tmp(gapped)→ CSR(packed) 纯 copy。
-__global__ void hash_compact_copy_kernel(
+static __global__ void hash_compact_copy_kernel(
     const int *rows, int n_rows,
     const long long *row_off, const int *row_nnz, const int *row_ptr,
     const unsigned long long *tmp_key, const double *tmp_val,
@@ -3997,7 +3997,7 @@ __device__ __forceinline__ int largest_lower_bound(const int *a, int lo, int hi,
 // 第三形态 —— 位图+前缀驻 SMEM(0.25B/列,单窗 span 上限 ≈ 800K),val 经 tmp 全局流过(atomicAdd)。
 // 输出 = tmp_key(低 32 列)/tmp_val + row_nnz,与 hash 行同消费(compact 零改动);
 // est 欠估 → out > est 预算 → 推 ovf_rows 走标准 retry(全局 hash)。
-__global__ void dense_largest_numeric_kernel(
+static __global__ void dense_largest_numeric_kernel(
     const int *A_rp, const int *A_ci, const double *A_val,
     const int *B_rp, const int *B_ci, const double *B_val,
     int upper_tri, int A_rows,
@@ -4187,7 +4187,7 @@ __global__ void hash_esc_kernel(
 // ESC64(study/50 靶1,10-20):flop∈(32,64] 的行——1 warp/行、每线程 2 乘积(IPT=2)。
 // 机理同 hash_esc_kernel 的零表 counting-sort,差别:64 虚拟 lane → smaller 位图 64bit(ull),
 // 每线程两套 (key,sum,leader) 状态;A 槽(虚拟 t)恒先于 B 槽(虚拟 t+32),同键时 A 领导。
-__global__ void hash_esc64_kernel(
+static __global__ void hash_esc64_kernel(
     const int *A_row_ptr, const int *A_col_idx, const double *A_val,
     const int *B_row_ptr, const int *B_col_idx, const double *B_val,
     int upper_tri,
@@ -4370,7 +4370,7 @@ __global__ void esc_rank_kernel(
 
 // compact 小行线程版(docs/13 v2):行内串行拷贝零闲 lane(warp 版 5-nnz 行 27/32 lane 闲;
 // road 族 compact 10.6ms/24M 行 = 440ns/行,CTA 数 3M → 94K)
-__global__ void hash_compact_copy_thread_kernel(
+static __global__ void hash_compact_copy_thread_kernel(
     const int *rows, int n_rows,
     const long long *row_off, const int *row_nnz, const int *row_ptr,
     const unsigned long long *tmp_key, const double *tmp_val,
@@ -4387,7 +4387,7 @@ __global__ void hash_compact_copy_thread_kernel(
     }
 }
 
-__global__ void hash_compact_copy_warp_kernel(
+static __global__ void hash_compact_copy_warp_kernel(
     const int *rows, int n_rows,
     const long long *row_off, const int *row_nnz, const int *row_ptr,
     const unsigned long long *tmp_key, const double *tmp_val,
@@ -4408,7 +4408,7 @@ __global__ void hash_compact_copy_warp_kernel(
 // 刀C1(study/57 tick6):4 路独立装载展开(每 lane 在飞 8 载 vs 2)。
 // nsys 实测 cage15 copy_warp 17.1ms/迭代 = 1.20TB/s(峰值 43%)——延迟遮蔽不足,非带宽墙。
 // 语义零变(同序同值);COMPACT_COPY_V2=1 启用,默认 0 = 原核逐位。
-__global__ void hash_compact_copy_warp_v2_kernel(
+static __global__ void hash_compact_copy_warp_v2_kernel(
     const int *rows, int n_rows,
     const long long *row_off, const int *row_nnz, const int *row_ptr,
     const unsigned long long *tmp_key, const double *tmp_val,
@@ -4465,7 +4465,7 @@ static void launch_copy_warp(int n_rows, const int *rows_ptr,
 
 // COMPACT_FLAT 条目覆盖计数(wb-edu 教训 10-19:行数比例门漏了大 C_nnz 低覆盖阵——
 // 行过半但条目占少数时全量条目线程空转二分,wb-edu +109%/nd24k +56% 实测;改按条目比例放行)
-__global__ void k_count_copy_entries(const int *bkid, const int *row_nnz, int n, int *out, int flatb = 0)
+static __global__ void k_count_copy_entries(const int *bkid, const int *row_nnz, int n, int *out, int flatb = 0)
 {
     int c = 0;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
@@ -4478,7 +4478,7 @@ __global__ void k_count_copy_entries(const int *bkid, const int *row_nnz, int n,
     for (int s = 128; s > 0; s >>= 1) { if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s]; __syncthreads(); }
     if (threadIdx.x == 0) atomicAdd(out, red[0]);
 }
-__global__ void hash_compact_copy_flat_kernel(
+static __global__ void hash_compact_copy_flat_kernel(
     int total_entries, int n_rows,
     const long long *row_off, const int *row_nnz, const int *row_ptr,
     const unsigned long long *tmp_key, const double *tmp_val,
@@ -4746,7 +4746,7 @@ static void launch_cs8192(int n, const int *rows_ptr, const long long *d_off, co
 
 // 刀16b:bin8 按真 d 劈双 CAP(d_row_nnz 排序时已知)——d≤4096 走 <512,4096>(60KB→3块/SM=75%占用,
 // bin7 健康几何;ncu:现 <512,8192> 1块/SM=25%)。劈分 kernel:两计数器原子分桶(18K 行,µs 级)。
-__global__ void cs_part_kernel(const int *rows, int n, const int *d_row_nnz, int thr,
+static __global__ void cs_part_kernel(const int *rows, int n, const int *d_row_nnz, int thr,
                                int *cnt_lo, int *cnt_hi, int *list_lo, int *list_hi) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j >= n) return;
@@ -4778,7 +4778,7 @@ static void launch_cs8192_part(int n, const int *rows_ptr, const long long *d_of
 
 // v31-①'(docs/76 §10 靶纸,SEGRTS=1):bin≥7 大行 csort O(n²/block) 排序税换 cub 分段基数排序。
 //   pre2 实证:bin6/7 380K 行(1-4K distinct)csort = 26.2ms(57% 时长)vs Ocean epilogue.sort 2.5ms。
-__global__ void bin_gather_kernel(
+static __global__ void bin_gather_kernel(
     const int *rows, int n, const long long *row_off, const int *row_nnz,
     const long long *bin_off,
     const unsigned long long *src_key, const double *src_val,
@@ -4793,7 +4793,7 @@ __global__ void bin_gather_kernel(
         dst_val[d + t] = src_val[so + t];
     }
 }
-__global__ void bin_scatter_kernel(
+static __global__ void bin_scatter_kernel(
     const int *rows, int n, const int *row_ptr, const int *row_nnz,
     const long long *bin_off,
     const unsigned long long *src_key, const double *src_val,
@@ -4810,7 +4810,7 @@ __global__ void bin_scatter_kernel(
         out_val[dst + t] = src_val[d + t];
     }
 }
-__global__ void bin_seg_kernel(const int *rows, int n, const long long *bin_off,
+static __global__ void bin_seg_kernel(const int *rows, int n, const long long *bin_off,
                                const int *row_nnz, int *seg_beg, int *seg_end)
 {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -4878,7 +4878,7 @@ static void launch_csort(int n, const int *rows_ptr, const long long *d_off, con
 }
 
 // DBG 校验:输出 CSR 每行 col 严格升序(验证 compact_sort 排序正确)。
-__global__ void hash_check_sorted_kernel(const int *row_ptr, const int *col, int A_rows, int *violations) {
+static __global__ void hash_check_sorted_kernel(const int *row_ptr, const int *col, int A_rows, int *violations) {
     int r = blockIdx.x * blockDim.x + threadIdx.x;
     if (r >= A_rows) return;
     int s = row_ptr[r], e = row_ptr[r + 1];
