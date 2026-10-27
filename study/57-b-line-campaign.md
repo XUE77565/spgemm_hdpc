@@ -1134,3 +1134,18 @@ per-file TSOPF = 5.52-5.57(§五十六 六阵表)= 追平整 c61 ✓。"TU-61 bi
 病态"的判断不成立;§五十五 仍有效的部分:bins 大表主导直方图(推翻"纯小表")、
 Phase 0 TSOPF 值跨会话漂移的警示。第五例"编译器承载一切"的**正确性级**证据
 (web-Google TU-90 untagged LHT8 越界,§五十六)不受影响、依然成立。
+
+## 五十八、夜1 收束(10-28 凌晨,用户收工令)
+
+**今晚 commits(9 个)**:81d838c→1387ac3,§五十四~五十七补全档。
+**P1 per-file 三层 = 已落地待关账**:终形态(generic bins2-9 全 TU-61 compute_61
+tagged / special-bin·compact·retry 留 sm90 / TB_TAG+审计门)在码、稳态六阵全绿
+(F2−31%/bcsstk17−47%/c-64−37% vs 整c61)、Bump +9% 兑现(71.87≈71.92)、
+c-64 memcheck 0 错、GPU 零事故、nnz 全程三方逐位同。
+**方法论两大件**:链接层探针三定谳(弱合并=静默错 codegen)+第五例"编译器
+承载一切"升至正确性级(web-Google TU-90 untagged LHT8 越界)+口径教训
+(首轮冷态 vs 稳态窗口,§五十五部分撤回已纠)。
+**收工未竟**:电池 v3 稳态口径 88/97 行(断点续跑);c-64 memcheck 复跑(新路由);
+首轮 6ms 冷态定性;P1 关账(§五十八待补终表);夜2 Gv3v2;T1 重审;confirm15。
+**下次起手**:①python3 scripts/p1_battery.py 续完 v3 → 终表关账 P1;
+②Gv3v2(规格=study/58 §一P2 + loop 交接 4cf510d1 状态段,规格已写死在 study/58)。
