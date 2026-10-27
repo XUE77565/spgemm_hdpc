@@ -168,3 +168,37 @@ C2×2(块宽 128/64T,+18%/+78%)/C1(拷贝 ILP +6%)/C3(封包形态 +23%)。
   (素数梯 2719/5449/16253 档现成)+ N1-N3;N5 裁决项提请用户。
 - **弹性**:Gv3v2 病理/判死 → P3 不等,F+A 先入账(bank first);G 线转
   E2-VG(T1)/扩档线,P3 后补束 confirm16。T2 只有位移证据出现才开。
+
+---
+
+## 附录 A:P1 per-file 实施图(v2,10-27 夜 探针定谳后重写)
+
+### A.0 链接层探针三定谳(tools/arch_probe/,已入库)
+
+| # | 实验 | 结果 | 设计后果 |
+|---|---|---|---|
+| P1 | 非模板 `__global__` 同名两 TU | **硬链接错误**(强符号 multiple definition) | 92 个 kernel soup 不能裸双编 |
+| P2 | 模板同参实例两 TU 不同体 | **链接过但 stub 弱合并——A 的发射跑 B 的体**(输出 207=B 体)! | 同参实例集重叠 = **静默跑错 codegen**,比链接错误致命;必须保证实例集不相交 |
+| P3 | `static __global__` + 同名 `__device__` 全局两 TU | **链接 OK,各 TU 跑各体**(111/222 全对);device 全局各自独立共存 | static = 92-kernel soup 的解;device 全局免门但 loader 归属 TU 必须对 |
+
+> P2 是本夜最重要的方法论收获:**若不做探针直接施工,构建会绿、数字会假**(silent wrong-codegen)。与"证伪电池查不到从未旋的旋钮"同族:陷阱在从未测过的链接层。
+
+### A.1 最终架构(探针锁定,四件保命件)
+
+**TU 划分**:同源双编 `spgemm_kernel_hash.cu`:
+- TU-90(`-DHASH_TB=90` 缺省,sm_90 原生)= 全部 host 区(hash_product/compact/diter/retry/两公共入口)+ bi≤3 accumulate;
+- TU-61(`-DHASH_TB=61`,compute_61 gencode)= device 模板区 + **唯一 host 函数** `hash_accum_ge4_c61(HashAccumCtx*, int bi)`(bi≥4 accumulate 梯)。
+
+**四件保命件**:
+1. **static-sed**:全部非模板 `__global__`(前一行非 `^template` 者,~70 处,含 `__launch_bounds__` 变体)加 `static`(P3 依据;这些 kernel 全部只被本文件发射,已核)。模板 kernel 不加(weak stub 靠实例集不相交);
+2. **host 区整域门**:`#if HASH_TB != 61` 包住 hash_product(5078)到 EOF 的全部 host 代码——**TU-61 绝不能编译任何发射非模板 kernel 或未打签模板的 host 代码**(死 host 函数也会实例化模板→重叠→P2 灾难)。TU-61 的 wrapper 函数插在 device 区之后、host 区门内;
+3. **tag 模板参**:`hash_spa_kernel` 模板加尾部缺省参 `int TB_TAG = 0`(体内不用,零 codegen 影响);TU-61 侧复制的 `SPA_LAUNCH0` 宏尾追加 `, HASH_TB`(运行时形态 4 组合是两 TU 唯一同参重叠:LHT2 链两 TU 的 LHT 值天然不相交 7-8 vs 9-14;HH/PHT/OCNK/b4pack/VG 只在 TU-61);
+4. **符号审计门**(构建期自检):`tools/arch_probe/check_disjoint.sh`——cuobjdump 两 .o 的模板实例符号表,断言**交集为空**,非空即构建失败。防未来任何新增发射点静默引入重叠(P2 的制度化解药)。
+
+**其余**(v1 要点仍有效):ctx 结构体+`auto &name = ctx->name;` 别名保移动体文本不动;编译器驱动 ctx 字段枚举(TU-61 编译报 undefined → 逐个入 ctx);HH_SORTED loader 移 TU-61 wrapper(其 g_hh_sorted_d 是 TU-61 cubin 的副本,P3:loader 必须同 TU);hblk/WSEL/g_blk_lad/env statics 两 TU 各持副本同 env 同值;bi≤3 原文不动(含刀A LHT2 bi2/3);SPEC99 默认 ON(bins7-8 生产走 hash_heavy,6699)→ TU-61 含生产默认路径,与整 c61 二进制同 flags 同 codegen。
+
+**Makefile**:`src/spgemm_kernel_hash.o`(90)+ `src/spgemm_kernel_hash_c61.o`(61)双目标同链 spgemm_test;`sm90` 目标=旧整 sm90 二进制(**二进制级逃生门**,替代 env HASH_C61=0——per-file 里大表 sm90 形态不存在,env 回退无对象)。
+
+**验收**(v1 判据全保留):15 阵 × {per-file, 整sm90, 整c61} × 交错 2 轮;TSOPF accumulate 回 4.26ms 级 / Bump/Hook compute 保持 c61 级(+9%) / F2 −3.1% / merge3·first100 零回归 / 值门三件套 + bins0-3 行占比统计;**新增:check_disjoint 过 + c-64 memcheck 0 错(E3 雷 spot)**。
+
+**实施次序**:static-sed(机械,先单独 commit)→ host 区门+TU-61 wrapper 骨架(编译过=符号层成立)→ 梯移动+ctx 枚举(TU-61 编译零错)→ Makefile 双目标+check_disjoint → 两参考重建对照 → 15 阵电池 → 入档。
