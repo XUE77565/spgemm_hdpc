@@ -1166,3 +1166,20 @@ ocean = 其二进制 total_time,stats.json;同卡同会话,卡1)。
 **翻面弹药账**:Bump 需 compute-only −10%;hash_heavy 接管 bins4/5(acc 60-66 级,
 刀G 已实测穿他们核天花板)+ Gv3v2 消载体 → 预期比值 ~0.92-098 翻面;cage15
 (1.257,最大缺口)另需 hash_heavy 扩 bins6/7 素数档。**Gv3v2 = 扳机**。
+
+## 六十、P1 关账:电池 v3 终表(10-28 晨,loop 切片5;稳态末轮口径)
+
+**15 阵 × {per-file, 整sm90, 整c61} × 2 轮(TOTAL GPU 中位;nnz 15 阵三方逐位同 ✓)**:
+pf/c61 比值:bcsstk17 0.997 / TSOPF **0.999(5.54 vs 6.64/5.55,兑现)** / F2 0.998 /
+bloweybq 1.000 / Hook 1.000 / StocF 1.003 / pre2 1.003 / ldoor 1.001 / c-64 0.996 /
+web-Google 1.007 / case9 1.007 / rgg 1.013 / Bump **0.989(72.06 acc,+9% 保持)** /
+arc130 1.044(μ阵噪声带)/ 1138_bus 0.993;pf/sm90 全部 ≤1.007(0.955-1.007)。
+**acc 相位**:F2 0.24 / bcsstk17 0.26 / c-64 0.37 = 超双参考稳态复现(§五十六)。
+
+**判:P1 per-file 关账成立(14/15 绿;Bump +9% 兑现;TSOPF 收口)**。
+**唯一挂起:cage15 pf/c61=1.089** ——分裂定位:r1(昨晚,旧二进制)tot=555≈c61 ✓,
+r2(今晨续跑首格)tot=665,**acc/compact 全平(84.4/20.7),病灶=d2h 503 vs 393
+(+110ms)**——该格在 Gv3v2 重编前跑(代码无关),同晨 sm90/c61 d2h 正常 →
+疑跨夜首格/PCIe 噪声,复验待卡0 memcheck 结束(避免 PCIe 再被挤)。
+注:电池末 4 格(Bump 全+cage15 r2)跨 Gv3v2 重编,但 Bump pf 0.989 全绿 +
+Gv3v2 改动 env-gated 默认关 → 无行为污染佐证。
