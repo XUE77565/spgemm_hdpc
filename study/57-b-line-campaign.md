@@ -1241,3 +1241,9 @@ Bump −5.3/ldoor −4.9/TSOPF −1.7/web-Google −0.26);无 acc 回退 → **�
 **confirm15_428 启动**(results/confirm15_run.log,断点续跑):ADPT15=per-file+刀A+
 刀G转正全默认(69f6e54 构建);OCN15=ocean 同夜同卡配对;compute-only 口径(d2h 噪声
 免疫);**记分链 0.8873 待此更新**。
+
+### §六十四补:confirm15 重启记录
+首次 confirm15(13:44 启动,旧二进制含 bin7/8 compact 小回退)跑至 264/428 于
+14:00 手动终止清零——记分形态应含 bin7/8 有序直拷修复(三阵反超 v3 证明值回票)。
+14:00 重启(pid 500817,断点续跑;ETA ~17:00)。**测量卫生教训(第三踩)**:
+pkill -f 模式串会匹配本命令 wrapper 自身 → 自杀 exit 144;清场一律按 PID kill。
