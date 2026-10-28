@@ -61,3 +61,15 @@ hash 的阵跳过 MinHash sketch,est 退 cheaper 上界(需守 tmp 定容/retry 
 **档案纠错:bloweybq 旧诊断"T5 预门误 route"作废——真因 bin9 形态**(T5b 队列项
 被 bin9 扩档刀取代)。
 **双刀计划**:①hash_heavy 扩 bin6(2719)+bin9(16253);②定容降本(mh 退位)。
+
+## 刀①首试:空刀定谳+重瞄(10-28 晚)
+**实现**:HH 链加 bi6(2719)/bi9(16253) 素数档(env HASH_H69 试点,默认关),
+构建+双审计绿,bloweybq memcheck 0 错。**五阵 A/B 全平(逐位同)= 空刀**。
+**nsys 破案(P0 分桶纠错)**:bloweybq 主核 = **hash_dense_kernel 8.03ms(65.3%)**
++mh_merge 1.17+count_flop_tiny——**bin9 胖行在 hash 方法内部的 dense 累积器子路由
+被消费,根本不进 generic-else 的 HH 链**。P0 按"[adapt]→hash"分桶太粗:hash 内部
+还有 dense/diter/batched 子路由。
+**重瞄刀①'**:靶点移到 dense_mode 拦截上游——H69 开时 bin9 行绕过 dense 累积器
+→正常 binning→HH 链(需读 dense_mode 门控:hash_product 的 dense_mode 分支与
+DITER 族 env;A-line T6 旧线的真正接口)。mh_merge 1.17ms 在此阵也在账上
+(刀②双吃范围扩大)。H69 现有空刀代码保留(env 默认关,无害)。
