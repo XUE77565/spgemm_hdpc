@@ -2108,6 +2108,11 @@ __device__ int g_xbit_d = 0;
 __device__ int g_hh_sorted_d = 0;   // 刀Gv3(study/57 §五十):HH_SORTED → host 装载;hash_heavy 表内有序 rank 直写   // 刀E5(study/57 §三一):HASH_XBIT → host cudaMemcpyToSymbol;extract 每行一次分支,零热径成本
 
 // 刀E1/E2/G(study/57 §廿五/廿六/四十九):bin 被无序写内核接管(hash_heavy 或 VG)→ compact 侧 csort 载体
+static inline bool hh_sorted_host() {   // Gv3v2:compact 侧感知 HH_SORTED(有序输出免载体趟);与 TU-61 loader 同 env
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("HH_SORTED"); v = (e && *e && atoi(e) > 0) ? 1 : 0; }
+    return v == 1;
+}
 static inline bool h45_pilot_on() {
     static int v = -1;
     if (v < 0) {
@@ -5028,49 +5033,50 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     // 之前在探测环后测 = 不含提取,跟彼方 ROWCYCLES(含提取)不同窗 → 偏向我们
     // 现在两边都是"从 kernel 开始到 kernel 结束"的完整时间
 
-    // 提取:刀Gv3(study/57 §五十)有序写——表内 O(count²/warp) rank 直写
-    // (compactAndSort 机理同源、代码自研;rank=warp 内小于自己的键数+跨 warp 归约;
-    //  免下游 counting sort 独立载体趟)。HH_SORTED=1 开;默认 0=无序写逐位不变。
+    // 提取:刀Gv3v2(study/57 §六十)有序直写——v1 三死因逐一拆:
+    // ①段认领=seg=warp序+k×nw(每段 32 连续槽,全体 warp 进环;v1 的 tid*32 步进=仅 1/4 线程);
+    // ②段内位移 rank=5 轮 __shfl_xor 广播同段键累"有效且小于我"位掩码,popc(v1 逐槽串行比较);
+    // ③跨段前缀按表序入 smem 段数组(段序=表序,v1 的 warp 前缀在 warp 段跨表序散布=次序错);
+    // ④cap=d_off 行槽宽,rank≥cap 走既有 retry 熔断语义(v1 cap2=INT_MAX 裸写)。
+    // 表内键天然无重 → rank 直写=行内有序,下游免 counting sort 载体趟(刀G载体悖论正解)。
     if (g_hh_sorted_d) {
-        __shared__ int warp_cnt[32];
-        int lane5 = tid & 31, wid = tid >> 5, nw = (int)(blockDim.x >> 5);
-        // 每线程持槽计数(warp 聚合:一个 warp 一次扫连续 32 槽)
-        __shared__ int hh_pos[HT_P > 0 ? HT_P : 1];   // 每槽的有序位次(仅有效槽写)
-        int my_cnt = 0;
-        for (int s = tid * 32; s < HT_P; s += blockDim.x * 32) {
-            int lo = s + lane5;
-            unsigned ball = 0;
-            int c = -1;
-            if (lo < HT_P) { c = sh_col[lo]; ball = (c != -1) ? (1u << lane5) : 0; }
-            // 本 warp 有效槽数(每 warp 一段 32 连续槽)
-            unsigned valid = __ballot_sync(0xffffffffu, ball != 0);
-            my_cnt += __popc(valid);
-            // 段内 rank:比 c 小的有效键数(表内扫描,per warp 段)
-            if (c != -1) {
-                int r = 0;
-                for (int q = s; q < s + 32 && q < HT_P; q++) {
-                    int cc = sh_col[q];
-                    if (cc != -1 && cc < c) r++;
-                }
-                hh_pos[lo] = r;
-            }
+        const int lane5 = tid & 31, wid = tid >> 5, nw = (int)(blockDim.x >> 5);
+        const int nseg = (HT_P + 31) >> 5;
+        __shared__ int seg_pre[(HT_P + 31) >> 5 > 1 ? (HT_P + 31) >> 5 : 1];   // 段 exclusive 前缀(HT_P=8192 → 256 int=1KB)
+        // Pass A:段计数——ballot 必须全体 lane 到场(§六十一:首版把 ballot 写进
+        // if(lane5==0) = 仅 lane0 等全掩码 = 必挂;结果由 lane0 落账)
+        for (int seg = wid; seg < nseg; seg += nw) {
+            const int lo = (seg << 5) + lane5;
+            const int c = (lo < HT_P) ? sh_col[lo] : -1;
+            const unsigned valid = __ballot_sync(0xffffffffu, c != -1);
+            if (lane5 == 0) seg_pre[seg] = __popc(valid);
         }
-        // 跨 warp 偏移:各 warp 计数前缀(小 nw,warp0 串行)
-        for (int off = 16; off; off >>= 1) my_cnt += __shfl_down_sync(0xffffffffu, my_cnt, off);
-        if (lane5 == 0) warp_cnt[wid] = my_cnt;
         __syncthreads();
-        if (tid == 0) { int acc2 = 0; for (int w = 0; w < nw; w++) { int t2 = warp_cnt[w]; warp_cnt[w] = acc2; acc2 += t2; } row_nnz[i] = acc2; }
+        if (tid == 0) {   // exclusive 前缀(段序=表序;单线程 nseg≤256 串行,亚 μs)
+            int acc = 0;
+            for (int s = 0; s < nseg; s++) { const int t = seg_pre[s]; seg_pre[s] = acc; acc += t; }
+            row_nnz[i] = acc;
+        }
         __syncthreads();
-        // 写出:rank = warp 基址 + 段内位次
-        long long base2 = base;
-        int cap2 = INT_MAX;   // est 帽在外层 retry 语义(此处行已过熔断,cap 即 tmp 槽宽)
-        for (int s = tid * 32; s < HT_P; s += blockDim.x * 32) {
-            int lo = s + lane5;
-            if (lo < HT_P && sh_col[lo] != -1) {
-                int r = warp_cnt[tid >> 5] + hh_pos[lo];
-                if (r < cap2) {
-                    tmp_key[base2 + r] = ((unsigned long long)i << 32) | (unsigned int)sh_col[lo];
-                    tmp_val[base2 + r] = sh_val[lo];
+        const int cap = (int)(d_off[i + 1] - d_off[i]);   // 行 est 槽宽
+        // Pass B:重算段内 rank(shfl 现算,免 smem 位次表)+ 直写
+        for (int seg = wid; seg < nseg; seg += nw) {
+            const int lo = (seg << 5) + lane5;
+            const int c = (lo < HT_P) ? sh_col[lo] : -1;
+            unsigned lt = 0;   // 段内"有效且小于我"位掩码
+            #pragma unroll
+            for (int off = 1; off < 32; off <<= 1) {
+                const int other = __shfl_xor_sync(0xffffffffu, c, off);
+                if (other != -1 && other < c) lt |= (1u << (lane5 ^ off));
+            }
+            if (c != -1) {
+                const int r = seg_pre[seg] + __popc(lt);
+                if (r < cap) {
+                    tmp_key[base + r] = ((unsigned long long)i << 32) | (unsigned int)c;
+                    tmp_val[base + r] = sh_val[lo];
+                } else {   // 超帽:既有 retry 熔断语义(探测环满表同款)
+                    atomicExch(overflow_flag, 1);
+                    if (!atomicExch(&row_ovf[i], 1)) { const int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
                 }
             }
         }
@@ -7952,11 +7958,12 @@ static void hash_product(
                 else
                     launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());
-            } else if (bi == 4 && h45_pilot_on()) {
+            } else if (bi == 4 && h45_pilot_on() && !hh_sorted_host()) {
                 // 刀E1:bin4 行走 hash_heavy(无序写 tmp)→ csort 善后(CAP 512 紧贴 bin4 表容)
+                // Gv3v2(§六十):HH_SORTED=1 时输出已行内有序 → 跳过载体,落下方 copy/FLAT 路(免 counting sort 趟)
                 launch_csort<128, 4>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());
-            } else if (bi == 5 && h45_pilot_on()) {
+            } else if (bi == 5 && h45_pilot_on() && !hh_sorted_host()) {
                 // 刀G:bin5 行走 hash_heavy(无序写)→ 两级计数排序善后(spec84 同款;
                 // d~200 → CAP 2048 counting O(nnz+CAP) 免 radix padding 税,crankseg bin6/7 已转正同型)
                 launch_csort_counting<CSC_TPB, CSC_CAP>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
