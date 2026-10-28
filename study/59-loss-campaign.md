@@ -47,3 +47,17 @@ count_flop 1.34 + **mh_construct 1.22 + mh_merge 4.23** + est_scan 0.07 + binnin
 hash 的阵跳过 MinHash sketch,est 退 cheaper 上界(需守 tmp 定容/retry 语义);
 预期 Bump 84.65→~79 < ocean 80.19 翻面。ocean total_time 含其自家 sizing——
 对比合法,我方 sizing 更贵是真实差额。
+
+## P0 定谳:输面全 hash 路由,两真桶(10-28 晚)
+131 输阵 [adapt] 全判 hash(无 dense/diter 桶——预设推翻);bins 分桶:
+- **bin9 大表桶(最狠,1.77-3.07×)**:bloweybq(9:10000)/hangGlider_3(9:9118)/
+  lowThrust_4(9:5271)/TSOPF_FS+case9(9:7214)/pf2177(bin7-9)——bin9 走 LHT2(14)
+  196KB smem 表=占用灾难(1块/SM 级);**靶刀=hash_heavy 扩 bin9(HT_P=16253 素数档
+  195KB≤227KB,opt-in 已在 §六十六 全家块)**;预期整桶 1.9-3.1× 收割;
+- **微行巨阵 non-acc 桶(~1.8×)**:atmosmodj/d(0:1.27M)/delaunay_n23·24(0:6-12M)/
+  bloweya——acc 仅 2.6-32ms,差额住 mh 定容+binning 大 n 开销;**靶刀=同 Bump 的
+  定容降本刀**(P2,一刀双吃);
+- 旧账:Stanford_Berkeley 1.855(known-cost 台账)。
+**档案纠错:bloweybq 旧诊断"T5 预门误 route"作废——真因 bin9 形态**(T5b 队列项
+被 bin9 扩档刀取代)。
+**双刀计划**:①hash_heavy 扩 bin6(2719)+bin9(16253);②定容降本(mh 退位)。
