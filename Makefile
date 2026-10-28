@@ -55,3 +55,4 @@ run_all: $(TARGET)
 # P1 符号审计门(探针P2:同参实例弱合并=静默错codegen;study/58 附录A.1 保命件4)
 check-disjoint: src/spgemm_kernel_hash.o src/spgemm_kernel_hash_c61.o
 	tools/arch_probe/check_disjoint.sh
+	python3 tools/arch_probe/check_optin.py
