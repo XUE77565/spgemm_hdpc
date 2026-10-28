@@ -187,3 +187,16 @@ RPW×5×64(≈1.2-2.5KB,现 2.5KB 内);extract 融合按组;人口门:bin0 且 B
 (或统一替换 bin0 主路,电池定)。备选刀=吸收 loadBalance 机理(k/j 动态分组)。
 **实施注意**:bin0 生产主力(1.27M-12.5M 行人口),三件套+15 阵电池必过;
 nnz 逐位+行内有序(extract 融合保序)。
+
+## batched 刀定谳:multirow 兑现+转正(10-28 深夜)
+**实现**:hash_spa_batched_multirow<HT,RPW>(组私有表,组内 k 串行×j 并行,统一界循环
+防分歧 sync,extract/rank/溢出同款语义);发射门 bi==0(env BATCHMR)。
+**A/B 三阵(computeOnly,nnz 全同,memcheck 0 错)**:
+| 阵 | off | mr1<128,2> | **mr2<64,4>** |
+|---|---|---|---|
+| atmosmodj | 4.06 | 3.48(−14%) | **3.29(−19%)** |
+| delaunay_n24 | 46.92 | 45.50 | **40.98(−12.7%)** |
+| bloweya | 9.07 | 8.79 | 9.54(交错重采=纯噪声带,off 8.84-9.54/mr2 8.77-9.28 全重叠) |
+**lane 利用率机制证实**(ocean 对 ocean 比值:atmosmodj 1.85→~1.50/delaunay 1.81→~1.58,
+未全关——FLAT copy 与残余相位在账)。**BATCHMR 默认翻 2**(逃生门 0);电池 v6 跑中;
+绿→confirm17。

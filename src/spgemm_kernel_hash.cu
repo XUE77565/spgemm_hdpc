@@ -2037,6 +2037,97 @@ __global__ void hash_spa_batched_kernel(
     }
 }
 
+// ══ batched 战役刀(study/59):hash_spa_batched_multirow —— 微行巨阵人口几何修正 ══
+// 机理定谳(§batched 战役·机理定谳):warp-per-row 的 j 32 路固定并行在 B 行 ~7 人口
+// = lane 利用率 22%(ocean 动态分组自适应);本核 = 每 warp RPW 行,32/RPW-lane 组
+// (RPW=2→16 lane;RPW=4→8 lane 配 HT=64),组私有表+组内 k 串行 × j 组内并行,
+// extract/rank/溢出语义与 batched 同款。分歧规避:循环一律 warp 统一界(HT),组守卫内置。
+template<int HT, int RPW>
+__global__ void hash_spa_batched_multirow_kernel(
+    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
+    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
+    int upper_tri,
+    const int *bucket_rows, int n_in_bucket,
+    const long long *row_off, const int *est,
+    unsigned long long *tmp_key, double *tmp_val,
+    int *row_nnz, int *overflow_flag,
+    int *ovf_rows, int *ovf_cnt, int *row_ovf)
+{
+    constexpr int LG = 32 / RPW;                 // 组内 lane 数
+    constexpr int WPB = 8;                       // 与原 batched 同块几何(256T)
+    const int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    if ((long long)warp * RPW >= n_in_bucket) return;   // warp 首行即越界(warp 统一退出)
+    const int g = lane / LG, gl = lane % LG;     // 组 id / 组内 lane
+    const int ridx = warp * RPW + g;
+    const int i = (ridx < n_in_bucket) ? bucket_rows[ridx] : -1;
+
+    __shared__ int bsmem[WPB][RPW][5 * HT];
+    __shared__ int g_cnt[WPB][RPW];
+    int *t_col = bsmem[warp & (WPB - 1)][g];
+    double *t_val = (double *)(bsmem[warp & (WPB - 1)][g] + HT);
+    int *pack_col = bsmem[warp & (WPB - 1)][g] + 3 * HT;
+    int *pack_slot = bsmem[warp & (WPB - 1)][g] + 4 * HT;
+
+    if (gl == 0) g_cnt[warp & (WPB - 1)][g] = 0;
+    for (int s = gl; s < HT; s += LG) { t_col[s] = -1; t_val[s] = 0.0; }
+    __syncwarp();
+    if (i >= 0) {
+        int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+        for (int p = rs; p < re; p++) {              // k 组内串行
+            int k = A_col_idx[p];
+            double a = A_val[p];
+            int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
+            for (int q = ks + gl; q < ke; q += LG) { // j 组内并行
+                int j = B_col_idx[q];
+                if (upper_tri && j < i) continue;
+                double v = a * B_val[q];
+                unsigned slot = ((unsigned)(j * 2654435761u)) & (HT - 1);
+                int probes = 0;
+                while (true) {
+                    int old = atomicCAS(&t_col[slot], -1, j);
+                    if (old == -1 || old == j) { atomicAdd(&t_val[slot], v); break; }
+                    slot = (slot + 1) & (HT - 1);
+                    if (++probes >= HT) {
+                        atomicExch(overflow_flag, 1);
+                        if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    __syncwarp();
+    // extract(组内 count-rank;循环统一界 HT,组守卫内置防分歧 sync)
+    long long base = i >= 0 ? row_off[i] : 0;
+    int cap = i >= 0 ? est[i] : 0;
+    for (int s = gl; s < HT; s += LG) {
+        int c = i >= 0 ? t_col[s] : -1;
+        if (c >= 0) {
+            int pos = atomicAdd(&g_cnt[warp & (WPB - 1)][g], 1);
+            if (pos < HT) { pack_col[pos] = c; pack_slot[pos] = s; }
+        }
+    }
+    __syncwarp();
+    int n = g_cnt[warp & (WPB - 1)][g];
+    if (n > HT) n = HT;
+    for (int idx = gl; idx < HT; idx += LG) {         // 统一界(HT),idx<n 组守卫
+        if (idx < n && i >= 0) {
+            int c = pack_col[idx];
+            int rank = 0;
+            for (int m = 0; m < n; m++) if (pack_col[m] < c) rank++;
+            if (rank >= cap) { atomicExch(overflow_flag, 1); continue; }
+            tmp_key[base + rank] = ((unsigned long long)i << 32) | (unsigned int)c;
+            tmp_val[base + rank] = t_val[pack_slot[idx]];
+        }
+    }
+    __syncwarp();
+    if (gl == 0 && i >= 0) {
+        if (n > cap) { if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; } }
+        row_nnz[i] = (n <= cap) ? n : cap;
+    }
+}
+
 // ══ 刀C3(study/57 §十七):hash_spa_packed —— bin4 多行封包内核 ════════════════
 // 病灶:bin4-5 并发逆差 2.85×(tick7 逐行对拍:我方周期 0.53× 赢,系统 1.51× 输);
 // 刀C2 证伪块宽杠杆(共享表组数减单调恶化);本核 = C2 未测设计点:
@@ -6885,6 +6976,21 @@ static void hash_product(
                 // 小行批量: HYBRID=1 时 value 走全局 L2(Ocean 杀手锏;池句柄 d_hybrid_val 尾部统一释放,Fix#6)
                 if (g_hybrid && !d_hybrid_val)
                     d_hybrid_val = decltype(d_hybrid_val)(dev_alloc((size_t)n * BATCH_HT * sizeof(double)));
+                // batched 战役刀(study/59):BATCHMR=1→multirow<128,2>(16-lane 组);=2→multirow<64,4>(8-lane 组,
+                // est>48 行走 overflow→retry 逃生);默认 0=原核逐位。B 行短人口(atmosmodj/delaunay 型)的 lane 利用率修正。
+                static int g_batchmr = -1;
+                if (g_batchmr < 0) { const char *e = getenv("BATCHMR"); g_batchmr = (e && *e) ? atoi(e) : 2; }   // 转正默认 2(8-lane 组;atmosmodj −19%/delaunay −12.7%,bloweya 噪声带平);BATCHMR=0 逃生门回原核
+                if (g_batchmr == 1 && !g_hybrid)
+                    hash_spa_batched_multirow_kernel<128, 2><<<(n / 2 + BATCH_WPB - 1) / BATCH_WPB, BATCH_WPB * WARP_SIZE, 0, cur_s>>>(
+                        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
+                        rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
+                        d_ovf_rows, d_ovf_cnt, d_row_ovf);
+                else if (g_batchmr == 2 && !g_hybrid)
+                    hash_spa_batched_multirow_kernel<64, 4><<<(n / 4 + BATCH_WPB - 1) / BATCH_WPB, BATCH_WPB * WARP_SIZE, 0, cur_s>>>(
+                        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
+                        rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
+                        d_ovf_rows, d_ovf_cnt, d_row_ovf);
+                else
                 hash_spa_batched_kernel<BATCH_HT, BATCH_WPB><<<(n + BATCH_WPB - 1) / BATCH_WPB, BATCH_WPB * WARP_SIZE, 0, cur_s>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                     rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
