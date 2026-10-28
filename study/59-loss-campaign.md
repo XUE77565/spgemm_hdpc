@@ -100,3 +100,8 @@ bin9→HH(16253) 默认 1(HASH_H69=0 逃生门);bin6→HH(2719) 需 H69=2(未验
 **验证**:bloweybq 8.46/TSOPF_FS 6.13 = H69' 数复现;case9(与 TSOPF_FS 同构)
 6.11 同步受益;**exdata_1 = 2.84 vs confirm15 的 2.850 = 零影响**(人口联锁实证)。
 电池 v5(新默认)回归跑中。
+
+## 电池v5全绿+confirm16启动(10-28 晚)
+v5 vs v4:零回归,意外扩大——TSOPF Σ−3.79/pre2 −3.65/c-64 −0.70/**Bump −0.99**
+(bin9 人口比五阵试点更广,Bump/pre2 也有);bloweybq 10.05;nnz 15/15 同。
+**confirm16_428 启动**(ocean 同卡配对;预期 bin9 桶+pf2177 翻面+TSOPF/pre2/c-64/Bump 溢出收益)。
