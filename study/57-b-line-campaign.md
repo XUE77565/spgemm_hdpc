@@ -1225,3 +1225,19 @@ HASH_H45=0/HASH_H55=0/HH_SORTED=0 保留);重建零错+审计不相交;默认配
 = 37.69+7.32 复现B臂数字(nnz同)= 转正生效。电池 v4(新默认)重跑中。
 **当前生产形态**:per-file 三层 + hash_heavy 接管 bins4/5 + 表内有序直写,
 全部默认开。
+
+## 六十三、电池v4全绿+T1扫平+confirm15启动(10-28 午后,loop)
+
+**电池v4(转正默认)vs v3**:nnz 15/15 同;acc 全平或赢(cage15 −19.5/Hook −7.3/
+Bump −5.3/ldoor −4.9/TSOPF −1.7/web-Google −0.26);无 acc 回退 → **转正零回归确认**。
+**三阵 Σ 小回退(TSOPF +2.0/c-64 +0.66/pre2 +1.3,住 compact)交错重采确认真实非噪声**;
+二分定位:元凶=HH_SORTED 单独作用(H45only/H55only/noSORTED 全 1.15,唯全开 4.83);
+但 v3 与 v4 的 bins4/5 走相同 FLAT/copy 分支、FLAT kernel 读约与输出源无关——
+**相位归因谜未解**(净 +2.0 真),记已知代价台账,confirm 后专项(stream 尾部吸收
+假说待验)。GM 账:net 强正(大阵赢 5-20ms 级 vs 三小阵输 1-2ms)。
+**T1 旧刀重审扫(Bump acc,新默认 65.6 基线)**:OCH −0.6%/ROT/GFORCE/PROBE2/HT_SHIFT
+全纹丝不动——c61 下 hash_heavy 已在自己最优点;**HT_SHIFT 阴性对照平=无系统性位移
+→ T2 代码刀不开**。Bump 剩 3% 不在旋钮线。
+**confirm15_428 启动**(results/confirm15_run.log,断点续跑):ADPT15=per-file+刀A+
+刀G转正全默认(69f6e54 构建);OCN15=ocean 同夜同卡配对;compute-only 口径(d2h 噪声
+免疫);**记分链 0.8873 待此更新**。
