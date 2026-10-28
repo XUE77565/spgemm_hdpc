@@ -1149,3 +1149,20 @@ c-64 memcheck 0 错、GPU 零事故、nnz 全程三方逐位同。
 首轮 6ms 冷态定性;P1 关账(§五十八待补终表);夜2 Gv3v2;T1 重审;confirm15。
 **下次起手**:①python3 scripts/p1_battery.py 续完 v3 → 终表关账 P1;
 ②Gv3v2(规格=study/58 §一P2 + loop 交接 4cf510d1 状态段,规格已写死在 study/58)。
+
+## 五十九、晨间实测:per-file vs 真实 ocean(用户问"超过他们环境的 ocean 核了吗")(10-28 10:40)
+
+**口径**:confirm 同款(我方 = METHOD=adaptive compute-only TOTAL−h2d−d2h,WARMUP_N=3;
+ocean = 其二进制 total_time,stats.json;同卡同会话,卡1)。
+| 阵 | 我们 per-file | ocean | 比值 |
+|---|---|---|---|
+| Bump_2911 | 90.61 | 82.00 | **1.105** |
+| Hook_1498 | 49.52 | 42.90 | **1.154** |
+| cage15 | 118.07 | 93.94 | **1.257** |
+
+**定谳**:b45 旗舰阵对真实 ocean **三阵未超**(输 10-26%)。轨迹:破案前系统级
+~1.20× → 刀F/per-file 后 Bump 1.105(收窄未翻)。整体 union 428 仍净赢 11.3%
+(10-23 confirm14),输面核心即此人群。
+**翻面弹药账**:Bump 需 compute-only −10%;hash_heavy 接管 bins4/5(acc 60-66 级,
+刀G 已实测穿他们核天花板)+ Gv3v2 消载体 → 预期比值 ~0.92-098 翻面;cage15
+(1.257,最大缺口)另需 hash_heavy 扩 bins6/7 素数档。**Gv3v2 = 扳机**。
