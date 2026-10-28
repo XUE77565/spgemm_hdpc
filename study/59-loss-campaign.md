@@ -123,3 +123,17 @@ pf2177 **0.932 翻面入账**;bin9桶:bloweybq 2.08/hangGlider_3 1.68/lowThrust_
 1.85/delaunay_n22-24 1.75-1.81/Stanford_Berkeley 1.75——**atmosmod+delaunay 桶+
 bloweybq/hangGlider 残余 = 刀②(mh 退位)靶人群**;Bump 0.5%/cage15 1.3% 尾巴也在刀②。
 **两日累计**:0.8873 → 0.8054(**−9.2%**),主场 1.099→0.9728,赢面 45%→70.5%。
+
+## 刀②设计定稿(读码完毕,10-28 夜)
+**机制图**:①mh 已有门——avg_product ≤ AVG_FLOP_THR 时 est=精确 flop 免 MinHash;
+dup 重阵(Bump 类)走全量 MinHash 的目的=把 flop 上界压回近 distinct(免 tmp 爆 ~10×);
+②MHSAMP 采样骨架已存(mh_construct/merge 的 sample_stride/n_work 参数+est_projected
+覆写管道)但仅用于 dense_win 候选的密度投影;③mh_merge 4.23ms=merge 形态已调优
+(MH_MERGE_R=4/B 线 MH_K 证伪史),kernel 内优化空间枯竭——**换算法不磨 kernel**。
+**刀②=采样标定 κ**:hash 路由大阵上,S=64k 行 stride 采样跑 mh(管道现成,~0.12ms)
+→ κ=Σdistinct_sample/Σflop_sample → est[i]=flop[i]×κ×margin(单轻核或并入 est_scan)
+→ Σest×κ 投影定容(est_projected 管道现成)。retry 语义不动(κ 欠估行→cap 守卫→
+flop 表 retry ✓)。风险:κ 全局均匀假设 vs 行级 dup 方差(Bump 97.8% 重行=分布集中,
+κ 应稳;hangGlider 类待验)。
+**判据**:Bump computeOnly <84.2(ocean 84.60 同夜)/atmosmod·delaunay 桶改善/
+nnz 逐位+retry 行数审计+15 阵电池回归。实施次序:采样门扩展→κ 计算→est 核→A/B。
