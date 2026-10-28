@@ -200,3 +200,8 @@ nnz 逐位+行内有序(extract 融合保序)。
 **lane 利用率机制证实**(ocean 对 ocean 比值:atmosmodj 1.85→~1.50/delaunay 1.81→~1.58,
 未全关——FLAT copy 与残余相位在账)。**BATCHMR 默认翻 2**(逃生门 0);电池 v6 跑中;
 绿→confirm17。
+
+## 电池v6全绿+confirm17启动(10-29 凌晨)
+v6 vs v5:nnz 15/15 同;两面旗(c-64/bcsstk17 +5%)交错重采=噪声清零(c-64 0.330/0.331
+vs v5 0.33;bcsstk17 0.244-0.255 vs 0.26);bin0 广谱阵零回归。**confirm17_428 启动**
+(记分形态=confirm16+multirow<64,4> 默认;预期 atmosmod/delaunay 桶+bin0 广谱,GM 0.8054→0.79x?)。
