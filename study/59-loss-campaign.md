@@ -73,3 +73,22 @@ hash 的阵跳过 MinHash sketch,est 退 cheaper 上界(需守 tmp 定容/retry 
 →正常 binning→HH 链(需读 dense_mode 门控:hash_product 的 dense_mode 分支与
 DITER 族 env;A-line T6 旧线的真正接口)。mh_merge 1.17ms 在此阵也在账上
 (刀②双吃范围扩大)。H69 现有空刀代码保留(env 默认关,无害)。
+
+## 刀①' 定谳:bin9 桶收割(10-28 晚)
+**两步实现**:①h69_route_on() 压制 dense_mode/dense_win_mode(矩阵级 dense 累积器
+拦截上游改道);②bin9 compact sorted 直拷门(HH 有序直写免 SEGRTS——无此门时
+A/B 实证 compact 42ms 天价吃光 acc −58% 的战果)。
+**五阵 A/B(compute-only,nnz 全同,memcheck 0 错)**:
+| 阵 | off | H69' | 净 | 对 ocean |
+|---|---|---|---|---|
+| bloweybq | 12.55 | 8.46 | −32.6% | 3.07→2.07 |
+| hangGlider_3 | 10.02 | 7.14 | −28.7% | 2.35→1.67 |
+| lowThrust_4 | 6.55 | 3.80 | −42.1% | 2.34→1.35 |
+| TSOPF_FS_b9_c6 | 8.49 | 6.12 | −27.9% | 1.94→1.40 |
+| pf2177 | 4.16 | 2.20 | −47.1% | **1.77→0.94 翻面** |
+**机制定谳**:T6 时代 dense 累积器对 bin9 胖行的"最优"已被 hash_heavy(16253 档,
+acc −41~−58%)+ 有序直写 + 直拷组合推翻——"决策人群随内核演化"又一实例。
+**下一步**:①默认翻前**人口精细化**(压制 dense 仅当 bin9 有人口——H69 全局压制
+会把无 bin9 的 dense 最优阵(exdata_1 类)误赶去 hash 路=回退雷区;改 h_cnt[9]>0
+联锁);②15 阵回归(off 零影响抽验)→ 默认翻 → confirm16。bloweybq/hangGlider
+残余差距住 non-acc(mh 1.17+count_flop 1.1)→ 刀②双吃名单+2。
