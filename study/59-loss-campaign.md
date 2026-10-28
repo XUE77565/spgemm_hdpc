@@ -152,3 +152,12 @@ host 门(MHKAPPA=1 试点,S=2048,q05×1.15,κ下限0.125;弃样回全量mh安全
 MHKAPPA 留 env 关(默认0,无害);弃样安全网未触发路径保留。
 **Bump 剩余0.5%的替代弹药**:count_flop 1.34ms(kernel优化靶,边际)/接受现状等
 atmosmod 取证结果重排。
+
+## atmosmod/delaunay 桶取证定谳(10-28 深夜)
+**nsys kernel 表**:atmosmodj(co 4.03/ocean~2.19)=hash_spa_batched<128,8> 2.57ms(64%)
++FLAT 1.10;delaunay_n24(co 46.95/ocean~26)=batched **24.8ms(50.8%)**+FLAT 11.6+
+esc<32> 6.9。**真靶=hash_spa_batched<128,8> 的 bin0 微行巨阵人口**(est≤64 ×
+1.27M-12.5M 行),我方比 ocean 同人口慢 ~2×;FLAT copy(带宽已核)与 esc 次之。
+**定下一战役**:batched 核优化(读核/lineinfo/对拍 ocean 同人口形态)——非一刀,
+是 A 线级 kernel 战役;预期该桶(~8-15 阵@1.8×)若压到 ~1.2×,GM 再 −1% 级。
+Bump 残余(1.005)与 cage15(1.013)属边际尾,mh 方向已证伪,batched 战役优先级更高。
