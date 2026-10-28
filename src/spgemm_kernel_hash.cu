@@ -6978,14 +6978,20 @@ static void hash_product(
                     d_hybrid_val = decltype(d_hybrid_val)(dev_alloc((size_t)n * BATCH_HT * sizeof(double)));
                 // batched 战役刀(study/59):BATCHMR=1→multirow<128,2>(16-lane 组);=2→multirow<64,4>(8-lane 组,
                 // est>48 行走 overflow→retry 逃生);默认 0=原核逐位。B 行短人口(atmosmodj/delaunay 型)的 lane 利用率修正。
+                // §批次刀复盘(10-29 凌晨):默认 2 全局翻=第二次人口联锁失误(confirm17 中段
+                // 128 阵恶化 vs 7 改善,B 行长族 bcsstk/bcspwr j 并行度被砍 4×)——回滚默认 0,
+                // 加标量人口门 avg_j=total_flop/A_nnz(B 行均长):≤12 才走 multirow(atmosmodj ~7/
+                // delaunay 型短 B 行人口),env BATCHMR=1/2 强制 / 0 强制关(三态诊断)。
                 static int g_batchmr = -1;
-                if (g_batchmr < 0) { const char *e = getenv("BATCHMR"); g_batchmr = (e && *e) ? atoi(e) : 2; }   // 转正默认 2(8-lane 组;atmosmodj −19%/delaunay −12.7%,bloweya 噪声带平);BATCHMR=0 逃生门回原核
-                if (g_batchmr == 1 && !g_hybrid)
+                if (g_batchmr < 0) { const char *e = getenv("BATCHMR"); g_batchmr = (e && *e) ? atoi(e) : -1; }
+                double avg_j = A_nnz > 0 ? (double)total_flop / A_nnz : 1e9;
+                int mr_on = (g_batchmr >= 0) ? g_batchmr : (avg_j <= 12.0 ? 2 : 0);
+                if (mr_on == 1 && !g_hybrid)
                     hash_spa_batched_multirow_kernel<128, 2><<<(n / 2 + BATCH_WPB - 1) / BATCH_WPB, BATCH_WPB * WARP_SIZE, 0, cur_s>>>(
                         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                         rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
                         d_ovf_rows, d_ovf_cnt, d_row_ovf);
-                else if (g_batchmr == 2 && !g_hybrid)
+                else if (mr_on == 2 && !g_hybrid)
                     hash_spa_batched_multirow_kernel<64, 4><<<(n / 4 + BATCH_WPB - 1) / BATCH_WPB, BATCH_WPB * WARP_SIZE, 0, cur_s>>>(
                         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                         rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,

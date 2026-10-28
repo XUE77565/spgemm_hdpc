@@ -205,3 +205,14 @@ nnz 逐位+行内有序(extract 融合保序)。
 v6 vs v5:nnz 15/15 同;两面旗(c-64/bcsstk17 +5%)交错重采=噪声清零(c-64 0.330/0.331
 vs v5 0.33;bcsstk17 0.244-0.255 vs 0.26);bin0 广谱阵零回归。**confirm17_428 启动**
 (记分形态=confirm16+multirow<64,4> 默认;预期 atmosmod/delaunay 桶+bin0 广谱,GM 0.8054→0.79x?)。
+
+## confirm17 中段翻车与人口门复修(10-29 凌晨;第二次全局翻默认教训)
+**预览报警**(250/428 同子集):GM 0.6936→0.7309(+5.4%回退),**128 阵恶化 vs 7 改善**
+——multirow<64,4> 的 8-lane 组在 B 行长族(bcsstk/bcsstm/bcspwr,j 并行度砍 4×)大回退;
+sparsine 6.35×。**根因=BATCHMR=2 裸翻默认,第二次人口联锁失误**(§六十二 H69 教训
+未吃透;15 阵电池覆盖不了 428 小阵多样性)。
+**复修**:杀 confirm17;默认回滚 0;**标量人口门 avg_j=total_flop/A_nnz≤12** 才开
+multirow(B 行均长,B 行短人口靶;env 三态 1/2/0 强制诊断)。双向验证:atmosmodj
+3.25/delaunay 41.02(multirow 保持);bcsstk18/bcspwr10 回原核。confirm17 重启(门控形态)。
+**纪律升级:一切默认翻必须标量人口门或 bins 联锁,电池绿≠428 绿——人口门设计
+先于翻默认**(写进 loop 硬纪律)。
