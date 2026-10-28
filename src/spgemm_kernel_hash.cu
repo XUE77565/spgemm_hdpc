@@ -5117,6 +5117,44 @@ void hash_accum_c61(HashAccumCtx &c, int bi);   // TU-61(spgemm_kernel_hash_c61.
 #if HASH_TB == 61
 // TU-61 大表/托付形态发射器:generic-else 内部原文移入(仅删 bi2/3 分支保实例集不相交)
 void hash_accum_c61(HashAccumCtx &c, int bi) {
+    // §六十六:E3 同类雷的 TU-61 版——tagged 实例独立符号,原 opt-in 块(TU-90 untagged)
+    // 不覆盖 → bin9 大表(196KB)launch invalid argument(Ga10As10H30 实证,40 阵批量空值)。
+    // 镜像 TU-90 块(hash_product 6080-6112)为 TB_TAG=61 全家:一次性 opt-in。
+    {
+        static bool done = false;
+        if (!done) {
+            const size_t maxsm = (size_t)HASH_CAP * (sizeof(int) + sizeof(double));
+            const size_t maxsm_vg = (size_t)HASH_CAP * sizeof(int);
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,7,0,0,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,7,0,1,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,8,0,0,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,8,0,1,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,9,0,0,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,9,0,1,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,10,0,0,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,10,0,1,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,11,0,0,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,11,0,1,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,12,0,0,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,12,0,1,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,13,0,0,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,13,0,1,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,14,0,0,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,14,0,1,0,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,0,0,0,0,0,0,-1,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,0,1,0,0,0,0,-1,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,0,0,0,-1,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,1,0,0,0,0,-1,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm));
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,1,0,0,0,-1,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)maxsm_vg));   // VG ids-only 表
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,0,2719,0,-1,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)(2719*12)));   // 素数档(PHT)
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,0,5449,0,-1,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)(5449*12)));   // 素数档(PHT)
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,0,0,0,16253,0,-1,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)(16253*12)));   // 素数档(PHT)
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,1,0,0,2719,0,-1,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)(2719*12)));   // 素数档(PHT)
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,1,0,0,5449,0,-1,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)(5449*12)));   // 素数档(PHT)
+            CHECK_CUDA(cudaFuncSetAttribute(hash_spa_kernel<0,1,1,0,0,16253,0,-1,HASH_TB>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)(16253*12)));   // 素数档(PHT)
+            done = true;
+        }
+    }
     auto &dA_rp = c.dA_rp; auto &dA_ci = c.dA_ci; auto &dA_val = c.dA_val;
     auto &dB_rp = c.dB_rp; auto &dB_ci = c.dB_ci; auto &dB_val = c.dB_val;
     auto &rows_ptr = c.rows_ptr; auto &n = c.n;
@@ -7990,10 +8028,14 @@ static void hash_product(
                 if (g_cs_cnt && bi == 6) {
                     // counting 变体无融合键位约束,免 valid_bits/A_cols 门
                     launch_csort_counting<CSC_TPB, CSC_CAP>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
-                } else if (g_cs_cnt && bi == 7) {
+                } else if (g_cs_cnt && bi == 7 && !hh_sorted_host()) {
                     // spec84:bin7 扩展——radix <512,8> REG:79 = 1 块/SM(25% warps) vs counting 3 块(75%),
                     // 占用+指令双优;SMEM 60KB(helper 条件 opt-in);crankseg bin7 人口主判
                     launch_csort_counting<512, 4096>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
+                } else if (bi == 7 && hh_sorted_host()) {
+                    // §六十四:HH_SORTED 下 bin7/8 hash_heavy 输出已行内有序 → 免排序载体直拷
+                    // (nsys 定谳:有序输入撞 counting<512,4096> 0.59→3.78ms 病理;TSOPF/c-64/pre2 回退元凶)
+                    launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 } else if (A_cols < mx && !getenv("NOCSF")) {
                     if (cs_v2 && bi == 6)  launch_csort_fused<CSORT_TPB_C, CSORT_IPT_C>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
                     else if (cs_v2)        launch_csort_fused<CSORT_TPB_D, CSORT_IPT_D>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, 31 - __builtin_clz(A_cols) + 1);
@@ -8003,6 +8045,9 @@ static void hash_product(
                     else if (cs_v2)        launch_csort<CSORT_TPB_D, CSORT_IPT_D>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                     else                   launch_csort<CSORT_TPB_A, CSORT_IPT_A>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 }
+                CHECK_CUDA(cudaGetLastError());
+            } else if (bi == 8 && hh_sorted_host()) {
+                launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);   // §六十四:bin8 有序直拷(同 bin7)
                 CHECK_CUDA(cudaGetLastError());
             } else if (bi <= 9) {
                 static int g_segrts = -1;   // v31-①':bin≥7 csort O(n²) → cub 分段基数排序(靶纸:pre2 排序税 26ms=57%)

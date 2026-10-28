@@ -1258,3 +1258,20 @@ serial 真值法)= 真值级交叉 ✓;叠加 rank 数学保证(位次=键序位
 nnz + memcheck 0。WRITE_MTX 管线挂钩未走通(分支门未触发,文件级逐行检查挂
 backlog 小项)。
 confirm15 进行中(~215/428,ETA 17:00)。
+
+## 六十六、E3 同类雷二捕:tagged 实例 opt-in 缺失(10-28 午后,loop;confirm15 三启)
+
+**现象**:confirm15 v2 至 338/428 时发现 **ADPT15 空值 40 个**(Ga10As10H30/
+email-Enron/SiO2 等)——复现:`CUDA error 5407 invalid argument`,Ga10As10H30
+bins `4:10 5:29182 6:62459 7:12906 8:8479 9:45`——**bin9(45 行)走 LHT2(14,
+tagged) 196KB 大表**,TU-61 tagged 实例是独立符号,原 opt-in 块(6080-6112,
+只覆盖 TU-90 untagged)不覆盖 → invalid argument。15 阵电池全绿因无 bin9 人口阵
+——**新 TU=新符号=opt-in 必须镜像**(E3 教训的 TU-61 版;批跑前人口覆盖审计的
+又一证)。
+**修复**:wrapper 一次性 opt-in 块 27 实例(LHT 7-14×P2 / runtime 4 组合 / VG /
+素数档 PHT 18);Ga10As10H30+email-Enron 修复后 nnz 与 sm90 参考逐位同
+(75,156,365 / 30,492,154)。
+**confirm15 三启**(14:56,终形态=per-file+刀A+刀G+bin7/8直拷+opt-in 全家;
+CSV 清零;ETA ~17:50)。
+**工具坑第四踩**:pgrep -f 与 pkill -f 同样自匹配自杀(括号技巧 `[5]` 断);
+清场 SOP=PID 文件或括号模式。
