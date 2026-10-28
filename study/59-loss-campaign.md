@@ -37,3 +37,13 @@ tile/硬件路径 + TC 混执,基线=cuSPARSE/spECK/TileSpGEMM/HSMU)进 related 
 - 半日 1:P0 取证(脚本后台)+ Bump 相位分解(平行)→ 分桶定主次;
 - 其后按桶开刀(P1 或 P2 主攻),每刀绿即 commit,攒 confirm16;
 - 收官:confirm16 + 总账盖章。
+
+## P0/P2 中途发现(10-28 晚)
+**Bump non-acc 相位分解(P2 第二项,已完成)**:compute-only 84.65 全相位对齐——
+count_flop 1.34 + **mh_construct 1.22 + mh_merge 4.23** + est_scan 0.07 + binning 0.25
++ acc 65.94 + cnnz 0.10 + compact 11.49 = 84.65 ✓。
+**定谳:Bump 对 ocean 的 4.5ms 缺口 ≈ mh 定容机器 5.45ms 开销**(MHSAMP=0 不关机器,
+它喂 binning/tmp 定容,裸门违鲁棒铁律)。**P2 新刀=定容管线降成本**:pregate 强判
+hash 的阵跳过 MinHash sketch,est 退 cheaper 上界(需守 tmp 定容/retry 语义);
+预期 Bump 84.65→~79 < ocean 80.19 翻面。ocean total_time 含其自家 sizing——
+对比合法,我方 sizing 更贵是真实差额。
