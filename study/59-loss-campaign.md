@@ -137,3 +137,18 @@ flop 表 retry ✓)。风险:κ 全局均匀假设 vs 行级 dup 方差(Bump 97.
 κ 应稳;hangGlider 类待验)。
 **判据**:Bump computeOnly <84.2(ocean 84.60 同夜)/atmosmod·delaunay 桶改善/
 nnz 逐位+retry 行数审计+15 阵电池回归。实施次序:采样门扩展→κ 计算→est 核→A/B。
+
+## 刀②首试:全局κ证伪+靶错位(10-28 深夜;预注册判据履职)
+**实现**:kappa_sample(oc_sample 同体精确计数,反向比)+kappa_est(est=flop×κ)+
+host 门(MHKAPPA=1 试点,S=2048,q05×1.15,κ下限0.125;弃样回全量mh安全网)。
+**A/B 三靶**:
+- **Bump:κ 风暴实锤**——q05=0.092(重行dup~11×)但**分布双峰**,低dup尾行(比≈1)
+  被 est=flop×0.125 重害低估 → **59925行retry(co 84.65→593,7×病理)**;nnz 仍逐位同
+  (retry 兜底语义工作正常)。**定谳:全局κ结构性无法替代逐行dup判别**——mh 的
+  5.45ms 买的正是双峰矩阵的行级区分;Bump 方向证伪(除非行级κ=即 mh 本身)。
+- **atmosmodj/delaunay_n24:靶错位**——A_rows≥100k 但 avg_product 低→est=flop
+  免MinHash路径,mh 根本不跑,co 全平(4.03/46.95)。**其1.8×差额在别处**
+  (count_flop/binning/est_scan/compact 的大n开销)→ 需独立 nsys 取证。
+MHKAPPA 留 env 关(默认0,无害);弃样安全网未触发路径保留。
+**Bump 剩余0.5%的替代弹药**:count_flop 1.34ms(kernel优化靶,边际)/接受现状等
+atmosmod 取证结果重排。

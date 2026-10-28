@@ -554,6 +554,62 @@ static __global__ void oc_rescale_kernel(int *est, const int *row_flop, int A_ro
     est[i] = (int)(e2 > f ? f : e2);
 }
 
+// ── 刀② MHKAPPA(study/59):采样κ标定 est=flop×κ(免全量 MinHash)──────────────
+// kappa_sample:oc_sample 同体(精确 distinct smem 计数),比值反向 = distinct×Q12/flop
+// (flop→distinct 折减因子);kappa_est:est[i]=flop[i]×κ_en/4096(flop=0 行 est=0)。
+static __global__ void kappa_sample_kernel(
+    const int *A_row_ptr, const int *A_col_idx, const int *B_row_ptr, const int *B_col_idx,
+    const int *row_flop, int A_rows, int stride,
+    int *ratio_fp)   // [S] = distinct_i * 4096 / flop_i(定点);0 = 无效(满表/flop0/distinct≤64)
+{
+    int i = blockIdx.x * stride;
+    int tid = threadIdx.x;
+    if (i >= A_rows) { if (tid == 0) ratio_fp[blockIdx.x] = 0; return; }
+    if (tid == 0) ratio_fp[blockIdx.x] = 0;
+    __shared__ int tab[OC_TAB];
+    for (int s = tid; s < OC_TAB; s += blockDim.x) tab[s] = -1;
+    __syncthreads();
+    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
+    int cnt = 0;
+    bool full = false;
+    for (int p = rs; p < re && !full; p++) {
+        int k = A_col_idx[p];
+        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
+        for (int q = ks + tid; q < ke; q += blockDim.x) {
+            int col = B_col_idx[q];
+            unsigned slot = ((unsigned)col * 2654435761u) & (OC_TAB - 1);
+            int probes = 0;
+            while (true) {
+                int old = atomicCAS(&tab[slot], -1, col);
+                if (old == -1) { cnt++; break; }
+                if (old == col) break;
+                slot = (slot + 1) & (OC_TAB - 1);
+                if (++probes >= OC_TAB) { full = true; break; }
+            }
+            if (full) break;
+        }
+    }
+    for (int off = 16; off > 0; off >>= 1) cnt += __shfl_xor_sync(0xffffffff, cnt, off);
+    __syncthreads();
+    __shared__ int warp_tot[9];
+    if (tid == 0) warp_tot[8] = 0;
+    __syncthreads();
+    if ((tid & 31) == 0) warp_tot[tid >> 5] = cnt;
+    if ((tid & 31) == 0 && full) warp_tot[8] = 1;
+    __syncthreads();
+    if (tid == 0) {
+        int distinct = 0;
+        for (int w = 0; w < (blockDim.x >> 5); w++) distinct += warp_tot[w];
+        if (warp_tot[8] == 0 && distinct > OC_MIN_DISTINCT && row_flop[i] > 0)
+            ratio_fp[blockIdx.x] = (int)((long long)distinct * OC_RATIO_FP / row_flop[i]);
+    }
+}
+static __global__ void kappa_est_kernel(const int *row_flop, int *est, int A_rows, int en) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= A_rows) return;
+    est[i] = (int)((long long)row_flop[i] * en / OC_RATIO_FP);   // κ 内含覆盖余量;est≤flop 恒真
+}
+
 // PIPEFUSE step-1(docs/58):count_flop 后不再回传 host —— device 侧规约 total_flop + avg_product
 // 门,construct/merge 无条件背靠背 launch(门命中时自退化),host 读数推迟到 binning 已有同步。
 // 动机:reduce 的 host 空档是 DVFS toll 源之一(345MHz 冷频率下小 kernel 全家变慢)。
@@ -5663,6 +5719,43 @@ static void hash_product(
         dbg("[%s] 低均度 → est=精确 flop(免 MinHash)\n", tag);
         CHECK_CUDA(cudaMemcpy(d_est, d_flop, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));
     } else {
+        // ── 刀② MHKAPPA(study/59,试点):采样κ标定 est=flop×κ,免全量 MinHash sketch ──
+        // Bump 全相位账:mh_construct 1.22+mh_merge 4.23=5.45ms≈对 ocean 全部缺口;
+        // κ=样本 distinct/flop 的 q05×margin(覆盖 ~95% 行;欠估行→cap 守卫→flop 表 retry);
+        // 弃样(有效<S/16)回全量 mh(安全网)。S=2048(CLT),gate:A_rows≥100k(mh 成本人口)。
+        static int g_mhkap = -1;
+        if (g_mhkap < 0) { const char *e = getenv("MHKAPPA"); g_mhkap = (e && *e) ? atoi(e) : 0; }
+        bool kap_done = false;
+        if (g_mhkap && !pfuse && !att && A_rows >= 100000) {
+            int kapS = 2048, kstride = A_rows / kapS; if (kstride < 1) kstride = 1;
+            kapS = (A_rows + kstride - 1) / kstride;
+            int *d_kr = decltype(d_kr)(dev_alloc((size_t)kapS * sizeof(int)));
+            prof("mh_merge", [&]{
+                kappa_sample_kernel<<<kapS, HASH_BLOCK_STRUCT>>>(dA_rp, dA_ci, dB_rp, dB_ci, d_flop, A_rows, kstride, d_kr);
+                CHECK_CUDA(cudaGetLastError());
+            });
+            std::vector<int> kr(kapS);
+            CHECK_CUDA(cudaMemcpy(kr.data(), d_kr, (size_t)kapS * sizeof(int), cudaMemcpyDeviceToHost));
+            std::vector<int> kv;
+            for (int x : kr) if (x > 0) kv.push_back(x);
+            if ((int)kv.size() >= kapS / 16) {
+                std::nth_element(kv.begin(), kv.begin() + kv.size() / OC_QTILE_DEN, kv.end());
+                int q05 = kv[kv.size() / OC_QTILE_DEN];
+                int kap_en = (int)(q05 * 1.15);                 // margin 15%(试点;retry 行数审计定夺)
+                if (kap_en < OC_RATIO_FP / 8) kap_en = OC_RATIO_FP / 8;   // κ 下限 0.125 防病态
+                prof("mh_merge", [&]{
+                    kappa_est_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_flop, d_est, A_rows, kap_en);
+                    CHECK_CUDA(cudaGetLastError());
+                });
+                kap_done = true;
+                dbg("[%s] MHKAPPA: nv=%d/%d q05=%.3f k=%.3f est=flop*k(mh skipped)\n",
+                    tag, (int)kv.size(), kapS, q05 / 4096.0, kap_en / 4096.0);
+            } else {
+                dbg("[%s] MHKAPPA: valid %d < %d -> full mh\n", tag, (int)kv.size(), kapS / 16);
+            }
+            dev_free(d_kr);
+        }
+        if (!kap_done) {
         // MinHash 两阶段(partition bottom-k sketch;机制见 mh_construct/mh_merge)
         unsigned int *d_mh; d_mh = decltype(d_mh)(dev_alloc((size_t)A_rows * MH_M * sizeof(unsigned int)));
         int rows_per_block = 32;
@@ -5799,6 +5892,7 @@ static void hash_product(
             });
         }
         dev_free(d_mh);
+        }   // 刀②:!kap_done 全量 mh 块闭合
     }
     // Ocean-C 采样块:est 就绪 → 精确计数 S 行 → q05 → 缩放(est_scan 前)。无效样本(行轻/
     // 满表)过多则放弃(nv<16)。插入排序求分位(S≤64,免 <algorithm>)。
