@@ -6985,14 +6985,16 @@ static void hash_product(
                 static int g_batchmr = -1;
                 if (g_batchmr < 0) { const char *e = getenv("BATCHMR"); g_batchmr = (e && *e) ? atoi(e) : -1; }
                 double avg_j = A_nnz > 0 ? (double)total_flop / A_nnz : 1e9;
-                int mr_on = (g_batchmr >= 0) ? g_batchmr : (avg_j <= 12.0 ? 2 : 0);
+                int mr_on = (g_batchmr >= 0) ? g_batchmr : 0;   // §三修(01:25):人口门/表容两修后 sparsine 仍10×病理=机理未明——全线回滚,休眠试点(BATCHMR=1/2 显式),交A线标定定谳
                 if (mr_on == 1 && !g_hybrid)
                     hash_spa_batched_multirow_kernel<128, 2><<<(n / 2 + BATCH_WPB - 1) / BATCH_WPB, BATCH_WPB * WARP_SIZE, 0, cur_s>>>(
                         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                         rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
                         d_ovf_rows, d_ovf_cnt, d_row_ovf);
                 else if (mr_on == 2 && !g_hybrid)
-                    hash_spa_batched_multirow_kernel<64, 4><<<(n / 4 + BATCH_WPB - 1) / BATCH_WPB, BATCH_WPB * WARP_SIZE, 0, cur_s>>>(
+                    // §门修2(01:15):<64,4> 对 est 49-64 行满表熔断→retry(bcsstk 族 104 阵恶化实锤,
+                    // 机理=HT64 est 上限非 B 行长);换 <128,4>(8-lane 组保留+表翻倍免熔断,smem 8w×4r×5×128=20KB)
+                    hash_spa_batched_multirow_kernel<128, 2><<<(n / 2 + BATCH_WPB - 1) / BATCH_WPB, BATCH_WPB * WARP_SIZE, 0, cur_s>>>(
                         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                         rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
                         d_ovf_rows, d_ovf_cnt, d_row_ovf);
