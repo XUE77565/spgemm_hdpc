@@ -174,3 +174,16 @@ docs/13(333SP 55% 块地板税的对症)+docs/67 §8 模板化。
 ~2.2ms 全管线分解);③候选刀:每 warp 2-4 行(行数×/warp 换 lane 并行度)/WPB 梯/
 值域 gmem(HYBRID 已有管道)。判据:atmosmodj/delaunay_n24/bloweya 三阵 computeOnly
 +nnz 逐位+15 阵回归(bin0 生产主力,全人口影响)。
+
+## batched 战役·机理定谳与刀设计(10-28 深夜)
+**对拍(ocean 移植核,仪器合规)**:其 hashNumeric=block-per-row + **oc_localLoadBalance
+动态分组**(按 a_len/num_products/max_b_len 把块内线程分 2^k 组:组间并行 k,组内
+并行 j)——对 B 行长自适应。**我方 2× 差距机制**:batched 的 warp-per-row = j 32 路
+固定并行,atmosmodj 型微行(B 行 ~7 长)→ **lane 利用率 ~22%**(7/32),几何错配;
+delaunay 同构 4×。
+**刀设计(multi-row-per-warp)**:每 warp 承 RPW=2/4 行(lane 组=32/RPW:8-lane 组
+配 B 行 ~7 恰好);每 lane 组私有表 HT=64(est≤64,LF 50% 线性探测);smem/warp=
+RPW×5×64(≈1.2-2.5KB,现 2.5KB 内);extract 融合按组;人口门:bin0 且 B 行短人口
+(或统一替换 bin0 主路,电池定)。备选刀=吸收 loadBalance 机理(k/j 动态分组)。
+**实施注意**:bin0 生产主力(1.27M-12.5M 行人口),三件套+15 阵电池必过;
+nnz 逐位+行内有序(extract 融合保序)。
