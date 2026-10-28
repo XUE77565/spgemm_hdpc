@@ -161,3 +161,16 @@ esc<32> 6.9。**真靶=hash_spa_batched<128,8> 的 bin0 微行巨阵人口**(est
 **定下一战役**:batched 核优化(读核/lineinfo/对拍 ocean 同人口形态)——非一刀,
 是 A 线级 kernel 战役;预期该桶(~8-15 阵@1.8×)若压到 ~1.2×,GM 再 −1% 级。
 Bump 残余(1.005)与 cage15(1.013)属边际尾,mh 方向已证伪,batched 战役优先级更高。
+
+## batched 核战役·读码笔记(10-28 深夜)
+**我方形态**(hash_spa_batched<HT=128,WPB=8>):warp-per-row,每 warp 私有 smem 表
+128 槽(est≤64×2余量,5×HT=2.5KB/warp→20KB/块),k 串行×j 32 路并行(lane 跨 B 行
+stride),CAS 插入+原子值加,融合有序 extract(pack_col/slot)。geometric 血统:
+docs/13(333SP 55% 块地板税的对症)+docs/67 §8 模板化。
+**人口画像**:atmosmodj bin0=1.27M 行(est≤64,~25-50 积/行)→ 32 lane 中 ~1-2 积/lane
+=**lane 利用率嫌疑**;delaunay_n24 12.5M 行同构 4×。
+**下步**:①lineinfo 源热点(-lineinfo 已在 flags;nsys 采样归源);②读 ocean 移植核
+同人口机理(其 hashNumeric 对 tiny row 的线程分配/表尺寸;对拍其对 atmosmodj 的
+~2.2ms 全管线分解);③候选刀:每 warp 2-4 行(行数×/warp 换 lane 并行度)/WPB 梯/
+值域 gmem(HYBRID 已有管道)。判据:atmosmodj/delaunay_n24/bloweya 三阵 computeOnly
++nnz 逐位+15 阵回归(bin0 生产主力,全人口影响)。
