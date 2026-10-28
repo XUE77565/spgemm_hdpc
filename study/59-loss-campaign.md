@@ -92,3 +92,11 @@ acc −41~−58%)+ 有序直写 + 直拷组合推翻——"决策人群随内核
 会把无 bin9 的 dense 最优阵(exdata_1 类)误赶去 hash 路=回退雷区;改 h_cnt[9]>0
 联锁);②15 阵回归(off 零影响抽验)→ 默认翻 → confirm16。bloweybq/hangGlider
 残余差距住 non-acc(mh 1.17+count_flop 1.1)→ 刀②双吃名单+2。
+
+## H69 转正:人口联锁+默认翻(10-28 晚)
+**实现**:dense 压制门联锁 `h_cnt[9] > 0`(无 bin9 的 dense 最优阵零影响);
+bin9→HH(16253) 默认 1(HASH_H69=0 逃生门);bin6→HH(2719) 需 H69=2(未验证人口
+不默认翻);compact bin9 直拷门同步 env。双审计绿。
+**验证**:bloweybq 8.46/TSOPF_FS 6.13 = H69' 数复现;case9(与 TSOPF_FS 同构)
+6.11 同步受益;**exdata_1 = 2.84 vs confirm15 的 2.850 = 零影响**(人口联锁实证)。
+电池 v5(新默认)回归跑中。

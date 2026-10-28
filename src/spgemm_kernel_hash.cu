@@ -2108,9 +2108,9 @@ __device__ int g_xbit_d = 0;
 __device__ int g_hh_sorted_d = 0;   // 刀Gv3(study/57 §五十):HH_SORTED → host 装载;hash_heavy 表内有序 rank 直写   // 刀E5(study/57 §三一):HASH_XBIT → host cudaMemcpyToSymbol;extract 每行一次分支,零热径成本
 
 // 刀E1/E2/G(study/57 §廿五/廿六/四十九):bin 被无序写内核接管(hash_heavy 或 VG)→ compact 侧 csort 载体
-static inline bool h69_route_on() {   // 刀①'(study/59):HASH_H69=1 时压制 dense/dense_win 矩阵级累积器,bin9 胖行回流 binning→HH 素数档
+static inline bool h69_route_on() {   // 刀①'(study/59):bin9 胖行→HH(16253)+有序直写+直拷(五阵 −27.9~−47.1% §刀①'定谳);默认 1;HASH_H69=0 逃生门
     static int v = -1;
-    if (v < 0) { const char *e = getenv("HASH_H69"); v = (e && *e && atoi(e) > 0) ? 1 : 0; }
+    if (v < 0) { const char *e = getenv("HASH_H69"); v = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }
     return v == 1;
 }
 static inline bool hh_sorted_host() {   // Gv3v2:compact 侧感知 HH_SORTED(有序输出免载体趟);与 TU-61 loader 同 env
@@ -5335,9 +5335,9 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                     if (g_h45 < 0) { const char *e = getenv("HASH_H45"); g_h45 = (e && *e) ? atoi(e) : 1; }
                     static int g_h55 = -1;   // 刀G(study/57 §四十九):bin5→hash_heavy<10,2048> 1024T(compute_61 复活后扩覆盖;bin5 est≤1024→2048 素数梯);默认关
                     if (g_h55 < 0) { const char *e = getenv("HASH_H55"); g_h55 = (e && *e) ? atoi(e) : 1; }   // Gv3v2 转正默认 1;HASH_H55=0 逃生门
-                    static int g_h69 = -1;   // 刀①(study/59 P0):bin6/9→hash_heavy 扩档试点(2719/16253 素数档;bin9=bloweybq/hangGlider/lowThrust 输面主桶,LHT2(14) 196KB 占用灾难的替代);默认关
-                    if (g_h69 < 0) { const char *e = getenv("HASH_H69"); g_h69 = (e && *e) ? atoi(e) : 0; }
-                    if (g_s99 && ((bi >= 7 && bi <= 8) || (g_h45 && bi == 4) || (g_h55 && bi == 5) || (g_h69 && (bi == 6 || bi == 9))) && !g_wm && !g_pht) {
+                    static int g_h69 = -1;   // 刀①'(study/59):bin9→HH(16253) 默认 1(五阵定谳 §刀①');bin6→HH(2719) 需 H69=2(未验证人口不默认翻);HASH_H69=0 逃生门
+                    if (g_h69 < 0) { const char *e = getenv("HASH_H69"); g_h69 = (e && *e) ? atoi(e) : 1; }
+                    if (g_s99 && ((bi >= 7 && bi <= 8) || (g_h45 && bi == 4) || (g_h55 && bi == 5) || (g_h69 && bi == 9) || (g_h69 >= 2 && bi == 6)) && !g_wm && !g_pht) {
 #define HH_LAUNCH2(LNT_, P_, OCH_, LO_, HI_, ROT_) do { \
     const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
     CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1, (OCH_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
@@ -6181,11 +6181,11 @@ static void hash_product(
     const bool dense_mode = (A_cols <= DENSE_MAX_N) && A_rows > 0 &&
         ((double)total_est / ((double)A_rows * A_cols) >= DENSE_MIN_FRAC)
         && h_cnt[BIN_K7] == 0    // k7 接管时矩阵级 dense 语义失效(accumulate 兜底+compact 矩阵拷贝双侧;10-06 零化案根修)
-        && !h69_route_on();      // 刀①'(study/59):HASH_H69=1 压制 dense 累积器(试点 bin9 胖行走 HH 16253 档;T6 时代 dense 最优选型待 hash_heavy 复活后复检)
+        && !(h69_route_on() && h_cnt[9] > 0);   // 刀①'(study/59):仅 bin9 有人口的阵压制 dense 累积器(胖行→HH 16253;exdata 类无 bin9 dense 最优阵零影响)
     const bool dense_win_mode = !dense_mode && (A_cols <= DENSE_WIN_MAX_N) && A_rows > 0 &&
         ((double)total_est / ((double)A_rows * A_cols) >= DENSE_MIN_FRAC)
         && h_cnt[BIN_K7] == 0    // 同上
-        && !h69_route_on();      // 刀①':dense_win 同压(避免按下葫芦浮起瓢)
+        && !(h69_route_on() && h_cnt[9] > 0);   // 刀①':dense_win 同压(仅 bin9 阵)
     // ---- 方案5(docs/27 §4.1):dense 行精确计数 + 直写终态。DIRECT5=1 开,默认关。----
     // dense 行集合 = 矩阵级 dense/dense_win(全体行)或 Phase A bin(v4 门含 dup<8 = 两遍直写
     // 交通量赢面);hash 行不动(结构同 Ocean type2 est 工作流)。count pass 在 accumulate 前
