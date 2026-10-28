@@ -2110,19 +2110,19 @@ __device__ int g_hh_sorted_d = 0;   // 刀Gv3(study/57 §五十):HH_SORTED → h
 // 刀E1/E2/G(study/57 §廿五/廿六/四十九):bin 被无序写内核接管(hash_heavy 或 VG)→ compact 侧 csort 载体
 static inline bool hh_sorted_host() {   // Gv3v2:compact 侧感知 HH_SORTED(有序输出免载体趟);与 TU-61 loader 同 env
     static int v = -1;
-    if (v < 0) { const char *e = getenv("HH_SORTED"); v = (e && *e && atoi(e) > 0) ? 1 : 0; }
+    if (v < 0) { const char *e = getenv("HH_SORTED"); v = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }   // 转正默认 1(与 TU-61 loader 同值)
     return v == 1;
 }
 static inline bool h45_pilot_on() {
     static int v = -1;
     if (v < 0) {
         const char *e = getenv("HASH_H45");
-        int e1 = (e && *e && atoi(e) > 0) ? 1 : 0;
+        int e1 = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1;   // Gv3v2 转正默认 1
         const char *g = getenv("HASH_VG45");          // E2 需 HYB_TIER 同开(VG 门前置条件)
         const char *h = getenv("HYB_TIER");
         int e2 = (g && *g && atoi(g) > 0 && h && *h && atoi(h) > 0) ? 1 : 0;
-        const char *g5 = getenv("HASH_H55");          // 刀G:bin5→hash_heavy(无序写)
-        int e3 = (g5 && *g5 && atoi(g5) > 0) ? 1 : 0;
+        const char *g5 = getenv("HASH_H55");          // 刀G:bin5→hash_heavy;Gv3v2 转正默认 1
+        int e3 = (g5 && *g5) ? (atoi(g5) > 0 ? 1 : 0) : 1;
         v = e1 || e2 || e3;
     }
     return v != 0;
@@ -5133,7 +5133,7 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
     static int g_hhs_host = -1;
     if (g_hhs_host < 0) {
         const char *e = getenv("HH_SORTED");
-        g_hhs_host = (e && *e && atoi(e) > 0) ? 1 : 0;
+        g_hhs_host = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1;   // Gv3v2 转正默认 1(§六十一四阵+13阵体检全绿);HH_SORTED=0 逃生门
         CHECK_CUDA(cudaMemcpyToSymbol(g_hh_sorted_d, &g_hhs_host, sizeof(int)));
     }
     // HASH_ROWTIME=path:hash_spa 逐行执行周期(docs/66 采数,判 merge3 路由);null=生产零开销
@@ -5289,9 +5289,9 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                     static int g_s99rot = -1;   // 刀11 旋转总闸:默认 0 关(nd24k −1.7%但 crankseg +1.7%,三行级门(cnt/maxbl/dup)均无区分力=人口整体行为;SPEC99_ROT=1 开)
                     if (g_s99rot < 0) { const char *e = getenv("SPEC99_ROT"); g_s99rot = (e && *e) ? atoi(e) : 0; }
                     static int g_h45 = -1;   // 刀E1 试点(study/57 §廿五):bin4→hash_heavy 瘦核窄块(ocean <7,673> 对位 128T);默认关=原 LHT 路径逐位
-                    if (g_h45 < 0) { const char *e = getenv("HASH_H45"); g_h45 = (e && *e) ? atoi(e) : 0; }
+                    if (g_h45 < 0) { const char *e = getenv("HASH_H45"); g_h45 = (e && *e) ? atoi(e) : 1; }
                     static int g_h55 = -1;   // 刀G(study/57 §四十九):bin5→hash_heavy<10,2048> 1024T(compute_61 复活后扩覆盖;bin5 est≤1024→2048 素数梯);默认关
-                    if (g_h55 < 0) { const char *e = getenv("HASH_H55"); g_h55 = (e && *e) ? atoi(e) : 0; }
+                    if (g_h55 < 0) { const char *e = getenv("HASH_H55"); g_h55 = (e && *e) ? atoi(e) : 1; }   // Gv3v2 转正默认 1;HASH_H55=0 逃生门
                     if (g_s99 && ((bi >= 7 && bi <= 8) || (g_h45 && bi == 4) || (g_h55 && bi == 5)) && !g_wm && !g_pht) {
 #define HH_LAUNCH2(LNT_, P_, OCH_, LO_, HI_, ROT_) do { \
     const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
