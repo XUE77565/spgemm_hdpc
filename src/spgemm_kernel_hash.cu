@@ -554,6 +554,8 @@ static __global__ void oc_rescale_kernel(int *est, const int *row_flop, int A_ro
     est[i] = (int)(e2 > f ? f : e2);
 }
 
+// S1 死码剔除(第二处,10-29):MHKAPPA 两核休眠——死码伤活码(§S1 定谳,第六例)
+#if 0
 // ── 刀② MHKAPPA(study/59):采样κ标定 est=flop×κ(免全量 MinHash)──────────────
 // kappa_sample:oc_sample 同体(精确 distinct smem 计数),比值反向 = distinct×Q12/flop
 // (flop→distinct 折减因子);kappa_est:est[i]=flop[i]×κ_en/4096(flop=0 行 est=0)。
@@ -609,6 +611,8 @@ static __global__ void kappa_est_kernel(const int *row_flop, int *est, int A_row
     if (i >= A_rows) return;
     est[i] = (int)((long long)row_flop[i] * en / OC_RATIO_FP);   // κ 内含覆盖余量;est≤flop 恒真
 }
+
+#endif
 
 // PIPEFUSE step-1(docs/58):count_flop 后不再回传 host —— device 侧规约 total_flop + avg_product
 // 门,construct/merge 无条件背靠背 launch(门命中时自退化),host 读数推迟到 binning 已有同步。
@@ -2037,6 +2041,8 @@ __global__ void hash_spa_batched_kernel(
     }
 }
 
+// S1 死码剔除验证(临时):multirow 核整体 #if 0
+#if 0
 // ══ batched 战役刀(study/59):hash_spa_batched_multirow —— 微行巨阵人口几何修正 ══
 // 机理定谳(§batched 战役·机理定谳):warp-per-row 的 j 32 路固定并行在 B 行 ~7 人口
 // = lane 利用率 22%(ocean 动态分组自适应);本核 = 每 warp RPW 行,32/RPW-lane 组
@@ -2128,6 +2134,8 @@ __global__ void hash_spa_batched_multirow_kernel(
     }
 }
 
+
+#endif
 // ══ 刀C3(study/57 §十七):hash_spa_packed —— bin4 多行封包内核 ════════════════
 // 病灶:bin4-5 并发逆差 2.85×(tick7 逐行对拍:我方周期 0.53× 赢,系统 1.51× 输);
 // 刀C2 证伪块宽杠杆(共享表组数减单调恶化);本核 = C2 未测设计点:
@@ -5810,42 +5818,7 @@ static void hash_product(
         dbg("[%s] 低均度 → est=精确 flop(免 MinHash)\n", tag);
         CHECK_CUDA(cudaMemcpy(d_est, d_flop, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToDevice));
     } else {
-        // ── 刀② MHKAPPA(study/59,试点):采样κ标定 est=flop×κ,免全量 MinHash sketch ──
-        // Bump 全相位账:mh_construct 1.22+mh_merge 4.23=5.45ms≈对 ocean 全部缺口;
-        // κ=样本 distinct/flop 的 q05×margin(覆盖 ~95% 行;欠估行→cap 守卫→flop 表 retry);
-        // 弃样(有效<S/16)回全量 mh(安全网)。S=2048(CLT),gate:A_rows≥100k(mh 成本人口)。
-        static int g_mhkap = -1;
-        if (g_mhkap < 0) { const char *e = getenv("MHKAPPA"); g_mhkap = (e && *e) ? atoi(e) : 0; }
-        bool kap_done = false;
-        if (g_mhkap && !pfuse && !att && A_rows >= 100000) {
-            int kapS = 2048, kstride = A_rows / kapS; if (kstride < 1) kstride = 1;
-            kapS = (A_rows + kstride - 1) / kstride;
-            int *d_kr = decltype(d_kr)(dev_alloc((size_t)kapS * sizeof(int)));
-            prof("mh_merge", [&]{
-                kappa_sample_kernel<<<kapS, HASH_BLOCK_STRUCT>>>(dA_rp, dA_ci, dB_rp, dB_ci, d_flop, A_rows, kstride, d_kr);
-                CHECK_CUDA(cudaGetLastError());
-            });
-            std::vector<int> kr(kapS);
-            CHECK_CUDA(cudaMemcpy(kr.data(), d_kr, (size_t)kapS * sizeof(int), cudaMemcpyDeviceToHost));
-            std::vector<int> kv;
-            for (int x : kr) if (x > 0) kv.push_back(x);
-            if ((int)kv.size() >= kapS / 16) {
-                std::nth_element(kv.begin(), kv.begin() + kv.size() / OC_QTILE_DEN, kv.end());
-                int q05 = kv[kv.size() / OC_QTILE_DEN];
-                int kap_en = (int)(q05 * 1.15);                 // margin 15%(试点;retry 行数审计定夺)
-                if (kap_en < OC_RATIO_FP / 8) kap_en = OC_RATIO_FP / 8;   // κ 下限 0.125 防病态
-                prof("mh_merge", [&]{
-                    kappa_est_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_flop, d_est, A_rows, kap_en);
-                    CHECK_CUDA(cudaGetLastError());
-                });
-                kap_done = true;
-                dbg("[%s] MHKAPPA: nv=%d/%d q05=%.3f k=%.3f est=flop*k(mh skipped)\n",
-                    tag, (int)kv.size(), kapS, q05 / 4096.0, kap_en / 4096.0);
-            } else {
-                dbg("[%s] MHKAPPA: valid %d < %d -> full mh\n", tag, (int)kv.size(), kapS / 16);
-            }
-            dev_free(d_kr);
-        }
+        bool kap_done = false;   // S1 死码剔除:κ 路径整体禁用(全量 mh 直走)
         if (!kap_done) {
         // MinHash 两阶段(partition bottom-k sketch;机制见 mh_construct/mh_merge)
         unsigned int *d_mh; d_mh = decltype(d_mh)(dev_alloc((size_t)A_rows * MH_M * sizeof(unsigned int)));
@@ -6985,17 +6958,8 @@ static void hash_product(
                 static int g_batchmr = -1;
                 if (g_batchmr < 0) { const char *e = getenv("BATCHMR"); g_batchmr = (e && *e) ? atoi(e) : -1; }
                 double avg_j = A_nnz > 0 ? (double)total_flop / A_nnz : 1e9;
-                int mr_on = (g_batchmr >= 0) ? g_batchmr : 0;   // §三修(01:25):人口门/表容两修后 sparsine 仍10×病理=机理未明——全线回滚,休眠试点(BATCHMR=1/2 显式),交A线标定定谳
-                if ((mr_on == 1 || mr_on == 2) && !g_hybrid) {
-                    // S0 修(10-29):n=1 边界 grid=0 非法发射(sparsine 实证,bin0 仅 1 行)——正确 ceil + CHECK;
-                    // 两档统一 <128,2>(16-lane,<64,4> 档保留代码休眠,S2 标定后再分档)
-                    const int nr2 = (n + 1) / 2;
-                    hash_spa_batched_multirow_kernel<128, 2><<<(nr2 + BATCH_WPB - 1) / BATCH_WPB, BATCH_WPB * WARP_SIZE, 0, cur_s>>>(
-                        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
-                        rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
-                        d_ovf_rows, d_ovf_cnt, d_row_ovf);
-                    CHECK_CUDA(cudaGetLastError());
-                } else
+                int mr_on = (g_batchmr >= 0) ? g_batchmr : 0;   // S1 死码剔除验证(10-29):multirow 整体 #if 0,发射分支移除;BATCHMR env 保留读但无效果
+                (void)mr_on; (void)avg_j;
                 hash_spa_batched_kernel<BATCH_HT, BATCH_WPB><<<(n + BATCH_WPB - 1) / BATCH_WPB, BATCH_WPB * WARP_SIZE, 0, cur_s>>>(
                     dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
                     rows_ptr, n, d_off, d_est, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow,
