@@ -71,3 +71,15 @@ bug+host 噪声合成物,multirow 人口病理证据链重审**;第一二败(128
 (两组 maxbl 同 ≈8——昨晚第一败的归因也错);③bcsstm 族 flop=1 的空壳行是重灾区
 (浮点开销占比型)。**S1 起手=合成格网扫(kcnt×blen×flop)钉死交叉点**,
 multirow 门 = est 带门(签名交叉,非手拍)。
+
+## S1 首轮(10-29 午后):格网部分成功 + 归因疑云升级
+**格网**(19 格双正则阵,kcnt×blen,flop/行精确可控):①est_expand 1.15 把
+flop≈64 的行推离 bin0(仅 8x8 巧合全落);②**8x8(est≈55,100k 行)干净格:
+multirow −13% 赢** ✓;③flop≤8 的行走特殊 bin(19-21,BATCH_S/ESC)——
+**multirow 根本不碰**;④我的格网解析粗糙(多行 bins 输出截断),部分格数据无效。
+**归因疑云升级**:S0 取样的 16 个恶化阵 bin0 行 flop 1-36——flop≈15 的行为什么
+在特殊 bin/bin0 边界?**confirm17 首跑 105 恶化阵里,可能相当部分根本不是
+multirow 造成**(bcsstm 空壳行 flop=1 走特殊 bin,multirow 不接触)——
+需逐阵 bin0 人口审计重归因。**S1 修正路线**:①105 恶化阵逐阵 bins 审计
+(bin0 人口>0 才可能是 multirow 责任);②格网重跑(修解析,est 直方图 DBG);
+③8x8 型高 est 格加密(est 30-55 加细)。
