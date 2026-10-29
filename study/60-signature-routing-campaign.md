@@ -319,3 +319,9 @@ sparse.tamu.edu 返回 403 Forbidden(试过 wget/curl/绕代理/浏览器UA 全�
 2. **泛化差距 6.7% 来自人口难度**(held-out 族=图/CFD/网格,手拍也有同样差距);
 3. **路由表不损伤泛化**(额外差距仅 0.6%,噪声级);
 4. **论文价值 = 测量出处 + 自动重生成 + 不损伤性能/泛化**(不是"更快")。
+
+## FlexSpGEMM 构建不兼容(10-30 晨)
+Compile.sh 目标 CUDA 11.8 / GCC 11;我方 CUDA 12.8 / GCC 13 的 AMX intrinsics
+(amxtileintrin.h __builtin_ia32_ldtilecfg 未定义)导致编译失败;尝试
+-ccbin/-Xcompiler/-mno-amx-tile 均无效。**跳过,论文 Related Work 概念对比
+(他们的 ML 路由+TC 混执 vs 我们物理交叉+编译层,选择空间正交)。**
