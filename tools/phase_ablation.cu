@@ -37,7 +37,7 @@ __global__ void ablate_kernel(
     if (variant == 1) return;  // 只清表
 
     // Phase 2: hash insert
-    if (variant != 3) {  // variant 3 skips insert
+    if (variant != 3 && variant != 4) {  // variant 3 skips insert; 4 = read-first
         int rs = A_rp[i], re = A_rp[i+1];
         for (int p = rs; p < re; p++) {
             int k = A_ci[p]; double a = A_val[p];
@@ -49,6 +49,29 @@ __global__ void ablate_kernel(
                 while (true) {
                     int old = atomicCAS(&t_col[slot], -1, j);
                     if (old == -1 || old == j) { atomicAdd(&t_val[slot], v); break; }
+                    slot = (slot + 1) & (HT-1);
+                    if (++probes >= HT) break;
+                }
+            }
+        }
+    }
+    // variant 4: read-first insert(免 CAS 重复;对已存在列直接 atomicAdd)
+    if (variant == 4) {
+        int rs = A_rp[i], re = A_rp[i+1];
+        for (int p = rs; p < re; p++) {
+            int k = A_ci[p]; double a = A_val[p];
+            int ks = B_rp[k], ke = B_rp[k+1];
+            for (int q = ks + lane; q < ke; q += 32) {
+                int j = B_ci[q]; double v = a * B_val[q];
+                unsigned slot = ((unsigned)(j * 2654435761u)) & (HT-1);
+                int probes = 0;
+                while (true) {
+                    int entry = t_col[slot];              // read-first(非原子)
+                    if (entry == j) { atomicAdd(&t_val[slot], v); break; }   // 已存在:免 CAS
+                    if (entry == -1) {
+                        int old = atomicCAS(&t_col[slot], -1, j);           // 空槽:CAS 插入
+                        if (old == -1 || old == j) { atomicAdd(&t_val[slot], v); break; }
+                    }
                     slot = (slot + 1) & (HT-1);
                     if (++probes >= HT) break;
                 }
@@ -151,7 +174,7 @@ int main(int argc, char **argv) {
         float ms; cudaEventElapsedTime(&ms, start, stop);
         if (ms < best) best = ms;
     }
-    const char *names[] = {"全核(clear+insert+extract)", "只清表(clear)", "清+插入(clear+insert)", "清+提取(跳过插入)"};
+    const char *names[] = {"全核(clear+insert+extract)", "只清表(clear)", "清+插入(clear+insert)", "清+提取(跳过插入)", "清+read-first插入"};
     printf("variant=%d [%s]: %.3f ms (n=%d, nnz=%d)\n", variant, names[variant], best, n, A.nnz);
     return 0;
 }
