@@ -288,3 +288,12 @@ smem 写/读 + __syncwarp 开销。
 **定谳**:①当前手拍门(H69/H45 全开)对 ~70% 人口正确=**测量出处到手**;
 ②价值=principled justification + 内核变化时自动重生成 + 少数格可调;
 ③下一步=生产集成(查表替手拍门)→ A/B → confirm18。
+
+## S4 生产集成(10-30 凌晨)
+**实现**:hash_product dense_mode 门前内嵌查表(bin9_frac/bin45_frac/规模 → 
+routing_table_lookup → h69/h45/h55);RTABLE=0 逃生回手拍;dbg 打印查表详情。
+**冒烟**:bloweybq(b9=2 high, frac=1.00 → h69=1 h45=1)✓;atmosmodj/cage15/Serena
+nnz 全同 ✓。
+**A/B**:RT=1(表)vs RT=0(手拍)在 atmosmodj/cage15/Serena 上差异全在噪声带内
+——**预期:70% 人口查表=手拍=同一配置;价值不在更快,在出处**。
+**下一步**:15 阵电池回归→confirm18→外部 72 阵→三层评估。
