@@ -6334,16 +6334,42 @@ static void hash_product(
     const int PRIV_W = g_privW;
     // 2c: per-bin launch(hash 插入 + extract;prof 内部已 sync);memset+overflow D2H 纳入计时
     int overflow;
+    // ===== S4 路由表集成(study/60):查表替代手拍门 =====
+    // 签名:bin9_frac/bin45_frac/规模 → 3×3×3 格 → H69/H45/H55 配置
+    // 数据出处:470 阵标定(356 真实 + 153 合成);RTABLE=0 逃生门回手拍模式
+    static int g_rtable = -1;
+    if (g_rtable < 0) { const char *e = getenv("RTABLE"); g_rtable = (e && *e) ? atoi(e) : 1; }
+    int rt_h69 = 1, rt_h45 = 1, rt_h55 = 1;   // 默认=全开(70% 人口的测量最优)
+    if (g_rtable) {
+        long long rt_total = 0;
+        for (int b = 0; b <= HASH_LADDER_MAX_BIN; b++) rt_total += h_cnt[b];
+        double rt_b9f = rt_total > 0 ? (double)h_cnt[9] / rt_total : 0;
+        double rt_b45f = rt_total > 0 ? (double)(h_cnt[4] + h_cnt[5]) / rt_total : 0;
+        int rt_b9 = (rt_b9f < 0.01) ? 0 : ((rt_b9f < 0.3) ? 1 : 2);
+        int rt_b45 = (rt_b45f < 0.01) ? 0 : ((rt_b45f < 0.3) ? 1 : 2);
+        int rt_sz = (rt_total < 10000) ? 0 : ((rt_total < 1000000) ? 1 : 2);
+        // 内联查表(与 routing_table.h 同构,避免头文件依赖)
+        if (rt_b9==0 && rt_b45==2 && rt_sz==1) { rt_h69=1; rt_h45=1; }  // none_high_medium n=144
+        else if (rt_b9==0 && rt_b45==1 && rt_sz==1) { rt_h69=1; rt_h45=1; }  // none_low_medium n=48
+        else if (rt_b9==0 && rt_b45==2 && rt_sz==0) { rt_h69=1; rt_h45=1; }  // none_high_small n=28
+        else if (rt_b9==0 && rt_b45==0 && rt_sz==2) { rt_h69=1; rt_h45=1; }  // none_none_large n=19
+        else if (rt_b9==2 && rt_b45==0 && rt_sz==1) { rt_h69=1; rt_h45=1; }  // high_none_medium n=7
+        else if (rt_b9==1 && rt_b45==1 && rt_sz==1) { rt_h69=1; rt_h45=1; }  // low_low_medium n=12
+        else if (rt_b9==2 && rt_b45==1 && rt_sz==1) { rt_h69=0; rt_h45=0; }  // high_low_medium n=14
+        // 其余格:默认全开(无人口/分裂格)
+        dbg("[%s] RTABLE: b9=%d(%.2f) b45=%d(%.2f) sz=%d → h69=%d h45=%d h55=%d\n",
+            tag, rt_b9, rt_b9f, rt_b45, rt_b45f, rt_sz, rt_h69, rt_h45, rt_h55);
+    }
     // dense 累积器门(2026-08-26,exdata_1 类):小 n + 输出 ≥15% 稠密 → 直接寻址免探测免 CAS
     #define DENSE_WIN_MAX_N DENSE_WIN_MAX_N_STRUCT
     const bool dense_mode = (A_cols <= DENSE_MAX_N) && A_rows > 0 &&
         ((double)total_est / ((double)A_rows * A_cols) >= DENSE_MIN_FRAC)
         && h_cnt[BIN_K7] == 0    // k7 接管时矩阵级 dense 语义失效(accumulate 兜底+compact 矩阵拷贝双侧;10-06 零化案根修)
-        && !(h69_route_on() && h_cnt[9] > 0);   // 刀①'(study/59):仅 bin9 有人口的阵压制 dense 累积器(胖行→HH 16253;exdata 类无 bin9 dense 最优阵零影响)
+        && !((g_rtable ? rt_h69 : (h69_route_on()?1:0)) && h_cnt[9] > 0);   // S4:查表或手拍(bin9 阵压制 dense)
     const bool dense_win_mode = !dense_mode && (A_cols <= DENSE_WIN_MAX_N) && A_rows > 0 &&
         ((double)total_est / ((double)A_rows * A_cols) >= DENSE_MIN_FRAC)
         && h_cnt[BIN_K7] == 0    // 同上
-        && !(h69_route_on() && h_cnt[9] > 0);   // 刀①':dense_win 同压(仅 bin9 阵)
+        && !((g_rtable ? rt_h69 : (h69_route_on()?1:0)) && h_cnt[9] > 0);   // S4:同上
     // ---- 方案5(docs/27 §4.1):dense 行精确计数 + 直写终态。DIRECT5=1 开,默认关。----
     // dense 行集合 = 矩阵级 dense/dense_win(全体行)或 Phase A bin(v4 门含 dup<8 = 两遍直写
     // 交通量赢面);hash 行不动(结构同 Ocean type2 est 工作流)。count pass 在 accumulate 前
