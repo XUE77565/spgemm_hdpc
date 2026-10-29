@@ -297,3 +297,11 @@ nnz 全同 ✓。
 **A/B**:RT=1(表)vs RT=0(手拍)在 atmosmodj/cage15/Serena 上差异全在噪声带内
 ——**预期:70% 人口查表=手拍=同一配置;价值不在更快,在出处**。
 **下一步**:15 阵电池回归→confirm18→外部 72 阵→三层评估。
+
+## 外部72阵下载受挫(10-30 凌晨)
+sparse.tamu.edu 返回 403 Forbidden(试过 wget/curl/绕代理/浏览器UA 全失败);
+可能是 IP 限流或站点策略。**暂搁,不阻塞主线**——三层评估改为:
+- 层1:训练 356(confirm18)
+- 层2:内部 held-out 72(已有,跑我方 RTABLE=1)
+- 层3:外部 72(后续:换镜像/GitHub源/人工下载/离线拷贝)
+论文可标注 external validation = future work 或用替代源。
