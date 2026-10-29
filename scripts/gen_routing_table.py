@@ -51,8 +51,12 @@ def parse_bins(bins_str):
     d = {}
     for tok in bins_str.split():
         if ':' in tok:
-            k, v = tok.split(':')
-            d[int(k)] = int(v)
+            parts = tok.split(':')
+            if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+                try:
+                    d[int(parts[0])] = int(parts[1])
+                except ValueError:
+                    pass
     return d
 
 def compute_signature(mat, bins_str):
