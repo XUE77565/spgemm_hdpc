@@ -50,3 +50,13 @@ IA-SpGEMM/Wang2025(逐阵选)/FlexSpGEMM(ML 选 tile+TC)对表;我们=粒度(行
 全套继承(GPU 保护/同会话 A-B/交错重采/三件套/三检门/清场按 PID);
 **新增:一切新门=签名交叉(S2 产出),禁手拍;默认翻前人口带验证;电池绿≠428 绿;
 四臂对照前禁宣称"解决根本问题"(期票纪律)。**
+
+## S0 定谳(10-29 午):sparsine"12× 病理"= 幻影
+**证据链**:①sparsine 逐行特征(py 直读 mtx)——全行 flop≥581/kcnt≥21/maxbl≥46,
+bin0 仅 **1 行**(`0:1`);②multirow 以 n=1 发射,grid=(1/2+7)/8=**0 非法**;
+③nsys 对拍 on/off:GPU kernel 层 **on≈off(2.4ms)**,multirow 根本不在表;
+④API 摘要:两配置**共有** 2×~2.3s cudaMallocHost(系统级 pinned 卡顿,疑外来
+RL 作业内存压力;独立观察项——每进程 4.5s!)。**结论:三修三败之第三败=边界
+bug+host 噪声合成物,multirow 人口病理证据链重审**;第一二败(128/104 阵)真实,
+但机理归因(B行长/表容)未证。**S0 签名验证数据源改向:confirm17 首跑 CSV 的
+真实恶化 128 阵**(名单+数据在档)。grid ceil 已修+CHECK 待补。
