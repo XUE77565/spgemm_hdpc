@@ -97,13 +97,15 @@ def main():
     fout = open(OUT, "a", newline="")
     w = csv.writer(fout)
 
-    # 标定阵:选 40 阵(多样化)
+    # 训练集:356 阵(72 held-out 排除,防训练集泄露)
     if mat_file:
         cal_mats = [l.strip() for l in open(mat_file) if l.strip()]
     else:
-        # 自动选择:每个 bin9 人口区间 5 阵 + bin4/5 人口区间 5 阵 + 大阵 + 微阵
-        from audit_data import select_calibration_set
-        cal_mats = select_calibration_set(all_mats, REPO)
+        train_file = os.path.join(REPO, "results", "train_356.txt")
+        if os.path.exists(train_file):
+            cal_mats = [l.strip() for l in open(train_file) if l.strip()]
+        else:
+            cal_mats = all_mats
 
     print(f"标定阵 {len(cal_mats)} 个 × {len(VARIANTS)} 变体 = {len(cal_mats)*len(VARIANTS)} 配置", flush=True)
 
@@ -120,6 +122,8 @@ def main():
         n, nnz_a = compute_matrix_features(mat_path)
 
         for vname, venv in VARIANTS:
+            if vname == "baseline":
+                continue  # baseline 用 confirm16 已有数据
             if (mat, vname) in done:
                 continue
             co, nnz, route, bins_str = run_one(mat_path, venv, gpu)
