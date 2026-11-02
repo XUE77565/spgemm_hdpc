@@ -5497,10 +5497,17 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                     if (g_h55 < 0) { const char *e = getenv("HASH_H55"); g_h55 = (e && *e) ? atoi(e) : 1; }   // Gv3v2 转正默认 1;HASH_H55=0 逃生门
                     static int g_h69 = -1;   // 刀①'(study/59):bin9→HH(16253) 默认 1(五阵定谳 §刀①');bin6→HH(2719) 需 H69=2(未验证人口不默认翻);HASH_H69=0 逃生门
                     if (g_h69 < 0) { const char *e = getenv("HASH_H69"); g_h69 = (e && *e) ? atoi(e) : 1; }
-                    // AI Router 部署试点覆写(hash_product 置位;env 优先级最高,AI 只在 env 未设时生效)
-                    if (g_ai_h45 >= 0) g_h45 = g_ai_h45;
-                    if (g_ai_h55 >= 0) g_h55 = g_ai_h55;
-                    if (g_ai_h69 >= 0) g_h69 = g_ai_h69;
+                    // AI Router 部署试点覆写:优先级=显式env > AI > 默认(静态只判一次env是否显式设置)
+                    static int s_env_h45 = -1, s_env_h55 = -1, s_env_h69 = -1;   // -1=未显式
+                    if (s_env_h69 < 0) {
+                        const char *e45 = getenv("HASH_H45"), *e55 = getenv("HASH_H55"), *e69 = getenv("HASH_H69");
+                        if (e45 && *e45) s_env_h45 = atoi(e45) > 0 ? 1 : 0;
+                        if (e55 && *e55) s_env_h55 = atoi(e55) > 0 ? 1 : 0;
+                        if (e69 && *e69) s_env_h69 = atoi(e69) > 0 ? 1 : 0;
+                    }
+                    if (g_ai_h45 >= 0 && s_env_h45 < 0) g_h45 = g_ai_h45;
+                    if (g_ai_h55 >= 0 && s_env_h55 < 0) g_h55 = g_ai_h55;
+                    if (g_ai_h69 >= 0 && s_env_h69 < 0) g_h69 = g_ai_h69;
                     if (g_s99 && ((bi >= 7 && bi <= 8) || (g_h45 && bi == 4) || (g_h55 && bi == 5) || (g_h69 && bi == 9) || (g_h69 >= 2 && bi == 6)) && !g_wm && !g_pht) {
 #define HH_LAUNCH2(LNT_, P_, OCH_, LO_, HI_, ROT_) do { \
     const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
