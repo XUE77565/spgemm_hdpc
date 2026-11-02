@@ -8,7 +8,7 @@ COLS = ["mat","variant","co_ms","nnz","n","nnz_a","a_cols","avg_flop",
         "est_density","dup_ratio","bin9_pop","bin45_pop","bin0_pop","total_bins","route","bins_summary"]
 VARIANTS = [("no_h69",{"HASH_H69":"0"}),("no_h4555",{"HASH_H45":"0","HASH_H55":"0"}),("no_all",{"HASH_H69":"0","HASH_H45":"0","HASH_H55":"0"})]
 def run(path, venv):
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES="1", METHOD="adaptive", WARMUP_N="3", USE_MEMPOOL="1", MP_HOST_MB="8192", D6EXP="0")
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES="0", METHOD="adaptive", WARMUP_N="3", USE_MEMPOOL="1", MP_HOST_MB="8192", D6EXP="0")
     env.update(venv)
     try:
         r = subprocess.run(["./spgemm_test", path], cwd=REPO, env=env, capture_output=True, text=True, timeout=600)

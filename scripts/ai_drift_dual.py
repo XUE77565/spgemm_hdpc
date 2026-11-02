@@ -110,11 +110,11 @@ def main():
     gpu = sys.argv[1] if len(sys.argv) > 1 else "0"
     router = OnlineRouter(10)
 
-    # ===== Phase 1: 旧世界(sm90 二进制) =====
+    # ===== Phase 1: 时代A = sm90 二进制(10-27,hash_heavy 死刑时代) =====
     print("="*64)
-    print("Phase 1: 旧世界 spgemm_test_sm90 (hash_heavy=死刑时代)")
+    print("Phase 1: 时代A spgemm_test_sm90 (10-27, hash_heavy=死刑时代)")
     print("="*64)
-    old_world = {}
+    era_a = {}
     feats = {}
     for i, mat in enumerate(DRIFT_MATS):
         path = get_path(mat)
@@ -124,7 +124,7 @@ def main():
         if t_on <= 0 or t_off <= 0:
             print(f"  {mat:<18} 测量失败 on={t_on} off={t_off},跳过"); continue
         best = "hash_heavy" if t_on < t_off else "lht"
-        old_world[mat] = {"on": t_on, "off": t_off, "best": best}
+        era_a[mat] = {"on": t_on, "off": t_off, "best": best}
         x = compute_features(bs1 or bs2, 0)
         if x is not None: feats[mat] = x
         # 模型在旧世界在线学习(多轮把先验吃进去)
@@ -132,81 +132,111 @@ def main():
             for _ in range(20):
                 router.update(x, "hash_heavy", math.log2(t_on))
                 router.update(x, "lht", math.log2(t_off))
-        print(f"  [{i+1:2d}] {mat:<18} on={t_on:>7.2f} off={t_off:>7.2f} → 旧最优={best}")
+        print(f"  [{i+1:2d}] {mat:<18} on={t_on:>7.2f} off={t_off:>7.2f} → A最优={best}")
 
-    valid = [m for m in old_world if m in feats]
-    old_off_count = sum(1 for m in valid if old_world[m]["best"] == "lht")
-    print(f"\n旧世界定谳: {old_off_count}/{len(valid)} 阵最优=H45关 "
-          f"({'预期漂移前提成立' if old_off_count > len(valid)/2 else '⚠️ 漂移前提弱,检查阵集'})")
+    valid = [m for m in era_a if m in feats]
 
-    # ===== Phase 2: 新世界(c61 二进制)—— 真内核变化 =====
+    # ===== Phase 2: 时代B = c61 二进制(10-27,编译层单变量) =====
     print("\n" + "="*64)
-    print("Phase 2: 新世界 spgemm_test_c61 (hash_heavy=复活时代) ← 编译层内核变化")
+    print("Phase 2: 时代B spgemm_test_c61 (10-27, 编译层单变量)")
     print("="*64)
-    new_world = {}
+    era_b = {}
     for i, mat in enumerate(valid):
         path = get_path(mat)
-        t_on,  bs1 = run_one("spgemm_test_c61", path, True,  gpu)
-        t_off, bs2 = run_one("spgemm_test_c61", path, False, gpu)
+        t_on,  _ = run_one("spgemm_test_c61", path, True,  gpu)
+        t_off, _ = run_one("spgemm_test_c61", path, False, gpu)
         if t_on <= 0 or t_off <= 0: continue
         best = "hash_heavy" if t_on < t_off else "lht"
-        new_world[mat] = {"on": t_on, "off": t_off, "best": best}
-        print(f"  [{i+1:2d}] {mat:<18} on={t_on:>7.2f} off={t_off:>7.2f} → 新最优={best}")
+        era_b[mat] = {"on": t_on, "off": t_off, "best": best}
+        print(f"  [{i+1:2d}] {mat:<18} on={t_on:>7.2f} off={t_off:>7.2f} → B最优={best}")
 
-    both = [m for m in new_world if m in old_world]
-    flips = sum(1 for m in both if old_world[m]["best"] != new_world[m]["best"])
-    print(f"\n漂移实测定谳: {flips}/{len(both)} 阵最优路由翻面 "
-          f"(翻面阵上,旧世界静态表的答案在新世界是错的)")
-
-    # ===== Phase 3: 在线恢复(真模型,真观测流) =====
+    # ===== Phase 2c: 时代C = 当前生产二进制(10-30,刀链落地后) =====
+    # 漂移主轴 = A/B → C:白天的消融数据显示 C 上 HH 14/14 全赢,
+    # 但按测量纪律(同会话同卡配对)C 必须在本会话 GPU 上重测
     print("\n" + "="*64)
-    print("Phase 3: 在线适应(旧世界先验 + 新世界观测流)")
+    print("Phase 2c: 时代C spgemm_test (10-30 生产, 刀链落地) ← 真内核演化")
+    print("="*64)
+    era_c = {}
+    for i, mat in enumerate(valid):
+        path = get_path(mat)
+        t_on,  _ = run_one("spgemm_test", path, True,  gpu)
+        t_off, _ = run_one("spgemm_test", path, False, gpu)
+        if t_on <= 0 or t_off <= 0: continue
+        best = "hash_heavy" if t_on < t_off else "lht"
+        era_c[mat] = {"on": t_on, "off": t_off, "best": best}
+        print(f"  [{i+1:2d}] {mat:<18} on={t_on:>7.2f} off={t_off:>7.2f} → C最优={best}")
+
+    both = [m for m in era_c if m in era_a]
+    n = len(both)
+    flips_ac = sum(1 for m in both if era_a[m]["best"] != era_c[m]["best"])
+    print(f"\n漂移实测定谳: 时代A→C 翻面 {flips_ac}/{n} 阵 "
+          f"(旧世界标定的'真相'在新世界是错的)")
+
+    # ===== Phase 3: 在线恢复(时代A先验 + 时代C观测流) =====
+    print("\n" + "="*64)
+    print("Phase 3: 在线适应(时代A先验 + 时代C观测流)")
     print("="*64)
     router2 = OnlineRouter(10, lr=0.02)
-    # 复制旧世界训练好的先验
     router2.W = {k: v.copy() for k, v in router.W.items()}
     router2.b = dict(router.b)
 
-    stream = both  # 按名单顺序流入
     decisions = []
-    for i, mat in enumerate(stream):
+    stream_reject = []   # 时间后悔:该臂总时间 / oracle 总时间
+    for i, mat in enumerate(both):
         x = feats[mat]
         choice = router2.select(x)                 # 决策(先验,再看观测)
-        truth = new_world[mat]["best"]
+        truth = era_c[mat]["best"]
         correct = (choice == truth)
-        # 观测到来:该阵两个选项的新世界实测 → 监督式两选项更新
-        router2.update(x, "hash_heavy", math.log2(new_world[mat]["on"]))
-        router2.update(x, "lht",       math.log2(new_world[mat]["off"]))
         decisions.append(correct)
+        t_choice = era_c[mat]["on"] if choice == "hash_heavy" else era_c[mat]["off"]
+        t_best = min(era_c[mat]["on"], era_c[mat]["off"])
+        stream_reject.append(t_choice / t_best)
+        # 观测到来:监督式两选项更新
+        router2.update(x, "hash_heavy", math.log2(era_c[mat]["on"]))
+        router2.update(x, "lht",       math.log2(era_c[mat]["off"]))
         acc = 100*sum(decisions)/len(decisions)
         if i < 8 or (i+1) % 4 == 0:
             print(f"  [{i+1:2d}] {mat:<18} 模型选={choice:<11} 真最优={truth:<11} "
                   f"{'✓' if correct else '✗'} 累计准确率={acc:.0f}%")
 
     early = decisions[:5]; late = decisions[8:] if len(decisions) > 8 else decisions[5:]
-    print(f"\n恢复曲线: 前5决策准确率 {100*sum(early)/len(early):.0f}% → "
-          f"第9+决策准确率 {100*sum(late)/len(late):.0f}%")
 
-    # ===== 对照臂汇总 =====
-    static_correct = sum(1 for m in both if old_world[m]["best"] == new_world[m]["best"])
-    always_on  = sum(1 for m in both if new_world[m]["best"] == "hash_heavy")
-    always_off = sum(1 for m in both if new_world[m]["best"] == "lht")
-    online_final = sum(decisions)
-    n = len(both)
+    # ===== 双时代四臂(论文主表:哪个臂在两个时代都跟得住最优) =====
+    def arm_acc(pick, era):
+        return sum(1 for m in both if pick(m) == era[m]["best"])
+    static_pick = lambda m: era_a[m]["best"]            # 旧世界标定的静态表
+    hh_pick     = lambda m: "hash_heavy"
+    lht_pick    = lambda m: "lht"
+
+    # 时间后悔(时代C):各臂总时间 / oracle 总时间
+    oracle_t = sum(min(era_c[m]["on"], era_c[m]["off"]) for m in both)
+    def arm_time(pick):
+        return sum((era_c[m]["on"] if pick(m)=="hash_heavy" else era_c[m]["off"]) for m in both) / oracle_t
+    online_time = sum(stream_reject) / len(stream_reject)
 
     print("\n" + "="*64)
-    print(f"四臂对比(新世界 {n} 阵, 漂移翻面 {flips} 阵)")
+    print(f"双时代四臂对比(A={n}阵 → C={n}阵, A→C翻面 {flips_ac})")
     print("="*64)
-    print(f"  静态表(旧世界标定,=if-else 内核变化后): {static_correct}/{n} = {100*static_correct/n:.0f}%")
-    print(f"  在线模型(本实验):                      {online_final}/{n} = {100*online_final/n:.0f}%")
-    print(f"  always H45-on:                          {always_on}/{n} = {100*always_on/n:.0f}%")
-    print(f"  always H45-off:                         {always_off}/{n} = {100*always_off/n:.0f}%")
+    print(f"{'臂':<22} {'A时代准确率':>10} {'C时代准确率':>10} {'C时间后悔':>10}")
+    for name, pick in [("静态表(旧世界标定)", static_pick),
+                       ("always hash_heavy",  hh_pick),
+                       ("always lht",         lht_pick)]:
+        a = 100*arm_acc(pick, era_a)/n; c = 100*arm_acc(pick, era_c)/n
+        t = arm_time(pick)
+        print(f"{name:<24} {a:>9.0f}% {c:>9.0f}% {t:>9.3f}x")
+    online_a = None  # 在线模型在A时代=训练中,准确率意义不同,不列入
+    print(f"{'在线模型(本实验)':<24} {'(训练中)':>10} {100*sum(decisions)/n:>9.0f}% {online_time:>9.3f}x")
+    print(f"\n恢复曲线: 前5决策 {100*sum(early)/len(early):.0f}% → 第9+决策 {100*sum(late)/len(late):.0f}%")
 
     out = {
-        "old_world": old_world, "new_world": new_world,
-        "flips": flips, "n": n,
-        "arms": {"static": 100*static_correct/n, "online": 100*online_final/n,
-                 "always_on": 100*always_on/n, "always_off": 100*always_off/n},
+        "era_a_sm90_1027": era_a, "era_b_c61_1027": era_b, "era_c_prod_1030": era_c,
+        "flips_a_to_c": flips_ac, "n": n,
+        "arms_dual_era": {
+            "static":  {"A": 100*arm_acc(static_pick, era_a)/n, "C": 100*arm_acc(static_pick, era_c)/n, "C_time": arm_time(static_pick)},
+            "always_hh": {"A": 100*arm_acc(hh_pick, era_a)/n, "C": 100*arm_acc(hh_pick, era_c)/n, "C_time": arm_time(hh_pick)},
+            "always_lht": {"A": 100*arm_acc(lht_pick, era_a)/n, "C": 100*arm_acc(lht_pick, era_c)/n, "C_time": arm_time(lht_pick)},
+            "online": {"C": 100*sum(decisions)/n, "C_time": online_time},
+        },
         "recovery_curve": decisions,
     }
     with open(os.path.join(REPO, "results", "drift_dual_experiment.json"), "w") as f:
