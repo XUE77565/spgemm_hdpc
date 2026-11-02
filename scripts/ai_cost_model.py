@@ -338,55 +338,72 @@ def train():
     router = UnifiedRouter(len(FEATURES))
     router.fit_scaler([s['feat'] for s in samples])
 
-    # 按路由点分组训练
-    rp_groups = defaultdict(list)
+    # 预索引: (rp, mat) → 该配置下所有选项(消融配对数据,两个选项的时间都有)
+    # 方法学修正: 离线训练用监督式(每个选项都用自己的实测时间更新),
+    # 而非 bandit 式(只更新被选中项——败者永不学习,自证失败循环)
+    pair_index = defaultdict(list)
     for s in samples:
-        rp_groups[(s['rp'], s['opt'])].append(s)
+        pair_index[(s['rp'], s['mat'])].append(s)
+
+    # 按阵划分 train/val(同阵不同路由点必须同侧,防泄漏)
+    all_mats = sorted(set(s['mat'] for s in samples))
+    np.random.seed(42)
+    val_mats = set(np.random.choice(all_mats, size=max(1, len(all_mats)//5), replace=False))
+
+    train_samples = [s for s in samples if s['mat'] not in val_mats]
+    val_samples = [s for s in samples if s['mat'] in val_mats]
+    print(f"\n划分: train {len(train_samples)} / val {len(val_samples)} (按阵,防泄漏)")
 
     for epoch in range(30):
         total_err = 0
-        order = np.random.permutation(len(samples))
+        order = np.random.permutation(len(train_samples))
         for i in order:
-            s = samples[i]
-            options = [x['opt'] for x in samples if x['rp'] == s['rp'] and x['mat'] == s['mat']]
-            if not options: options = [s['opt']]
-            phys_costs = {opt: get_phys_cost(s['feat'], s['rp'], opt) for opt in set(options)}
-            chosen = router.select(s['feat'], s['rp'], options, phys_costs)
-            total_err += router.update(s['feat'], s['rp'], chosen, phys_costs[chosen], s['log_t'])
+            s = train_samples[i]
+            phys = get_phys_cost(s['feat'], s['rp'], s['opt'])
+            total_err += router.update(s['feat'], s['rp'], s['opt'], phys, s['log_t'])
 
         if (epoch+1) % 10 == 0:
-            print(f"  epoch {epoch+1}: avg_err = {total_err/len(samples):.4f}")
+            print(f"  epoch {epoch+1}: avg_err = {total_err/len(train_samples):.4f}")
 
-    # 评估: 对每个 (mat, rp), 模型选的 vs 实际最优
-    correct = 0; total = 0; suboptimal_costs = []
-    for rp in set(s['rp'] for s in samples):
-        rp_samples = defaultdict(dict)
-        for s in samples:
-            if s['rp'] == rp:
-                rp_samples[s['mat']][s['opt']] = s['log_t']
+    # 评估: 对每个 (mat, rp), 模型选的 vs 实际最优 + 平凡基线对比
+    def evaluate(eval_samples, tag):
+        correct = 0; total = 0; suboptimal_costs = []
+        base_correct = defaultdict(int)  # "永远选opt_X" 的正确数
+        # 收集 (rp, mat) → {opt: log_t}
+        rp_mat = defaultdict(dict)
+        feat_lookup = {}
+        for s in eval_samples:
+            rp_mat[(s['rp'], s['mat'])][s['opt']] = s['log_t']
+            feat_lookup[(s['rp'], s['mat'])] = s['feat']
 
-        for mat, opts in rp_samples.items():
+        for (rp, mat), opts in rp_mat.items():
             if len(opts) < 2: continue
-            # 获取特征
-            mat_sample = next(s for s in samples if s['mat']==mat and s['rp']==rp)
+            feat = feat_lookup[(rp, mat)]
             options = list(opts.keys())
-            phys_costs = {opt: get_phys_cost(mat_sample['feat'], rp, opt) for opt in options}
-            model_choice = router.select(mat_sample['feat'], rp, options, phys_costs)
+            phys_costs = {opt: get_phys_cost(feat, rp, opt) for opt in options}
+            model_choice = router.select(feat, rp, options, phys_costs)
             actual_best = min(opts, key=opts.get)
 
             total += 1
+            for o in options:
+                if o == actual_best: base_correct[o] += 1
             if model_choice == actual_best:
                 correct += 1
             else:
-                # 计算选错的代价
                 ratio = 2**(opts[model_choice] - opts[actual_best])
                 suboptimal_costs.append(ratio)
 
-    if total > 0:
-        print(f"\n路由选择准确率: {correct}/{total} = {100*correct/total:.1f}%")
-        if suboptimal_costs:
-            avg_subopt = sum(suboptimal_costs)/len(suboptimal_costs)
-            print(f"选错时代价: 平均 {avg_subopt:.2f}× (越接近 1 越好)")
+        if total > 0:
+            print(f"\n[{tag}] 路由选择准确率: {correct}/{total} = {100*correct/total:.1f}%")
+            if suboptimal_costs:
+                avg_subopt = sum(suboptimal_costs)/len(suboptimal_costs)
+                print(f"[{tag}] 选错时代价: 平均 {sum(suboptimal_costs)/len(suboptimal_costs):.2f}×")
+            for o, c in sorted(base_correct.items()):
+                print(f"[{tag}] 平凡基线 '永远选 {o}': {100*c/total:.1f}%")
+        return correct, total
+
+    evaluate(train_samples, "train")
+    correct, total = evaluate(val_samples, "val(held-out阵)")
 
     # 导出
     analysis = router.export_analysis()
@@ -413,7 +430,7 @@ def train():
     print("\n===== 模型可解释性(每个路由点的前 3 重要特征) =====")
     for key, info in sorted(analysis.items()):
         if info['n_updates'] < 5: continue
-        print(f"\n  {key} ({info['n_updates']} 次更新, 平均误差 {info['avg_err']:.3f}):")
+        print(f"\n  {key} ({info['n_updates']} 次更新, 平均误差 {info.get('avg_err', info.get('avg_error', 0)):.3f}):")
         for fname, weight in info['top_features'][:3]:
             direction = "↑" if weight > 0 else "↓"
             print(f"    {fname}: {weight:+.3f} {direction}")
