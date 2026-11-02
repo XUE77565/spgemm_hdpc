@@ -1,5 +1,6 @@
 #include "spgemm.h"
 #include "hash_prof.h"
+#include "ai_router.h"   // AI Router v3 部署试点:19 模型权重 + ai_predict(AIROUTER=1 时消费)
 #include "structural_params.cuh"
 #include <cuda_runtime.h>
 #include <cub/cub.cuh>
@@ -5257,6 +5258,10 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
 // ===== P1 TU-61 出口(study/58 附录A.1 v2)=====
 // cutover 段将在此移入 bi≥4 accumulate 梯(HashAccumCtx + 名字别名,移动体文本不动)
 // + HH_SORTED loader(本 TU cubin 的 g_hh_sorted_d 副本,探针P3)+ TB_TAG 版 SPA_LAUNCH0。
+// ===== AI Router 部署试点(v3,study/60)=====
+// hash_product 算好决策后写入;hash_accum 侧静态标志初始化后覆写。
+// -1 = 不干预(默认)。AIROUTER=1 时由置信门控决策(预测赢面>5%才翻默认)。
+static int g_ai_h45 = -1, g_ai_h55 = -1, g_ai_h69 = -1;
 // B1 骨架:仅证 TU-61 符号层(device 模板区在 compute_61 下可编、门内零 host 发射)。
 // P1 cutover(study/58 附录A.1):accumulate 上下文——TU-90 构造,TU-61 消费。
 // 字段=移动体(generic-else 内部原文)引用的全部外层名(编译器驱动核对)。
@@ -5492,6 +5497,10 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                     if (g_h55 < 0) { const char *e = getenv("HASH_H55"); g_h55 = (e && *e) ? atoi(e) : 1; }   // Gv3v2 转正默认 1;HASH_H55=0 逃生门
                     static int g_h69 = -1;   // 刀①'(study/59):bin9→HH(16253) 默认 1(五阵定谳 §刀①');bin6→HH(2719) 需 H69=2(未验证人口不默认翻);HASH_H69=0 逃生门
                     if (g_h69 < 0) { const char *e = getenv("HASH_H69"); g_h69 = (e && *e) ? atoi(e) : 1; }
+                    // AI Router 部署试点覆写(hash_product 置位;env 优先级最高,AI 只在 env 未设时生效)
+                    if (g_ai_h45 >= 0) g_h45 = g_ai_h45;
+                    if (g_ai_h55 >= 0) g_h55 = g_ai_h55;
+                    if (g_ai_h69 >= 0) g_h69 = g_ai_h69;
                     if (g_s99 && ((bi >= 7 && bi <= 8) || (g_h45 && bi == 4) || (g_h55 && bi == 5) || (g_h69 && bi == 9) || (g_h69 >= 2 && bi == 6)) && !g_wm && !g_pht) {
 #define HH_LAUNCH2(LNT_, P_, OCH_, LO_, HI_, ROT_) do { \
     const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
@@ -6359,6 +6368,81 @@ static void hash_product(
         // 其余格:默认全开(无人口/分裂格)
         dbg("[%s] RTABLE: b9=%d(%.2f) b45=%d(%.2f) sz=%d → h69=%d h45=%d h55=%d\n",
             tag, rt_b9, rt_b9f, rt_b45, rt_b45f, rt_sz, rt_h69, rt_h45, rt_h55);
+    }
+    // ===== AI Router 部署试点(v3:物理先验+学习残差+置信门控)=====
+    // 决策=对每路由点预测各选项耗时(phys 闭式 + 线性残差),argmin;
+    // 置信门控:仅当预测赢面 >5% 才翻默认(默认=全开)→ 下限封死在=手拍默认。
+    // 模型权重=results/ai_cost_model.json 训练产物(src/ai_router.h 导出,19 模型)。
+    // AIROUTER=0 默认关(纯 opt-in,零生产风险);开销=host 14 次乘加 × 3 路由点。
+    static int g_airouter = -1;
+    if (g_airouter < 0) { const char *e = getenv("AIROUTER"); g_airouter = (e && *e && atoi(e) > 0) ? 1 : 0; }
+    if (g_airouter) {
+        // --- 特征(与 scripts/ai_cost_model.py::compute_features 同构,14 维) ---
+        long long ai_tot = 0;
+        for (int b = 0; b <= HASH_LADDER_MAX_BIN; b++) ai_tot += h_cnt[b];
+        if (ai_tot > 0) {
+            const float ai_mid[11] = {5,6,7,8,9,10,11,12,13,14,15};   // bin0..10(越界防护:HASH_LADDER_MAX_BIN=10)
+            auto ai_pct = [&](float p) {   // 加权分位(bin 人口权重的 bin-mid 分位)
+                long long acc = 0; const long long tgt = (long long)(p * ai_tot);
+                for (int b = 0; b <= HASH_LADDER_MAX_BIN; b++) { acc += h_cnt[b]; if (acc >= tgt) return ai_mid[b < 11 ? b : 10]; }
+                return ai_mid[10];
+            };
+            const float ai_n = (float)A_rows, ai_nnz = (float)A_nnz;
+            const float ai_logn = log2f(fmaxf(ai_n, 1.f)), ai_lognnz = log2f(fmaxf(ai_nnz, 1.f));
+            const float ai_est_med = ai_pct(0.5f);
+            const float ai_density = fmaxf(ai_nnz / (ai_n * fmaxf((float)A_cols, 1.f)), 1e-12f);
+            const float ai_f0 = (float)h_cnt[0] / ai_tot;
+            const float ai_f45 = (float)(h_cnt[4] + h_cnt[5]) / ai_tot;
+            const float ai_f67 = (float)(h_cnt[6] + h_cnt[7]) / ai_tot;
+            const float ai_f9 = (float)h_cnt[9] / ai_tot;
+            const float feat[14] = {
+                ai_logn, ai_lognnz, log2f(ai_density), log2f(fmaxf(ai_nnz / ai_n, 1.f)),
+                ai_est_med, ai_pct(0.75f) - ai_pct(0.25f),
+                ai_f0, ai_f45, ai_f67, ai_f9,
+                ai_f9 > 0.01f ? 1.f : 0.f, ai_f45 > 0.01f ? 1.f : 0.f,
+                ai_logn * ai_est_med, ai_lognnz * ai_est_med,
+            };
+            // --- 物理先验(log2 ms;与 ai_cost_model.py 的 phys 模型同构) ---
+            auto ai_phys_hh = [&](int ht, int blk) {
+                const double n = pow(2.0, fmin(feat[0], 25.0)), nnz = pow(2.0, fmin(feat[1], 30.0));
+                const double est = pow(2.0, fmin(feat[4], 14.0)), avg = fmax(pow(2.0, feat[3]), 1.0);
+                const double prod = fmin(n * est, 1e10);
+                const double clear = n * ht * 2.0 / blk / (132.0 * 1.7e9) * 1000.0;
+                const double ins = prod * 2.0 / 450e9 * 1000.0;
+                const double ext = n * est * est / 32.0 / (132.0 * 1.7e9) * 1000.0;
+                const double bw = fmin(nnz * 12.0 * est / avg, 1e12) / 3.35e12 * 1000.0;
+                return log2f(fmaxf(clear + ins + ext + bw, 1e-3));
+            };
+            auto ai_phys_lht = [&](int log_ht) {
+                const double n = pow(2.0, fmin(feat[0], 25.0)), nnz = pow(2.0, fmin(feat[1], 30.0));
+                const double est = pow(2.0, fmin(feat[4], 14.0)), avg = fmax(pow(2.0, feat[3]), 1.0);
+                const double prod = fmin(n * est, 1e10), ht = pow(2.0, log_ht);
+                const double clear = n * ht * 2.0 / 32.0 / (132.0 * 1.7e9) * 1000.0;
+                const double ins = prod * 2.0 / 450e9 * 1000.0;
+                const double ext = n * est * est / 32.0 / (132.0 * 1.7e9) * 1000.0;
+                const double bw = fmin(nnz * 12.0 * est / avg, 1e12) / 3.35e12 * 1000.0;
+                return log2f(fmaxf(clear * 1.1 + ins * 1.15 + ext * 1.3 + bw, 1e-3));
+            };
+            // --- 学习残差(src/ai_router.h:字符串索引查表,19 项一次/阵,开销可忽略) ---
+            auto ai_res = [&](const char *rp, const char *opt) {
+                for (int i = 0; i < AI_NR; i++)
+                    if (!strcmp(ai_models[i].rp, rp) && !strcmp(ai_models[i].opt, opt))
+                        return ai_predict(i, feat);
+                return 0.f;
+            };
+            // bin45 决策点(hash_heavy vs LHT;H45/H55 同源)
+            const float c_hh45 = ai_phys_hh(2048, 256) + ai_res("bin45_kernel", "hash_heavy");
+            const float c_lt45 = ai_phys_lht(10)      + ai_res("bin45_kernel", "lht");
+            // bin9 决策点(HH 16253 素数表 vs LHT14)
+            const float c_hh9  = ai_phys_hh(16253, 1024) + ai_res("bin9_kernel", "heavy_16253");
+            const float c_lt9  = ai_phys_lht(14)         + ai_res("bin9_kernel", "lht14");
+            // --- 置信门控:赢面 >5%(log2 差 >0.0704)才翻默认(默认=全开) ---
+            if (c_lt45 < c_hh45 - 0.0704f) { rt_h45 = 0; rt_h55 = 0; }
+            if (c_lt9  < c_hh9  - 0.0704f) { rt_h69 = 0; }
+            g_ai_h45 = rt_h45; g_ai_h55 = rt_h55; g_ai_h69 = rt_h69;
+            dbg("[%s] AIROUTER: f45=%.3f f9=%.3f est_med=%.1f → c_hh45=%.2f c_lt45=%.2f c_hh9=%.2f c_lt9=%.2f → h45=%d h55=%d h69=%d\n",
+                tag, ai_f45, ai_f9, ai_est_med, c_hh45, c_lt45, c_hh9, c_lt9, rt_h45, rt_h55, rt_h69);
+        }
     }
     // dense 累积器门(2026-08-26,exdata_1 类):小 n + 输出 ≥15% 稠密 → 直接寻址免探测免 CAS
     #define DENSE_WIN_MAX_N DENSE_WIN_MAX_N_STRUCT

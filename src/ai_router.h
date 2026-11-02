@@ -4,7 +4,7 @@
 #define AI_NR 19
 
 static const float ai_mean[14] = {16.6316f,18.9535f,-14.3097f,2.3219f,9.3095f,1.8980f,0.0785f,0.3905f,0.1818f,0.0319f,0.0971f,0.7019f,152.2975f,173.9136f};
-static const float ai_std[14] = {3.2380f,3.2380f,3.2380f,0.0000f,2.0696f,1.4589f,0.2132f,0.3877f,0.3074f,0.1277f,0.2961f,0.4574f,35.8565f,39.0994f};
+static const float ai_std[14] = {3.2380f,3.2380f,3.2380f,0.0010f,2.0696f,1.4589f,0.2132f,0.3877f,0.3074f,0.1277f,0.2961f,0.4574f,35.8565f,39.0994f};
 
 typedef struct { const char* rp; const char* opt; float W[14]; float b; } ai_model_t;
 static const ai_model_t ai_models[19] = {

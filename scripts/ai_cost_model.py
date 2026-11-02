@@ -226,7 +226,9 @@ class UnifiedRouter:
         # Feature scaler
         if self.feature_mean is not None:
             lines.append(f"static const float ai_mean[{self.n_features}] = {{{','.join(f'{v:.4f}f' for v in self.feature_mean)}}};")
-            lines.append(f"static const float ai_std[{self.n_features}] = {{{','.join(f'{v:.4f}f' for v in self.feature_std)}}};")
+            # std 下限 1e-3:防训练侧退化特征(std≈0,如 bins 粗估的 log_avg_row)
+            # 被 %.4f 圆成字面 0.0f → 部署侧 (x-mean)/0 = inf → 0*inf = NaN
+            lines.append(f"static const float ai_std[{self.n_features}] = {{{','.join(f'{max(v, 1e-3):.4f}f' for v in self.feature_std)}}};")
         else:
             lines.append(f"static const float ai_mean[{self.n_features}] = {{0}};")
             lines.append(f"static const float ai_std[{self.n_features}] = {{1}};")
