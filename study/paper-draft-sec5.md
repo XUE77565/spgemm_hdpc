@@ -124,6 +124,14 @@ false negative (29% recovery): unstandardized interaction features
 the relative update. The failure mode—instrument saturation masking the
 mechanism—recurs across our campaign and is worth documenting.
 
+*Feedback model.* The recovery above uses full-information updates (both
+options timed per matrix), matching periodic calibration probes—the
+deployment workflow we advocate. Pure bandit feedback (observe only the
+chosen variant, ε = 0.15–0.25 exploration) also recovers but is unstable
+at this fleet size (14% → 57% → 36% across three passes), so we
+recommend probe-based full information over per-run bandit updates, and
+make no regret-bound claims.
+
 ### 5.5 Deployment
 
 The router is integrated at the top of `hash_product()` as an opt-in
