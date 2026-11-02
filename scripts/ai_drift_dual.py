@@ -173,33 +173,43 @@ def main():
           f"(旧世界标定的'真相'在新世界是错的)")
 
     # ===== Phase 3: 在线恢复(时代A先验 + 时代C观测流) =====
+    # 修复(11-02 深夜):特征标准化缺失 → 交互特征量级~170,先验训练后 W·x 爆炸,
+    # 两选项 err 双双饱和 clip=±5,更新同步化,相对差冻结(全 lr 7% 不动的根因)
     print("\n" + "="*64)
-    print("Phase 3: 在线适应(时代A先验 + 时代C观测流)")
+    print("Phase 3: 在线适应(时代A先验 + 时代C观测流, 特征标准化版)")
     print("="*64)
-    router2 = OnlineRouter(10, lr=0.02)
-    router2.W = {k: v.copy() for k, v in router.W.items()}
-    router2.b = dict(router.b)
+    X = np.array([feats[m] for m in valid if m in feats])
+    fmu, fsd = X.mean(axis=0), X.std(axis=0) + 1e-8
+    sfeats = {m: (feats[m]-fmu)/fsd for m in feats}
+
+    router3 = OnlineRouter(10, lr=0.05)
+    for _ in range(20):   # 时代A先验(标准化特征上重建)
+        for m in valid:
+            if m in sfeats:
+                router3.update(sfeats[m], "hash_heavy", math.log2(era_a[m]["on"]))
+                router3.update(sfeats[m], "lht", math.log2(era_a[m]["off"]))
+    router3.lr = 0.1
 
     decisions = []
-    stream_reject = []   # 时间后悔:该臂总时间 / oracle 总时间
-    for i, mat in enumerate(both):
-        x = feats[mat]
-        choice = router2.select(x)                 # 决策(先验,再看观测)
-        truth = era_c[mat]["best"]
-        correct = (choice == truth)
-        decisions.append(correct)
-        t_choice = era_c[mat]["on"] if choice == "hash_heavy" else era_c[mat]["off"]
-        t_best = min(era_c[mat]["on"], era_c[mat]["off"])
-        stream_reject.append(t_choice / t_best)
-        # 观测到来:监督式两选项更新
-        router2.update(x, "hash_heavy", math.log2(era_c[mat]["on"]))
-        router2.update(x, "lht",       math.log2(era_c[mat]["off"]))
-        acc = 100*sum(decisions)/len(decisions)
-        if i < 8 or (i+1) % 4 == 0:
-            print(f"  [{i+1:2d}] {mat:<18} 模型选={choice:<11} 真最优={truth:<11} "
-                  f"{'✓' if correct else '✗'} 累计准确率={acc:.0f}%")
-
-    early = decisions[:5]; late = decisions[8:] if len(decisions) > 8 else decisions[5:]
+    stream_reject = []
+    PASSES = 3            # 生产语义:负载里每阵会被多次计算,每pass=一轮全阵观测
+    for p in range(PASSES):
+        for mat in both:
+            x = sfeats[mat]
+            choice = router3.select(x)
+            truth = era_c[mat]["best"]
+            correct = (choice == truth)
+            decisions.append(correct)
+            t_choice = era_c[mat]["on"] if choice == "hash_heavy" else era_c[mat]["off"]
+            t_best = min(era_c[mat]["on"], era_c[mat]["off"])
+            stream_reject.append(t_choice / t_best)
+            router3.update(x, "hash_heavy", math.log2(era_c[mat]["on"]))
+            router3.update(x, "lht",       math.log2(era_c[mat]["off"]))
+    for p in range(PASSES):
+        seg = decisions[p*n:(p+1)*n]
+        print(f"  pass {p+1}: 准确率 {100*sum(seg)/len(seg):.0f}%")
+    final_seg = decisions[-n:]
+    early = decisions[:5]; late = decisions[-n:]
 
     # ===== 双时代四臂(论文主表:哪个臂在两个时代都跟得住最优) =====
     def arm_acc(pick, era):
@@ -225,8 +235,8 @@ def main():
         t = arm_time(pick)
         print(f"{name:<24} {a:>9.0f}% {c:>9.0f}% {t:>9.3f}x")
     online_a = None  # 在线模型在A时代=训练中,准确率意义不同,不列入
-    print(f"{'在线模型(本实验)':<24} {'(训练中)':>10} {100*sum(decisions)/n:>9.0f}% {online_time:>9.3f}x")
-    print(f"\n恢复曲线: 前5决策 {100*sum(early)/len(early):.0f}% → 第9+决策 {100*sum(late)/len(late):.0f}%")
+    print(f"{'在线模型(本实验)':<24} {'(训练中)':>10} {100*sum(final_seg)/n:>9.0f}% {online_time:>9.3f}x")
+    print(f"\n恢复曲线: 前5决策 {100*sum(early)/len(early):.0f}% → 末轮pass {100*sum(late)/len(late):.0f}%")
 
     out = {
         "era_a_sm90_1027": era_a, "era_b_c61_1027": era_b, "era_c_prod_1030": era_c,
@@ -235,7 +245,7 @@ def main():
             "static":  {"A": 100*arm_acc(static_pick, era_a)/n, "C": 100*arm_acc(static_pick, era_c)/n, "C_time": arm_time(static_pick)},
             "always_hh": {"A": 100*arm_acc(hh_pick, era_a)/n, "C": 100*arm_acc(hh_pick, era_c)/n, "C_time": arm_time(hh_pick)},
             "always_lht": {"A": 100*arm_acc(lht_pick, era_a)/n, "C": 100*arm_acc(lht_pick, era_c)/n, "C_time": arm_time(lht_pick)},
-            "online": {"C": 100*sum(decisions)/n, "C_time": online_time},
+            "online": {"C": 100*sum(final_seg)/n, "C_time": online_time, "C_time_finalpass": sum(stream_reject[-n:])/n},
         },
         "recovery_curve": decisions,
     }
