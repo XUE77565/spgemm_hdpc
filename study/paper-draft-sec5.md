@@ -1,139 +1,175 @@
-# Paper §5: Signature Routing (Draft)
+# Paper §5: Physics-Informed Adaptive Routing (Draft v2, 11-02)
 
-## 5. Cost-Calibrated Signature Routing
+> 重写说明:原版=S4 查表时代;本版整合 11-02 全部实验
+> (分层测绘/AI Router v3/漂移四臂/C 部署/held-out 40)。
+> 主张纪律:不 claim "AI 比 if-else 准";不 claim 首次行级路由;
+> 不 claim regret 界(无探索项);分数贡献归 §3-§4 的刀,本节主张可维护性。
+
+## 5. Physics-Informed Adaptive Routing
 
 ### 5.1 The Routing Problem
 
-SpGEMM systems deploy multiple kernel variants (hash-based accumulators with
-different table sizes, dense direct-addressing, sort-based approaches). The
-routing problem—deciding which variant serves which population—is traditionally
-solved with hand-tuned thresholds calibrated by trial and error. We propose
-replacing these with **automatically generated routing tables** derived from
-calibration measurements.
+SpGEMM systems deploy multiple kernel families (hash accumulators with
+ladder-scaled tables, dense direct addressing, merge-based). The routing
+problem—deciding which variant serves which matrix and which row
+population—is traditionally solved with hand-tuned thresholds. On a fixed
+benchmark, hand-tuning can always reach near-oracle performance; the cost is
+weeks of expert labor, and the result is **brittle**: when kernels evolve,
+calibrated answers silently expire (§5.5 measures this).
 
 Our routing architecture operates at three levels:
 
-- **Level 1 (Method)**: The adaptive dispatcher selects hash, dense, or merge3
-  based on matrix-level features (density, size, estimated output density).
+- **Level 1 (Method)**: the adaptive dispatcher (a trained logit) selects
+  hash, dense, or merge3 from matrix-level features.
+- **Level 2 (Population)**: within the hash method, per-bin selection
+  determines table size, accumulator kernel, and extraction strategy per
+  estimated-output-length bin.
+- **Level 3 (Build)**: per-file compilation tier selection (compute_61 vs
+  native sm_90, §4)—a routing dimension we discovered.
 
-- **Level 2 (Bin variant)**: Within the hash method, per-bin kernel selection
-  determines which hash table size, accumulator type, and compilation tier
-  serves each population bin. This is the level addressed by our routing table.
+A key architectural principle is the separation of the **variant menu**
+(code, human-registered) from the **decision logic** (model-generated,
+automatically regenerated).
 
-- **Level 3 (Row adaptive)**: Within-kernel per-row decisions (e.g., lane
-  allocation based on B-row length). We validate the concept but demonstrate
-  that the batched kernel is already near hardware limits (§5.3).
+### 5.2 Where Routing Matters: A Layered Survey
 
-A key architectural principle is the separation of **variant menu** (code,
-human-registered) from **decision table** (model-generated, automatically
-regenerated). Adding a new kernel variant requires only registering it in the
-menu and re-running calibration—no manual threshold tuning.
+Before building a learned router, we measure **where routing has headroom**.
+We ablate 8 sub-switch routing points (kernel-variant toggles within the
+hash method) on 66 matrices, two options each (658 paired measurements),
+and compare per-matrix oracle routing against the best *fixed* choice:
 
-### 5.2 Signature Dimensions
-
-We identify the per-row signature dimensions that capture routing-relevant
-population characteristics:
-
-| Dimension | Computation | Cost |
+| Decision layer | Best fixed option achieves | Routing headroom |
 |---|---|---|
-| est (estimated distinct outputs) | MinHash / flop-based | Already computed |
-| maxbl (max B-row length) | Per-row reduction | Already computed |
-| dup ratio (flop / est) | Derived | Zero |
-| span (column range) | Per-row reduction | Already computed |
+| Method/variant combos (4 options) | 51% of oracle decisions | **real headroom** |
+| bin4/5 kernel (hash_heavy vs LHT) | 100% (total-time 1.000×) | none |
+| bin9 kernel (prime table vs LHT14) | 60% (small sample) | marginal |
+| compact strategy (sorted copy vs csort) | 90% | ~none |
+| est expansion (1.15 vs 1.4) | 89% | cliff-only |
+| block ladder / csort / flat / lht23 | ~100% | none |
 
-These are packaged into a 4-byte per-row signature, making routing decisions
-available at zero additional memory traffic cost.
+Two findings:
 
-**Validation (S0).** We verify that the est dimension separates winning from
-losing populations: matrices where the bin9 variant underperforms have median
-row-level flop ≈ 15, while benefiting matrices have ≈ 49 (crossover band 15–49).
-Critically, the max B-row length hypothesis is falsified—both populations have
-identical maxbl distributions (median ≈ 8).
+1. **Sub-switch defaults are near-oracle** (0.7% total headroom): any
+   model with <100% accuracy necessarily loses to a fixed rule here.
+   The correct engineering response is to *freeze* these as mechanisms,
+   not to route them.
+2. **Mis-routing stakes are extremely uneven**: the est-expansion cliff
+   (overflow → retry storm) reaches 30× on affected matrices, while most
+   other points cost ≤1.3×. To our knowledge this stakes map of the
+   SpGEMM routing space has not been published.
 
-### 5.3 Why Fixed Geometry Changes Fail
+### 5.3 Three Generations of Decision Logic
 
-A natural hypothesis is that changing kernel geometry (e.g., reducing lane count
-from 32 to 16 for short B-rows) would improve utilization. We test this with
-a multi-row-per-warp kernel variant (`multirow<HT,RPW>`):
+**Generation 1 — hand-tuned gates** (weeks of trial-and-error; the
+deployed defaults). **Generation 2 — calibration tables** (470-matrix
+calibration → 27-cell signature grid → lookup; held-out gap only +0.6%,
+proving the hand gates were near-optimal and generalizable). Both are
+**static**: they encode the kernel library as it existed at calibration
+time.
 
-**Result: Ratio = 1.000 across all configurations.** On 16 synthetic uniform
-matrices and 3 real matrices (3-run interleaved, median), the multirow variant
-shows zero improvement over the standard batched kernel.
+**Generation 3 — physics-informed cost model with online updates.** For
+each decision point and option we predict
 
-The root cause is revealed by phase ablation: the hash insertion phase
-(CAS + atomicAdd on shared memory) accounts for **71.7%** of kernel time,
-extraction 23.2%, and table initialization 5.2%. The per-row work (33-55
-products for bin0) is sufficient to saturate a warp regardless of B-row
-length. Three optimization attempts targeting the insertion phase (read-first
-probing, warp aggregation, B-row prefetch) all produce **negative results**
-(+71%, equivalent, +109% respectively), confirming the kernel operates near
-hardware limits.
-
-**This is the key evidence for routing over kernel modification**: since
-fixed-geometry changes cannot improve performance, the only viable optimization
-is routing populations to different existing kernels.
-
-### 5.4 Calibration and Decision Table Generation
-
-We calibrate the routing table using 509 training points (356 real matrices
-from our benchmark suite + 153 synthetic matrices with controlled signatures):
-
-**Calibration protocol:**
-1. For each matrix, run with 3 variant configurations (H69 off, H45/H55 off,
-   all off) plus the baseline (from confirm measurements).
-2. Record compute-only time (TOTAL - h2d - d2h) and bin population.
-3. Partition the signature space into cells (bin9_fraction × bin45_fraction ×
-   matrix_size, each with 3 levels = 27 possible cells).
-4. For each cell, determine the optimal variant by majority vote.
-
-**Key finding:** The calibration confirms that the current default configuration
-(H69=1, H45=1) is optimal for 70% of the population—the largest cell
-(none_high_medium, n=144) votes 70% in favor of the current defaults. This
-transforms the hand-tuned gates from "we tried it and it worked" to "we measured
-470 matrices and this configuration is optimal."
-
-### 5.5 Production Integration
-
-The routing table is integrated as a compile-time lookup function called once
-per matrix at the top of `hash_product()`, before any GPU kernel launches:
-
-```c
-// Compute signature from bin population
-int b9_level = (bin9_frac < 0.01) ? 0 : (bin9_frac < 0.3) ? 1 : 2;
-int b45_level = (bin45_frac < 0.01) ? 0 : (bin45_frac < 0.3) ? 1 : 2;
-int size_level = (total_rows < 10000) ? 0 : (total_rows < 1000000) ? 1 : 2;
-route_cfg_t cfg = routing_table_lookup(b9_level, b45_level, size_level);
+```
+cost(option | x) = phys(x) + (w·x̄ + b)
 ```
 
-The overhead is negligible (host-side integer comparisons, executed once).
-An environment variable (`RTABLE=0`) provides an escape hatch to the
-previous hand-tuned behavior.
+where `phys(x)` is a closed-form roofline model (table clear × occupancy,
+insert atomics, extraction scan, HBM traffic—computed from hardware
+constants) and `w·x̄+b` is a linear residual on standardized features
+(14 dimensions: log-size, density, bin population fractions, est
+quantiles, interactions), trained supervised on paired ablation data.
 
-### 5.6 Three-Layer Evaluation
+The design is matched to four constraints that rule out alternatives:
+(i) **sample efficiency**—80 matrices suffice (each option has ~15
+parameters; tree ensembles starve at this size); (ii) **extrapolation**—
+physics holds outside the training range, trees clamp to leaf values;
+(iii) **drift adaptation**—online SGD after every run (§5.5), where
+offline-trained models expire; (iv) **zero deployment tax**—host-side,
+~50 ns per decision, no GPU changes. Cold-start (no data) degrades
+gracefully to the physics prior.
 
-We evaluate generalization using a three-layer protocol:
+### 5.4 Kernel Evolution Invalidates Static Routing (Measured)
 
-| Layer | Data | GM (routing table) | GM (hand-tuned) | Gap |
-|---|---|---|---|---|
-| Training | 356 matrices | 0.8077 | 0.7944 | +1.7% (noise) |
-| Held-out | 72 matrices | 0.8808 | 0.8616 | +2.2% (noise) |
-| **Generalization gap** | — | **+0.0731** | **+0.0672** | **+0.0059** |
+Our own kernel history provides a controlled drift experiment. We keep
+two binaries from a compile-layer campaign (§4) plus current production:
 
-**Key finding:** The held-out generalization gap (6.7%) exists for both
-routing-table and hand-tuned configurations, and is attributable to population
-difficulty (held-out matrices are from harder families: graph, CFD, mesh).
-The routing table adds only **0.6%** additional gap—within noise. This
-confirms that the calibration generalizes and does not overfit to the
-training set.
+| Era | Binary | bin4/5 optimal (14 matrices, paired) |
+|---|---|---|
+| A (Oct 27) | native sm_90 build | LHT wins 12/14 |
+| B (Oct 27) | compute_61 build | LHT wins 12/14 |
+| C (Oct 30) | production (per-file + knives) | **hash_heavy wins 13/14** |
 
-### 5.7 Value Proposition
+Three days of kernel evolution (ordered direct-write, sorted copy,
+variant promotion) **flipped the optimal routing on 13/14 matrices**.
+A static table calibrated in era A collapses when era C arrives:
 
-The routing table achieves **equivalent performance** to hand-tuned gates.
-Its value is not speed but principled methodology:
+| Arm | Era-A accuracy | Era-C accuracy | Era-C time regret |
+|---|---|---|---|
+| Static table (calibrated era A) | 100% | **14%** | 1.128× |
+| always hash_heavy | 14% | 100% | 1.000× |
+| always LHT | 86% | 0% | 1.130× |
+| **Online model** (era-A prior, era-C stream) | — | **86%** | **1.009×** |
 
-1. **Measurement provenance**: Every routing decision has a calibration source.
-2. **Automatic regeneration**: When kernels change, re-run calibration (~30
-   minutes) to generate updated tables—no manual re-tuning.
-3. **Verified generalization**: Held-out evaluation confirms no overfitting.
-4. **Confirmation of near-optimality**: The hand-tuned gates were already
-   near-optimal, which is itself a validated finding.
+The online model—initialized with the era-A prior and updated by SGD on
+the era-C observation stream—recovers within two passes (57% → 86% →
+86%). **Stale routing costs 12.8% fleet-wide; the adapting model costs
+0.9%.** Static approaches in prior work (IA-SpGEMM, Wang et al., offline
+ML in FlexSpGEMM) structurally cannot run this experiment: their kernels
+do not change.
+
+*Engineering note.* The first execution of this experiment produced a
+false negative (29% recovery): unstandardized interaction features
+(magnitude ~170) saturated the clipped error on both options, freezing
+the relative update. The failure mode—instrument saturation masking the
+mechanism—recurs across our campaign and is worth documenting.
+
+### 5.5 Deployment
+
+The router is integrated at the top of `hash_product()` as an opt-in
+path (`AIROUTER=1`; default off): features are assembled from bin
+populations already computed by the pipeline (zero extraction cost),
+costs predicted per decision point, and defaults overridden only when
+the predicted win exceeds 5% (**confidence gating**: worst case is
+exactly the hand-tuned default). On a three-matrix sanity A/B the
+overhead is indistinguishable from noise (ratios 1.012 / 1.008 / 1.000),
+and the model's prediction matches measured ground truth where checked
+(e.g., af_shell1: predicted hash_heavy 2.31 < LHT 2.51 in log₂-ms;
+measured 7.80 vs 8.55 ms).
+
+### 5.6 Generalization on Unseen Matrices
+
+We pre-register a held-out protocol before running: 213 on-disk matrices
+never touched by any router data pool, filtered by the sealed size rule
+(nnz ≥ 1e5 or dim ≥ 1e4), evenly sampled to 40 (selection rule fixed
+before measurement). Result: 38/40 exercise the hash path; the gated
+router **flips zero defaults**; paired ratio geomean 1.013 (t = 0.94 vs
+1.0, not significant—the two configurations execute identical kernels).
+
+**Interpretation.** The *lower bound* is proven: on unseen matrices the
+router falls back to defaults with zero regression and zero overhead—
+the conservative design holds. The *upper bound* (router beats
+hand gates on unseen matrices) is **not tested by this set**: all 40
+are small (0.3–2.5 ms) with negligible bin4/5/9 populations—the
+decision points barely exist. Testing the upper bound requires large
+unseen matrices; the external download remains blocked, and we report
+this as a limitation rather than extrapolating.
+
+Combined with §5.4, the complete claim is: **no evidence → safe
+fallback to defaults; evidence + kernel drift → online adaptation
+recovers near-optimal routing with no human re-calibration.**
+
+### 5.7 What We Do and Do Not Claim
+
+We claim: (1) the layered survey of routing headroom and stakes;
+(2) measured decision drift under kernel evolution and its automation
+cost (12.8% vs 0.9%); (3) a deployable, zero-tax, confidence-gated
+router with proven safe fallback; (4) calibration methodology that
+replaced weeks of hand-tuning with one measurement pass.
+We do not claim: that learned routing beats hand-tuned gates on the
+tuning benchmark (sub-switch defaults are near-oracle there—§5.2 shows
+this is structural); first row-level routing (hybrid per-row formats
+date to SpMV work in 2009); or formal regret bounds (the update is
+greedy; ε-exploration is future work). The performance score of the
+system comes from the kernel and compilation contributions of §3–§4;
+this section contributes maintainability and adaptivity.
