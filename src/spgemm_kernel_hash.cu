@@ -4398,10 +4398,7 @@ static void launch_csort_counting(int n, const int *rows_ptr, const long long *d
 static void launch_cs8192(int n, const int *rows_ptr, const long long *d_off, const int *d_row_nnz,
                           const int *dC_rp, const unsigned long long *k, const double *v,
                           int *dC_ci, double *dC_val) {
-    static int g_cs1024 = -1;
-    if (g_cs1024 < 0) { const char *e = getenv("CS1024"); g_cs1024 = (e && *e && atoi(e) > 0) ? 1 : 0; }
-    if (g_cs1024) launch_csort_counting<1024, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);
-    else          launch_csort_counting<512, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);
+    launch_csort_counting<512, 8192>(n, rows_ptr, d_off, d_row_nnz, dC_rp, k, v, dC_ci, dC_val);
 }
 
 // 刀16b:bin8 按真 d 劈双 CAP(d_row_nnz 排序时已知)——d≤4096 走 <512,4096>(60KB→3块/SM=75%占用,
@@ -5038,28 +5035,6 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                     if (g_lht < 0) { const char *e = getenv("HASH_LHT"); g_lht = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1; }   // 09-24 用户授权翻默认:bins4-9 常量折叠;HASH_LHT=0 逃生门
                     static int g_lht23 = -1;
                     if (g_lht23 < 0) { const char *e = getenv("HASH_LHT23"); g_lht23 = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 0; }   // 刀A(study/57 tick2):bins2-3 常量折叠扩展;默认 0=现行为逐位
-                    static int g_ocnk = -1;   // 刀E6/E7(study/57 §三十三/四十一):ocean hashNumeric 字面移植;=1 bin4 替换;=2 bin4+bin5 全 hash 人口替换(整路线单元实验)
-                    if (g_ocnk < 0) { const char *e = getenv("HASH_OCNK"); g_ocnk = (e && *e) ? atoi(e) : 0; }
-                    static int g_b5to6 = -1;   // 刀A3α(study/57 §三六,A1曲面):bin5→bin6 配置——d384-512 带 ht1024 LF 税 18-40%,argmin=ht2048@512T(=g_blk_lad[6]);默认关
-                    if (g_b5to6 < 0) { const char *e = getenv("HASH_B5TO6"); g_b5to6 = (e && *e) ? atoi(e) : 0; }
-                    static int g_b4pack = -1;   // 刀C3(study/57 §十七):bin4 多行封包内核(warp 私有表,36 行/SM vs 8);默认关
-                    if (g_b4pack < 0) { const char *e = getenv("HASH_B4PACK"); g_b4pack = (e && *e) ? atoi(e) : 0; }
-                    if (g_ocnk >= 1 && (bi == 4 || (g_ocnk >= 2 && bi == 5))) {
-                        const size_t osmem = 4 * sizeof(unsigned) + (size_t)(((673 + 1) / 2 * 2)) * sizeof(unsigned) + (size_t)673 * sizeof(double) + 4 * sizeof(unsigned);
-                        ocean_hash_kernel<7, 673, true, long long><<<n, 128, osmem, cur_s>>>(
-                            dA_rp, dA_ci, dA_val, A_rows, A_cols, 0,
-                            dB_rp, dB_ci, dB_val, A_rows, A_cols, 0,
-                            d_flop, d_maxbl, rows_ptr, n, d_off,
-                            d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, 0);
-                        CHECK_CUDA(cudaGetLastError());
-                    } else
-                    if (g_b4pack && bi == 4 && probe_rf_on() && !d_phist && !g_wm && !g_llb) {
-                        hash_spa_packed_kernel<512><<<(n + 3) / 4, 128, 0, cur_s>>>(
-                            dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
-                            rows_ptr, n, d_off, d_est,
-                            d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf);
-                        CHECK_CUDA(cudaGetLastError());
-                    } else
                     if (g_lht && bi >= (g_lht23 ? 2 : 4) && bi <= 9 && probe_rf_on() && !d_phist && !g_wm) {
                     static int g_probe2 = -1;   // 刀D1(study/57 §十八):熔断换位(per-k 余量检查+wrap 守卫,消每探测步计数器);默认关=原形态逐位
                     if (g_probe2 < 0) { const char *e = getenv("HASH_PROBE2"); g_probe2 = (e && *e) ? atoi(e) : 0; }
@@ -5073,23 +5048,7 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                         else if (bi == 3) { if (g_probe2) SPA_LAUNCH_LHT2(8, 1); else SPA_LAUNCH_LHT2(8, 0); }
                         else if (bi == 4) { if (g_probe2) SPA_LAUNCH_LHT2(9, 1); else SPA_LAUNCH_LHT2(9, 0); }   // ht=32<<bi=2^(bi+5):LOG_HT=log2(ht)
                         else if (bi == 5) {
-                            if (g_b5to6) {   // 刀A3α:bin5 行按 bin6 配置(LHT11=ht2048 @ g_blk_lad[6]=512T)发射;compact 路径不变(extract 有序)
-                                int hb6 = g_blk_lad[6];
-                                size_t sm6 = (size_t)2048 * (sizeof(int) + sizeof(double)) + (g_extract2 ? 3 * 1024 * sizeof(int) : 0);
-                                if (g_probe2) hash_spa_kernel<0,1,0,0,11,0,1,0,HASH_TB><<<n, hb6, sm6, cur_s>>>( \
-        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
-        rows_ptr, n, 2048, d_off, \
-        d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
-        d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
-        g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, 0, nullptr);
-                                else hash_spa_kernel<0,1,0,0,11,0,0,0,HASH_TB><<<n, hb6, sm6, cur_s>>>( \
-        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, \
-        rows_ptr, n, 2048, d_off, \
-        d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
-        d_flop, d_maxbl, g_llb, nullptr, nullptr, nullptr, d_rt, nullptr, nullptr, \
-        g_force_logG, g_uo_x, dB16, g_wm, nullptr, g_rt_nox, g_extract2, 0, nullptr);
-                            }
-                            else { if (g_probe2) SPA_LAUNCH_LHT2(10, 1); else SPA_LAUNCH_LHT2(10, 0); }
+                            if (g_probe2) SPA_LAUNCH_LHT2(10, 1); else SPA_LAUNCH_LHT2(10, 0);
                         }
                         else if (bi == 6) { if (g_probe2) SPA_LAUNCH_LHT2(11, 1); else SPA_LAUNCH_LHT2(11, 0); }
                         else if (bi == 7) { if (g_probe2) SPA_LAUNCH_LHT2(12, 1); else SPA_LAUNCH_LHT2(12, 0); }
@@ -5378,8 +5337,6 @@ static void hash_product(
         // total_est 用投影值覆写(uc 路由的 dup 信号保持诚实)。非 dense → 回全量 merge,代价 =
         // 采样 merge(~5% 量)+1 次 D2H。A_rows≥1000 保证 规模门必走矩阵级分支(est_d≥投影 →
         // est_d×20<total_est 恒假),d_est 膨胀值不会漏进任何布局消费者。
-        static int g_mhsamp = -1;
-        if (g_mhsamp < 0) { const char *e = getenv("MHSAMP"); g_mhsamp = (e && *e) ? atoi(e) : 0; }
         // 1a-1'(10-13):merge 行并行 R warp/块(MH_MERGE_R=1 = legacy 单 warp/块,A/B 用)。
         // ncu 病根:legacy 形态占用上限 50%(blocks/SM=32×1warp)、实测 10.4% —— 单 warp 的
         // 600-800ns 散射读无邻居遮蔽,SM 空转(Mem 3.95%/Comp 2.15% 双贴地);R=4 → 在飞 ×4。
@@ -5409,34 +5366,6 @@ static void hash_product(
         // 保留 1.4 松弛让欠估尾部消失;大矩阵是内存域 —— 1.15 紧 est,retry 摊薄可忽略。
         // (bcsstk30 教训:1.15 下 143 行欠估 → retry 0.74ms = 总预算 30%,1.76× 落后主因)
         int samp_stride = 0;
-        if (g_mhsamp && !pfuse && !att && A_rows >= MHSAMP_MIN_ROWS && A_cols > DENSE_MAX_N && A_cols <= DENSE_WIN_MAX_N_STRUCT) {
-            samp_stride = (A_rows + MHSAMP_SAMPLES - 1) / MHSAMP_SAMPLES;
-            int S = (A_rows + samp_stride - 1) / samp_stride;
-            prof("mh_merge", [&]{   // 采样 pass(紧凑 grid = S 块;计入 mh_merge 相位)
-                CHECK_CUDA(cudaMemset(d_est, 0, (size_t)A_rows * sizeof(int)));
-                mh_merge_launch((S + merge_r - 1) / merge_r, samp_stride, nullptr,
-                                g_rexp == 1 ? rexp_lo : 0.0, g_rexp == 1 ? rexp_hi : 0.0,
-                                g_rexp == 1 ? rexp_elo : 0, g_rexp == 1 ? rexp_ehi : 0, S);
-                CHECK_CUDA(cudaGetLastError());
-            });
-            long long s_sum = thrust::reduce(
-                thrust::make_transform_iterator(thrust::device_ptr<int>(d_est), ToLL()),
-                thrust::make_transform_iterator(thrust::device_ptr<int>(d_est + A_rows), ToLL()), 0LL);
-            est_projected = S > 0 ? (long long)((double)s_sum / S * A_rows) : -1;
-            double density = (double)est_projected / ((double)A_rows * A_cols);
-            if (est_projected < 0 || density < DENSE_MIN_FRAC) {
-                samp_stride = 0;   // 非 dense-注定:回全量(下方 stride=0 重算全部行)
-                est_projected = -1;
-                dbg("[%s] MHSAMP:投影密度 %.1f%% < %.0f%% → 回全量 merge\n", tag, density * 100, DENSE_MIN_FRAC * 100);
-            } else {
-                dbg("[%s] MHSAMP:投影密度 %.1f%%(Σ=%lld)→ dense-注定,免全量 merge(S=%d)\n",
-                    tag, density * 100, est_projected, S);
-                prof("mh_merge", [&]{   // est=min(flop,n) 全行填充(门专用;并入 mh_merge 相位)
-                    est_fill_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_flop, A_cols, d_est, A_rows);
-                    CHECK_CUDA(cudaGetLastError());
-                });
-            }
-        }
         if (samp_stride == 0) {
             prof("mh_merge", [&]{
                 mh_merge_launch((A_rows + merge_r - 1) / merge_r, 0, pfuse ? d_avg_gate : nullptr,
@@ -5999,15 +5928,12 @@ static void hash_product(
         // §25 密度门(DDENS,默认开):2×est < span 的档内行也并入老内核段 —— 结构内核成本
         //   ∝ span(窗扫描/位图前缀),老内核 ∝ est(乘积);est/span 稀疏行(c-43 族 0.34,
         //   in-2004 0.59)结构窗白扫 → c-43 count 2.15→~0.3 / numeric 1.26→0.80 实测定谳。
-        static int g_ddens = -1;   // §25 密度门(默认关:in-2004 定谳 —— 档内稀疏行进老内核反 +28ms,
-        if (g_ddens < 0) { const char *e = getenv("DDENS"); g_ddens = (e && *e) ? atoi(e) : 0; }  // 老内核成本含 a_len 维,密度单维不构成判据;代码留档)
         static int g_alen_old = -1;   // §26 a_len 门(v34 翻默认开,×5 中位电池背书:c-43 −4.0/in-2004
         if (g_alen_old < 0) { const char *e = getenv("ALEN_OLD"); g_alen_old = (e && *e) ? atoi(e) : 1; }  // −2.2/Zd/bbmat/std1/3dtube 噪声带;wb-edu/c-64/nd24k no-op 零 a_len≤32 档内行)
         auto tier_key = [&](int k_row) {
             int s = h_sp[k_row];
             int t = 0; while (t < DENSE_TIER_COUNT && s > dense_tier_max(t)) t++;
             if (g_alen_old && t < DENSE_TIER_COUNT && h_alen[k_row] <= WARP_SIZE) t = DENSE_TIER_COUNT;   // §26 短链行 → 老内核段
-            if (g_ddens && t < DENSE_TIER_COUNT && 2 * (long long)h_est[k_row] < (long long)s) t = DENSE_TIER_COUNT;   // (§25 密度门,默认关)
             return t;
         };
         // D3(T7c,env D3EXP 默认关):低 dup 短 a_len merge 核人口抽取(pre2 型载体;
@@ -6365,26 +6291,7 @@ static void hash_product(
                 }
                 // docs/70 §6②(D5B=1 ∧ D5H=1):合格行(span≤8×est ∧ 位图装得下)的 count 走
                 // 位图(免 CAS 探测),其余行仍 hash_spa<1>(带跳过谓词)。逐 bin 双 launch 各司其职。
-                static int g_d5b = -1;
-                if (g_d5b < 0) { const char *e = getenv("D5B"); g_d5b = (e && *e) ? atoi(e) : 0; }
                 const int *skip_e = nullptr, *skip_s = nullptr;
-                if (g_d5b) {
-                    skip_e = d_est; skip_s = d_span_len;
-                    int *d_es = decltype(d_es)(dev_alloc(n * sizeof(int)));
-                    elig_span_kernel<<<(n + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(rows_ptr, n, d_est, d_span_len, BCNT_SPAN_MAX_BITS, d_es);
-                    int hmax = 0;
-                    auto mx = thrust::max_element(thrust::device_ptr<int>(d_es), thrust::device_ptr<int>(d_es + n));
-                    CHECK_CUDA(cudaMemcpy(&hmax, mx.get(), sizeof(int), cudaMemcpyDeviceToHost));
-                    dev_free(d_es);
-                    if (hmax > 0) {
-                        size_t bsm = (size_t)((hmax + 31) / 32) * sizeof(unsigned) + 8;
-                        CHECK_CUDA(cudaFuncSetAttribute(hash_row_bcnt_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bsm));
-                        hash_row_bcnt_kernel<<<n, HASH_BLOCK_STRUCT, bsm>>>(   // 小行位图:256T 块(1024T 的块开销反主导,首测 +7~18% 教训)
-                            dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows, A_cols,
-                            rows_ptr, n, d_est, d_span_lo, d_span_len, d_row_nnz, 1, (int)(bsm / 4));
-                        CHECK_CUDA(cudaGetLastError());
-                    }
-                }
                 if (probe_rf_on())
                     hash_spa_kernel<1,1><<<n, HASH_BLOCK, smem_flat>>>(
                         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri,
@@ -7423,17 +7330,6 @@ static void hash_product(
                         // 刀D1(09-30 审计):同行集实测彼 512T 在 span3636-7277 带赢我 1024T 15-19%,
                         // 256T 在 1818-3636 带赢 1.67×;§22c"块宽无差"定谳系矩阵级噪声口径,作废。
                         // tier3→256/tier4→512(巨鲸 tier5 保 1024 = 我方唯一占优带);env D1TIER。
-                        static int g_d1tier = -1;
-                        if (g_d1tier < 0) { const char *e = getenv("D1TIER"); g_d1tier = (e && *e && atoi(e) > 0) ? 1 : 0; }
-                        if (g_d1tier) {
-                            size_t sm_b = (size_t)uwin * 9 + 256;   // ≈SMEM/块(val8+bitmap1+杂)
-                            int fit = (int)((SMEM_DEFAULT_MAX - SMEM_STATIC_HEADROOM) / sm_b); if (fit < 1) fit = 1;
-                            if (fit > 2048 / 64) fit = 2048 / 64;
-                            int want = 2048 / fit;                  // 满占用的块宽
-                            if (want > 1024) want = 1024;
-                            if (want < 128) want = 128;
-                            if (want < tblk) tblk = want;           // 只降不升(巨鲸 1024 保)
-                        }
                         // spec90-候选2 二维梯解耦(D2TIER=1):工作量轴覆写——tier 行群均 est 低
                         // (轻行,车道需求小)→降块宽换块数;est 高(重行)保持 span 档默认。
                         static int g_d2tier = -1;
