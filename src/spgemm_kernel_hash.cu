@@ -4904,28 +4904,6 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                     // spec92-A:行群 a_len 选宽(结构条件禁阵身份)——bins6-7(512T 自然档)行群平均
                     // a_len ≥ WSEL_ALEN_THR(默认 48=1024T/32 组的裕量)时升 1024T:大 a_len 行
                     // (crankseg 209)块宽=行并行度;小 a_len 行(in-2004 24<32 组)升宽=空组纯亏。
-                    static int g_wsel = -1, g_wsel_thr = 48;
-                    if (g_wsel < 0) {
-                        const char *e = getenv("HASH_WSEL");
-                        g_wsel = (e && *e && atoi(e) > 0) ? 1 : 0;
-                        const char *t = getenv("WSEL_ALEN_THR");
-                        if (t && *t) g_wsel_thr = atoi(t);
-                    }
-                    if (g_wsel && bi >= 6 && bi <= 7 && hblk < 1024) {
-                        static unsigned long long *d_wsum = nullptr;
-                        if (!d_wsum) { d_wsum = decltype(d_wsum)(dev_alloc(sizeof(unsigned long long)));
-                                       CHECK_CUDA(cudaMemset(d_wsum, 0, sizeof(unsigned long long))); }
-                        CHECK_CUDA(cudaMemsetAsync(d_wsum, 0, sizeof(unsigned long long), cur_s));
-                        bin_alen_stat_kernel<<<(n + 255) / 256, 256, 0, cur_s>>>(dA_rp, rows_ptr, n, d_wsum);
-                        unsigned long long sum_al = 0;
-                        CHECK_CUDA(cudaMemcpyAsync(&sum_al, d_wsum, sizeof(unsigned long long), cudaMemcpyDeviceToHost, cur_s));
-                        CHECK_CUDA(cudaStreamSynchronize(cur_s));
-                        int mean_al = n > 0 ? (int)(sum_al / n) : 0;
-                        if (mean_al >= g_wsel_thr) {
-                            hblk = 1024;
-                            dbg("[%s] WSEL bin %d: mean_a_len=%d ≥ %d → 1024T\n", tag, bi, mean_al, g_wsel_thr);
-                        }
-                    }
                     // read-first 探测已并入 hash_spa_kernel 本体(PROBE_RF 模板参;逃生门 HASH_PROBE_RF=0)
                     // (g_uo_x/g_rt_nox/g_wm/g_force_logG 已上提至 VG 分支前共用,spec91 刀E)
                     // spec91 ①:仪器态(d_phist≠null)单独实例化 PROBE_HIST_ON=1,生产路径零探测计数指令
@@ -5939,35 +5917,6 @@ static void hash_product(
         // D3(T7c,env D3EXP 默认关):低 dup 短 a_len merge 核人口抽取(pre2 型载体;
         // 谓词=a_len∈[1,32]∧est∈[256,4096]∧span≤16384——pre2 est 662-1282 全入,
         // c-64 型(est 16K)/in-2004 中带(est 4.4K)排除)
-        static int g_d3exp = -1;
-        if (g_d3exp < 0) { const char *e = getenv("D3EXP"); g_d3exp = (e && *e && atoi(e) > 0) ? 1 : 0; }
-        if (g_d3exp) {
-            std::vector<int> d3list;
-            for (int q2 = 0; q2 < dense_nr; q2++) {
-                int r2 = h_dense[q2];
-                int al2 = h_alen[r2];
-                if (al2 >= 1 && al2 <= 32 && h_est[r2] >= 256 && h_est[r2] <= 4096 && h_sp[r2] <= 16384)
-                    d3list.push_back(r2);
-            }
-            if (!d3list.empty()) {
-                // 重排 h_dense:非 D3 在前(保序)
-                std::vector<int> keep;
-                for (int q2 = 0; q2 < dense_nr; q2++) {
-                    int r2 = h_dense[q2];
-                    int al2 = h_alen[r2];
-                    bool d3 = (al2 >= 1 && al2 <= 32 && h_est[r2] >= 256 && h_est[r2] <= 4096 && h_sp[r2] <= 16384);
-                    if (!d3) keep.push_back(r2);
-                }
-                int w = (int)keep.size();
-                for (int q2 = 0; q2 < w; q2++) h_both[dense_nr + q2] = keep[q2];   // h_dense=h_both+n 段,写母数组
-                dense_nr = w;
-                d_d3_rows = decltype(d_d3_rows)(dev_alloc(d3list.size() * sizeof(int)));
-                CHECK_CUDA(cudaMemcpyAsync(d_d3_rows, d3list.data(), d3list.size() * sizeof(int), cudaMemcpyHostToDevice, (cudaStream_t)0));
-                d_d3_n = (int)d3list.size();
-                h_d3_n = d_d3_n;
-                dbg("[%s] D3EXP:merge 核人口 %d 行(梯子/direct 余 %d)\n", tag, d_d3_n, w);
-            }
-        }
         std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) { return tier_key(a) < tier_key(b); });
         int off = 0;
         for (int t = 0; t < DENSE_TIER_COUNT; t++) {
@@ -5990,35 +5939,6 @@ static void hash_product(
         }
         // T3 子分档(env T3EXP;默认关):档内行 span 升序 + 对半 → 子档窗=子档实际 max span
         // (低子档窗 ~50KB → 2r 块(两行)SMEM ~100KB → 2块×2行=4行/SM,=彼方水平)
-        static int g_t3exp0 = -1;
-        if (g_t3exp0 < 0) { const char *e = getenv("T3EXP"); g_t3exp0 = (e && *e && atoi(e) > 0) ? 1 : 0; }
-        if (g_t3exp0) {
-            int b = 0;
-            for (int t = 0; t < DENSE_TIER_COUNT; t++) {
-                int e = h_tier_end[t];
-                if (e - b >= 128) {
-                    std::stable_sort(idx.begin() + b, idx.begin() + e,
-                                     [&](int x, int y){ return h_sp[x] < h_sp[y]; });
-                    int mid = b + (e - b) / 2;
-                    int w0 = 0, w1 = 0;
-                    for (int k = b; k < mid; k++) w0 = w0 > h_sp[idx[k]] ? w0 : h_sp[idx[k]];
-                    for (int k = mid; k < e; k++) w1 = w1 > h_sp[idx[k]] ? w1 : h_sp[idx[k]];
-                    h_t3_end[t*2] = mid;   h_t3_w[t*2] = w0;
-                    h_t3_end[t*2+1] = e;   h_t3_w[t*2+1] = w1;
-                } else {
-                    // 空档或小段:终点必须=当前基址 b(留 0 会把发射侧 off 重置回 0 →
-                    // 后续子档从行表头重复处理错误行=T3 首轮 18.65M 错位真凶)
-                    h_t3_end[t*2] = e; h_t3_end[t*2+1] = e;
-                    if (e > b) {
-                        int w0 = 0;
-                        for (int k = b; k < e; k++) w0 = w0 > h_sp[idx[k]] ? w0 : h_sp[idx[k]];
-                        h_t3_w[t*2] = w0;
-                    }
-                }
-                b = e;
-            }
-            dbg("[%s] T3 子分档 armed\n", tag);
-        }
         h_tier_hmax = 0;                       // 档内段最大 span(档内非 span 序,取段内 max)
         for (int k = 0; k < off; k++) h_tier_hmax = h_tier_hmax > h_sp[idx[k]] ? h_tier_hmax : h_sp[idx[k]];
         {   // §26 per-tier 窗宽自适应:窗 = 该档段内【实际】最大 span(非档上限)—— 段内每行
@@ -7285,39 +7205,8 @@ static void hash_product(
                         dense_struct_numeric_kernel<1024><<<big_off, 1024, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
                         dbg("[%s]   §22c 单档:%d 行(窗 %d 块宽 %d)\n", tag, big_off, uwin, tblk);
                     }
-                } else if (getenv("T3EXP") && atoi(getenv("T3EXP")) > 0) {
-                    // T3:两行共块 + 子分档(每子档一发射;grid=(n+1)/2;SMEM=2×半区)
-                    int off = 0;
-                    for (int t = 0; t < DENSE_TIER_COUNT * 2; t++) {
-                        int nr_t = h_t3_end[t] - off;
-                        int tier = t >> 1;
-                        int tblk0 = dense_tier_block(tier);
-                        if (nr_t > 0 && tblk0 < 256) {
-                            // T3 修复#1:小档(tblk<256)不走 2r(块宽<模板 TPB → half1 行被丢)
-                            // → 单行原 kernel 兜底(人口小:in-2004 共 ~200 行)
-                            int uwin0 = h_t3_w[t] > 0 ? h_t3_w[t] : dense_tier_max(tier);
-                            size_t nsm0 = (size_t)uwin0 * 8 + (((size_t)uwin0 + 31) >> 5) * 4 * 2;
-                            if (tblk0 <= 64) dense_struct_numeric_kernel<64><<<nr_t, 64, nsm0>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin0, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
-                            else dense_struct_numeric_kernel<128><<<nr_t, 128, nsm0>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, d_span_lo, d_span_len, uwin0, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
-                            CHECK_CUDA(cudaGetLastError());
-                            off = h_t3_end[t]; continue;
-                        }
-                        if (nr_t > 0) {
-                            int uwin = h_t3_w[t] > 0 ? h_t3_w[t] : dense_tier_max(tier);
-                            int tblk = tblk0;
-                            size_t half_bytes = (size_t)uwin * 8 + (((size_t)uwin + 31) >> 5) * 4 * 2;
-                            size_t nsm = half_bytes * 2;
-                            auto k2r = (tblk <= 256) ? dense_struct_numeric_2r_kernel<256>
-                                    : (tblk <= 512) ? dense_struct_numeric_2r_kernel<512>
-                                                    : dense_struct_numeric_2r_kernel<1024>;
-                            CHECK_CUDA(cudaFuncSetAttribute(k2r, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)nsm));
-                            k2r<<<(nr_t + 1) / 2, tblk, nsm>>>(dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows, d_rows_sorted + off, nr_t, d_span_lo, d_span_len, uwin, dC_rp, dC_ci, d_val, d_row_nnz, d_flop);
-                            CHECK_CUDA(cudaGetLastError());
-                            dbg("[%s]   T3 子档%d:%d 行(窗 %d 块宽 %d smem %zuKB 2r)\n", tag, t, nr_t, uwin, tblk, nsm / 1024);
-                        }
-                        off = h_t3_end[t];
                     }
-                } else {
+                 else {
                 int off = 0;
                 for (int t = 0; t < DENSE_TIER_COUNT; t++) {
                     int nr_t = tier_end_p[t] - off;
