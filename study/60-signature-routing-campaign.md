@@ -325,3 +325,15 @@ Compile.sh 目标 CUDA 11.8 / GCC 11;我方 CUDA 12.8 / GCC 13 的 AMX intrinsic
 (amxtileintrin.h __builtin_ia32_ldtilecfg 未定义)导致编译失败;尝试
 -ccbin/-Xcompiler/-mno-amx-tile 均无效。**跳过,论文 Related Work 概念对比
 (他们的 ML 路由+TC 混执 vs 我们物理交叉+编译层,选择空间正交)。**
+
+## FlexSpGEMM 复活翻案(11-10 晚,推翻 10-30"构建不兼容"定谳)
+- **根因**:PATH 走 nvcc 12.0,其 EDG 前端预解析宿主头文件(不吃 -Xcompiler 标志),GCC12 的
+  immintrin.h 无条件拉 amxtileintrin.h→__builtin_ia32_sttilecfg 未定义;**与 FlexSpGEMM 代码无关**
+  (现树 src/common.h 只有 immintrin+-mfma,无 AMX 依赖)。
+- **钥匙**:`/usr/local/cuda-12.8/bin/nvcc`(盘上闲置;12.8 EDG 原生支持 GCC12/13 头)。
+  `PATH=/usr/local/cuda-12.8/bin:$PATH make -C src NVCC_ARCH='-arch=sm_90' CUDA_INSTALL_PATH=/usr/local/cuda-12.8 OPTIONS='-D CHECK_RESULT=1'` 一次通过→src/test(3MB)。
+- **烟测**(1138_bus,卡0):NNZ/行指针/列值三查全过(nnz=11142 与我方逐位同),自带 vs cuSPARSE 68.55×(微阵口径仅参考)。
+- **含义**:Paper A 骨架"缺失项1 FlexSpGEMM 基线(TBD)"解除封锁;10-29 教训第三次应验——
+  证伪电池查不到从未旋的旋钮(编译器版本也是旋钮)。
+- **待办**:①口径对齐(计时定义/相位/warmup,铁律先行)②142 阵 AE 集 vs 我方 428 集分报
+  ③排队:428 收口 confirm 在卡1跑,基线全量跟其后(GPU 串行纪律)。
