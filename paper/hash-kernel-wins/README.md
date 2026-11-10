@@ -41,8 +41,8 @@
 
 ## 证据索引
 
-- 三刀规格+判决：`inno/hash_opt_2026/82-launch-bounds-c64-dense.md` / `83-launch-bounds-hashspa.md` / `84-csort-occupancy-design.md`
+- 三刀规格+判决：`study/legacy-inno/hash_opt_2026/82-launch-bounds-c64-dense.md` / `83-launch-bounds-hashspa.md` / `84-csort-occupancy-design.md`
 - 追平作战地图（v28→v34 全程）：仓库根 `76-us-vs-ocean-gap-analysis.md` §1-27
 - 机制对照（小白版）：仓库根 `77-us-vs-ocean-dense-hash-explained.md`
-- 08-25~26 首役（4.04× 起步）：`inno/hash_opt_2026/README.md` + 01-30 系列规格
+- 08-25~26 首役（4.04× 起步）：`study/legacy-inno/hash_opt_2026/README.md` + 01-30 系列规格
 - 相关工作定位：`study/23-harmonia-survey-20260918.md` §4/§6

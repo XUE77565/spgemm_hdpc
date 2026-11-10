@@ -1,61 +1,56 @@
-# APPT SpGEMM Challenge — Hash or Merge? Adaptive GPU Acceleration for SpGEMM
+# APPT SpGEMM Challenge — GPU 稀疏矩阵乘的自适应加速
 
-100 个 SuiteSparse 矩阵上的 SpGEMM(C = A·A 与 C = A·Aᵀ),NVIDIA H100 / CUDA C++。
-核心:**自适应 merge–hash dispatcher(Auto)**——按 h2d 阶段可读的特征(n / 列偏斜 σ / nnz²/n)
-逐阵选 merge 或 hash 累加路径,配 MinHash O(nnz) 输出尺寸估计。
+SuiteSparse 真实矩阵上的 SpGEMM(C = A·A 与 C = A·Aᵀ),NVIDIA H100 / CUDA C++。
+**当前认证分:428 阵并集 GM 0.8054**(相对基线整体快 ~20%,confirm16,二进制冻结)。
+体系 = 三形态内核族(hash 累积 / dense 直写 / merge3)× 三层路由(方法/人口/编译档)
+× 物理先验+学习残差的自适应路由器(AI Router,漂移自适应)。
 
-论文初稿见 `paper/DATE0822-1.pdf`,答辩讲稿 `paper/pre.md`(配 `paper/pre0729.pptx`)。
+## 新会话/久未跟进,从这四份开始
 
-## 目录结构
+1. **`study/61-ultimate-plan-v4.md`** — 终极计划 v4(总路线:打扫→判决→扩建→签名→收口)
+2. **最新 handoff**(study/handoff-*.md,取日期最大者)— 冻结区/已知雷/开工第一刀
+3. **`study/routing-decision-taxonomy.md`** — 132 个 env 旋钮的四类分类法
+4. **`paper/hash-kernel-wins/01-wins-ledger.md`** — 刀族总账(每把刀的出处与数字)
 
-| 目录 | 内容 |
-|---|---|
-| `src/` | CUDA 源码:`main.cu`(入口)、`spgemm_adaptive.cu`(dispatcher)、`spgemm_kernel_hash.cu`(hash SPA + MinHash)、`spgemm_merge.cu`(列域分桶 merge)、`spgemm_kernel_manual.cu`(ESC 基线)、`att_tiered.cu`(A·Aᵀ 三层实现)、`matrix_utils.cu`(mtx 读取)、`mempool.cu`(锁页/设备内存池) |
-| `include/` | 头文件 |
-| `test/` | `test_att_tiered.cu` 自生成阵正确性 + bench |
-| `scripts/` | 全部运行/对比/画图脚本(均可在任意 CWD 调用) |
-| `compare/` | 对比交付物。**稳定 CSV = `methods_cmp.csv`**(7 法 × 100 阵:cu/Auto/Ocean/opSparse/HSMU/dense/cublas);`aa(best1)/` = 论文引用的数据快照 + speedup 表 |
-| `fig/` | 论文/答辩图(`scripts/plot_*.py` 生成) |
-| `paper/` | 文章 PDF + 讲稿 + deck |
-| `data/` | 96+ 基准矩阵 `.mtx`(不入库) |
-| `ocean/` `spECK/` `nsparse/` `external_sota/` | 外部 SOTA 基线源码(不入库) |
+## 目录地图
 
-详细用法(单阵运行、环境变量、profiling)见 **USAGE.md**。
+| 目录 | 内容 | 入库 |
+|---|---|---|
+| `src/` | CUDA 源码。**冻结纪律:记分二进制的源,改动须过电池+confirm** | ✅ |
+| `papers/` | 参考论文 PDF(Harmonia / IA-SpGEMM / spECK) | ✅ |
+| `study/` | **主档案屋**:NN 编号战役档(01-61)+ 论文草稿/图 + `legacy-inno/`(07~10 月旧设计笔记 94 份)+ `report-1021/`(10-21 汇报材料)+ day-reports/ | ✅ |
+| `docs/` | 编号讲解文档(76-81,小白向:merge3/kernel 版图/PVD 等) | ✅ |
+| `paper/` | 论文工程:DATE 初稿、hash-kernel-wins 总账、创新点 | ✅ |
+| `fig/` | 旧论文/答辩图(plot_*.py 生成) | ✅ |
+| `scripts/` | 运行/对比/训练脚本(~158,`archive/` 已归档 38) | ✅ |
+| `tools/` | 测量台 .cu 源(realdata_bench / calib_station / phase_ablation 等;编译产物已 gitignore) | 源✅ |
+| `compare/` | 对比数据。**`batch437/` = 428 主账**(我方 confirm 链 + HSMU/TileSpGEMM 基线);`d1_oracle/` = L0 时代 2.6G 逐阵数据(活引用,不动) | ✅ |
+| `results/` | 实验产出(csv/json/日志) | ❌ gitignore |
+| `data/` | 基准矩阵 .mtx(96+;ocean337/first100 等) | ❌ |
+| `test/` `include/` | 自生成阵测试 / 公共头 | ✅ |
+| `ocean/` `spECK/` `nsparse/` `external_sota/` `suitesparse_crawl/` `ref/` `SOTAsummary/` | 外部 SOTA 基线源码与爬取产物(口径对齐用) | ❌ |
+| 根目录二进制 | `spgemm_test`(**0.8054 记分冻结,勿重建勿删**)+ 电池锚点(c61/sm90/437 等,配方见 .gitignore 注释) | ❌ |
+
+## 冻结区(动之前必须用户点头)
+
+- 记分二进制 `spgemm_test` 及 master/paper 生产路径;六个承重旋钮 T4a/T4c/T4e/T6/DSTRUCT/DIRECT5
+- GPU 保护纪律:报错即停 / Xid 哨兵 / 带病二进制退役 / 清场按 PID(pkill 会自杀)
+- **禁改写 git 历史**(有 GitHub remote);测量数据即档案,不删 compare/
 
 ## 编译
 
 ```bash
-make                    # → spgemm_test(主二进制,DBG=1 开 cudaEvent profiling)
-make dense              # → spgemm_dense(tiled64 dense 基线)
+make                    # → spgemm_test(主二进制;⚠️ 会覆盖冻结记分二进制,重建前确认!)
+make dense              # → spgemm_dense(tiled64 基线)
 make cublas             # → spgemm_dense_cublas(cuBLAS FP64 基线)
-# att_tiered(A·Aᵀ 三层实现):
-nvcc -O3 -arch=sm_90 -std=c++17 -Iinclude src/att_tiered.cu test/test_att_tiered.cu -o test_att_tiered
 ```
 
-## 复现对比(论文口径)
+## 计时口径
 
-```bash
-bash scripts/run_method_cmp.sh          # 默认 resume:已有结果跳过,秒级
-REPORT_ONLY=1 bash scripts/run_method_cmp.sh   # 只读 CSV 出报告+图(~1s)
-REFRESH=auto bash scripts/run_method_cmp.sh    # 重跑一列(改 binary 后)
-FRESH=1 bash scripts/run_method_cmp.sh         # 备份+全量重跑
-```
+compute-only = cudaEvent `TOTAL − h2d − d2h`;各基线同口径详见 `scripts/compare_methods.py`。
+实验纪律:同会话同卡配对 A/B;微阵(<1ms)10 次交错取中位(CV~19%);刀级裁定只认配对。
 
-计时口径:Auto = cudaEvent `TOTAL − h2d − d2h`(compute-only),各基线同口径详见
-`scripts/compare_methods.py`。
+## 分支约定
 
-## 主要结果(first100 全量,geomean)
-
-Auto 相对基线胜场:cuSPARSE **91/100**、Ocean **84/100**、opSparse/HSMU/dense/cuBLAS **100/100**。
-分档与加速比表:`compare/aa(best1)/speedup_table.tex`、`compare/methods_cmp_report.txt`。
-
-## 已知待办
-
-- A·Aᵀ tiered 实现的实测 bench 未跑(现有 `compare/aa(best1)/aat_projected_*` 为投影值,
-  实测脚本 `scripts/bench_aat_first100.py` + `gen_aat_measured_deliverables.py` 已就位)。
-- `compare/paper_cmp.csv` 为 stale(device-pool 旧值),以 `methods_cmp.csv` 为准。
-
-## 分支约定(10-14)
-- paper = 实际主干(守门后逐刀提交);master 已 745 提交落后,名存实亡不再使用
+- **paper = 实际主干**(守门后逐刀提交);master 名存实亡不再使用
 - 计时里程碑打 timed-* tag,测量二进制只从 tag 冻结
-- Phase 3 L1 线将开 l1 分支(长周期实验态)

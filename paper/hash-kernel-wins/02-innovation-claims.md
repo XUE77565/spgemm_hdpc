@@ -8,7 +8,7 @@
 ### 1. smap 游标（cursor）机制 —— docs/30 系列原创
 - **机理**：宽行分多窗计算，换窗时记住每条 B 链上次搜到的位置，下一窗从停点续搜
   （"夹书签"）；ocean 每窗从头二分重搜。行越宽、窗越多，书签越值钱
-- **证据**：vsp −56% / mult_dcop −48% / bloweya −47%（inno/30）；c-64 的 19,444 个
+- **证据**：vsp −56% / mult_dcop −48% / bloweya −47%（study/legacy-inno/30）；c-64 的 19,444 个
   diter 行 99.5% 走 cursor 模式
 - **差异**：ocean denseNumericIter 无此机制；这是我们在 dense 侧唯一"机制性胜出"项
   （根 77 第二章 §3），部分对消其位图 8× 记号优势
@@ -16,7 +16,7 @@
 ### 2. cursor/dense 双模式同 kernel（row-level mode selection）
 - **机理**：`hash_dense_direct_kernel` 一个内核按行选模式——rowmode=avgB≥阈值→cursor
   游标合并，否则 dense 位图窗口；共享同一 SMEM 窗布局（val8+flag1+pref4+cursor4/列）
-- **证据**：mode 分层账（inno/82 §mode 分层）；c-64 输出 96.4% 由 diter 行产出
+- **证据**：mode 分层账（study/legacy-inno/82 §mode 分层）；c-64 输出 96.4% 由 diter 行产出
 - **差异**：ocean 的 hash/dense/ESC 是分立 kernel 族+矩阵级 workflow 三选一；
   我们是行级模式内切换——与 per-row 分箱体系天然咬合
 
@@ -33,13 +33,13 @@
 
 ### 5. MinHash 无偏估计器（数学层）
 - **机理**：调和平均（Jensen 高估 ~ln 倍）→ 算术无偏式
-- **证据**：inno/03（本系列最大单项收益）；高估的下游灾难链见 inno/README 一页纸
+- **证据**：study/legacy-inno/03（本系列最大单项收益）；高估的下游灾难链见 study/legacy-inno/README 一页纸
 - **差异**：估计器数学是我们的修复，ocean 用 ER/采样/上界另一套
 
 ### 6. ESC 零表短行内核（counting 前移）
 - **机理**：flop≤32 的行不要表——每线程一乘积，位次=popc(比我小的 key)，leader 求和直写；
   零表零清零，输出天然有序（compact 的 csort 税同时消失）
-- **证据**：inno/22 设计+三连修，门演化 v4（dup≤2 = counting/表成本平衡点，germany vs
+- **证据**：study/legacy-inno/22 设计+三连修，门演化 v4（dup≤2 = counting/表成本平衡点，germany vs
   patents 教科书实证）
 - **差异（血缘声明）**：机制是我们自己的 csort 位次计数，ocean 只证明了它放在 accumulate
   位置成立（根 76 §五）

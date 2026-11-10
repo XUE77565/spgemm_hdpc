@@ -2,7 +2,7 @@
 
 > 用法：§1 英文 contributions 块可直接进 paper intro；§2 每条贡献的完整叙述
 > （Challenge → Insight → Mechanism → Evaluation → Novelty）是正文技术段的骨架；
-> §4 新颖性防御矩阵备 rebuttal；所有数字与 `inno/hash_opt_2026/`、根 `76/77`、
+> §4 新颖性防御矩阵备 rebuttal；所有数字与 `study/legacy-inno/hash_opt_2026/`、根 `76/77`、
 > `paper/hash-kernel-wins/01` 台账逐一对得上。
 
 ---
@@ -78,8 +78,8 @@ CSR 段内原序（L2 局部性，根 76 §24）。DISPATCH_MODEL 将判据结�
 **Mechanism。** 窗内每列布局 val 8B + flag 1B + pref 4B + cursor 4B（我方 17B/列 vs
 Ocean 9B/列——多付的字节买的正是可续扫性）；游标随窗推进在 SMEM 中持久化。
 
-**Evidence。** vsp −56% / mult_dcop −48% / bloweya −47%（inno/30）；c-64 的 19,444 个
-宽行 99.5% 走 cursor 模式、承载 96.4% 输出（inno/82）。
+**Evidence。** vsp −56% / mult_dcop −48% / bloweya −47%（study/legacy-inno/30）；c-64 的 19,444 个
+宽行 99.5% 走 cursor 模式、承载 96.4% 输出（study/legacy-inno/82）。
 
 **Novelty。** Ocean dense 内核无此机制（根 77 第二章：我方在 dense 侧唯一的机制性胜出项，
 "部分对消其 8× 位图密度优势"）；docs/30 系列为原创出处，未见于此前后作（保守表述：
@@ -136,7 +136,7 @@ csort_counting 以 75% 驻留替换 radix 的 12.5%（crankseg −3.3 / F2 −5.
 Σest 爆 int → 偏移绕负 → 野指针写（TSOPF 147 亿教训）；旧版钳 HASH_CAP 掩盖 →
 67 阵回退 merge3 → 28.5× 灾难。
 
-**Insight & Mechanism。** 算术无偏式替代调和式（本战役最大单项收益，inno/03）；
+**Insight & Mechanism。** 算术无偏式替代调和式（本战役最大单项收益，study/legacy-inno/03）；
 est > span 的高估怪物行存在 → 任何"est 定表"路径都要防高估放大（六档梯内化）。
 残差估计误差由**行级 retry** 有界兜底：欠估行按 flop 定表重跑，错误路由决策的代价
 被界定为受影响行的一次重执行（cage15 全局重炮 16GB 教训 → 行级轻量兜底）。

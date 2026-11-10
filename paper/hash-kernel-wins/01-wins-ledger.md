@@ -51,17 +51,17 @@ F2 8.026≈8.007、crankseg 50.030≈50.012 与 ×5 轮逐位复现。
 
 | # | 刀 | 赢面 | 证据 |
 |---|---|---|---|
-| 1 | **MinHash estimator 数学修复**（Jensen 调和高估→算术无偏式，commit 877b0df） | 本系列最大单项收益；上游修复 causal 链：est 虚高→表膨胀→内存墙+满载原子争用；Σest 爆 int→偏移绕负→野指针 | inno/03-estimator.md |
+| 1 | **MinHash estimator 数学修复**（Jensen 调和高估→算术无偏式，commit 877b0df） | 本系列最大单项收益；上游修复 causal 链：est 虚高→表膨胀→内存墙+满载原子争用；Σest 爆 int→偏移绕负→野指针 | study/legacy-inno/03-estimator.md |
 | 2 | **v33 档位梯 + 数值/计数双侧分流**（DENSE_TIER 6 档 per-tier 发射） | in-2004 −36.8%（中行族最大单点赢）；v33d 终态 −28.1%（85.8→61.7） | 根 76 §22-26 |
-| 3 | **占用刀 spec82**：dense_direct `__launch_bounds__(1024,2)` REG 50→32 | dense_direct 18.5→13.8ms；c-64 全阵 −19.0% → **0.981 系统首胜** | inno/82 |
+| 3 | **占用刀 spec82**：dense_direct `__launch_bounds__(1024,2)` REG 50→32 | dense_direct 18.5→13.8ms；c-64 全阵 −19.0% → **0.981 系统首胜** | study/legacy-inno/82 |
 | 4 | **LARGEST 位图全局内核**（v30 默认） | c-big **−63%** | 根 77 附 |
-| 5 | **Phase B v2 游标内核**（Ocean 三件套移植+自研 cursor） | vsp −56% / mult_dcop −48% / bloweya −47% | inno/30 |
+| 5 | **Phase B v2 游标内核**（Ocean 三件套移植+自研 cursor） | vsp −56% / mult_dcop −48% / bloweya −47% | study/legacy-inno/30 |
 | 6 | **ESC 零表短行内核**（v31-④，位次计数前移 accumulate；门 v4 dup≤2） | road 族；accumulate 19.96ms 起步降；零表零清零+输出天然有序（csort 税同消） | 根 76 §9 |
-| 7 | **批量 kernel 族**（warp-per-row+融合 extract） | 333SP 型 370 万小行 accumulate 5.4× 差距收口 | inno/05 |
-| 8 | **占用刀 spec83**：hash_spa REG 40→32 | 四阵全胜（F2 −16.0 累计 / crankseg −5.6 / msc −5.0 / c-64 −2.9）；隔离复验四阵仍全胜 | inno/83 |
-| 9 | **spec84 bin7 counting** `csort_counting<512,4096>` + CSORT 转正（fork 遗产） | crankseg −3.3 / F2 −5.7（CSORT 本体 F2 −9.6 = 指令瘦+占用 6× 双修） | inno/84 |
-| 10 | **warp 聚合原子**（binning/compact 12 计数器） | 3.7M 次 atomicAdd：5.9→0.24ms | inno/05 |
-| 11 | **方案5 直写终态 DIRECT5**（count pass+直写） | refresh9 全量 1.9722×→默认开 | inno/29 |
+| 7 | **批量 kernel 族**（warp-per-row+融合 extract） | 333SP 型 370 万小行 accumulate 5.4× 差距收口 | study/legacy-inno/05 |
+| 8 | **占用刀 spec83**：hash_spa REG 40→32 | 四阵全胜（F2 −16.0 累计 / crankseg −5.6 / msc −5.0 / c-64 −2.9）；隔离复验四阵仍全胜 | study/legacy-inno/83 |
+| 9 | **spec84 bin7 counting** `csort_counting<512,4096>` + CSORT 转正（fork 遗产） | crankseg −3.3 / F2 −5.7（CSORT 本体 F2 −9.6 = 指令瘦+占用 6× 双修） | study/legacy-inno/84 |
+| 10 | **warp 聚合原子**（binning/compact 12 计数器） | 3.7M 次 atomicAdd：5.9→0.24ms | study/legacy-inno/05 |
+| 11 | **方案5 直写终态 DIRECT5**（count pass+直写） | refresh9 全量 1.9722×→默认开 | study/legacy-inno/29 |
 
 ## 四、口径/接口层赢面（论文注记义务内）
 
@@ -78,7 +78,7 @@ F2 8.026≈8.007、crankseg 50.030≈50.012 与 ×5 轮逐位复现。
    （预测 18.5×1.47/2=13.6 ✓ 物理闭环）
 3. **指令经济性定律**：指令瘦 14%（4.01G vs 4.67G inst）仍慢 31% 当占用腰斩——占用>指令数
 4. **溢出税分型**：+47%/行 = 地址算术重算型（指令 +32%）非带宽分摊型；活状态 50 regs 是算法
-   真实需求，chopping 代价结构性（去溢出调查停车档 inno/82 尾）
+   真实需求，chopping 代价结构性（去溢出调查停车档 study/legacy-inno/82 尾）
 5. **排序改变访存序=隐形税**：host 侧重排行必须稳定排序保段内原序（v33d-2，L2 局部性）
 6. **小阵敏感度 ×20**：2-6ms 阵对固定开销敏感，电池守卫阵必须含小阵（v33 全刷 79 小阵回归教训）
 7. **单维门四连证伪**（est/span 密度门、全档缩窗、a_len 门、饱和/dup 门）→ 一切路由门走
