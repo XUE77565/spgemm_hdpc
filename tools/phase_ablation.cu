@@ -55,6 +55,40 @@ __global__ void ablate_kernel(
             }
         }
     }
+    // variant 5: B行批量预取 + 标准插入(k循环串行,但B行指针已预取)
+    if (variant == 5) {
+        int rs = A_rp[i], re = A_rp[i+1];
+        int kcnt = re - rs;
+        // 批量预取:前 kcnt 个 lane 各读一个 k 的 B 行指针对 → 存 smem
+        __shared__ int s_ks[WPB][32], s_ke[WPB][32];
+        int my_ks = 0, my_ke = 0;
+        if (lane < kcnt && lane < 32) {
+            int k = A_ci[rs + lane];
+            my_ks = B_rp[k]; my_ke = B_rp[k+1];
+        }
+        if (lane < kcnt && lane < 32) {
+            s_ks[warp & (WPB-1)][lane] = my_ks;
+            s_ke[warp & (WPB-1)][lane] = my_ke;
+        }
+        __syncwarp();
+        // 串行处理(延迟已隐藏)
+        for (int p = 0; p < kcnt; p++) {
+            double a = A_val[rs + p];
+            int ks = s_ks[warp & (WPB-1)][p];
+            int ke = s_ke[warp & (WPB-1)][p];
+            for (int q = ks + lane; q < ke; q += 32) {
+                int j = B_ci[q]; double v = a * B_val[q];
+                unsigned slot = ((unsigned)(j * 2654435761u)) & (HT-1);
+                int probes = 0;
+                while (true) {
+                    int old2 = atomicCAS(&t_col[slot], -1, j);
+                    if (old2 == -1 || old2 == j) { atomicAdd(&t_val[slot], v); break; }
+                    slot = (slot + 1) & (HT-1);
+                    if (++probes >= HT) break;
+                }
+            }
+        }
+    }
     // variant 4: read-first insert(免 CAS 重复;对已存在列直接 atomicAdd)
     if (variant == 4) {
         int rs = A_rp[i], re = A_rp[i+1];
@@ -174,7 +208,7 @@ int main(int argc, char **argv) {
         float ms; cudaEventElapsedTime(&ms, start, stop);
         if (ms < best) best = ms;
     }
-    const char *names[] = {"全核(clear+insert+extract)", "只清表(clear)", "清+插入(clear+insert)", "清+提取(跳过插入)", "清+read-first插入"};
+    const char *names[] = {"全核(clear+insert+extract)", "只清表(clear)", "清+插入(clear+insert)", "清+提取(跳过插入)", "清+read-first插入", "清+B行预取+标准插入"};
     printf("variant=%d [%s]: %.3f ms (n=%d, nnz=%d)\n", variant, names[variant], best, n, A.nnz);
     return 0;
 }
