@@ -556,64 +556,6 @@ static __global__ void oc_rescale_kernel(int *est, const int *row_flop, int A_ro
 }
 
 // S1 死码剔除(第二处,10-29):MHKAPPA 两核休眠——死码伤活码(§S1 定谳,第六例)
-#if 0
-// ── 刀② MHKAPPA(study/59):采样κ标定 est=flop×κ(免全量 MinHash)──────────────
-// kappa_sample:oc_sample 同体(精确 distinct smem 计数),比值反向 = distinct×Q12/flop
-// (flop→distinct 折减因子);kappa_est:est[i]=flop[i]×κ_en/4096(flop=0 行 est=0)。
-static __global__ void kappa_sample_kernel(
-    const int *A_row_ptr, const int *A_col_idx, const int *B_row_ptr, const int *B_col_idx,
-    const int *row_flop, int A_rows, int stride,
-    int *ratio_fp)   // [S] = distinct_i * 4096 / flop_i(定点);0 = 无效(满表/flop0/distinct≤64)
-{
-    int i = blockIdx.x * stride;
-    int tid = threadIdx.x;
-    if (i >= A_rows) { if (tid == 0) ratio_fp[blockIdx.x] = 0; return; }
-    if (tid == 0) ratio_fp[blockIdx.x] = 0;
-    __shared__ int tab[OC_TAB];
-    for (int s = tid; s < OC_TAB; s += blockDim.x) tab[s] = -1;
-    __syncthreads();
-    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
-    int cnt = 0;
-    bool full = false;
-    for (int p = rs; p < re && !full; p++) {
-        int k = A_col_idx[p];
-        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
-        for (int q = ks + tid; q < ke; q += blockDim.x) {
-            int col = B_col_idx[q];
-            unsigned slot = ((unsigned)col * 2654435761u) & (OC_TAB - 1);
-            int probes = 0;
-            while (true) {
-                int old = atomicCAS(&tab[slot], -1, col);
-                if (old == -1) { cnt++; break; }
-                if (old == col) break;
-                slot = (slot + 1) & (OC_TAB - 1);
-                if (++probes >= OC_TAB) { full = true; break; }
-            }
-            if (full) break;
-        }
-    }
-    for (int off = 16; off > 0; off >>= 1) cnt += __shfl_xor_sync(0xffffffff, cnt, off);
-    __syncthreads();
-    __shared__ int warp_tot[9];
-    if (tid == 0) warp_tot[8] = 0;
-    __syncthreads();
-    if ((tid & 31) == 0) warp_tot[tid >> 5] = cnt;
-    if ((tid & 31) == 0 && full) warp_tot[8] = 1;
-    __syncthreads();
-    if (tid == 0) {
-        int distinct = 0;
-        for (int w = 0; w < (blockDim.x >> 5); w++) distinct += warp_tot[w];
-        if (warp_tot[8] == 0 && distinct > OC_MIN_DISTINCT && row_flop[i] > 0)
-            ratio_fp[blockIdx.x] = (int)((long long)distinct * OC_RATIO_FP / row_flop[i]);
-    }
-}
-static __global__ void kappa_est_kernel(const int *row_flop, int *est, int A_rows, int en) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= A_rows) return;
-    est[i] = (int)((long long)row_flop[i] * en / OC_RATIO_FP);   // κ 内含覆盖余量;est≤flop 恒真
-}
-
-#endif
 
 // PIPEFUSE step-1(docs/58):count_flop 后不再回传 host —— device 侧规约 total_flop + avg_product
 // 门,construct/merge 无条件背靠背 launch(门命中时自退化),host 读数推迟到 binning 已有同步。
@@ -1327,11 +1269,6 @@ static __global__ void span_gather_kernel(const int *rows, int nr, const int *sp
     if (j < nr) out[j] = span_len[rows[j]];   // docs/70 BCNT:dense 行 span 收集
 }
 
-// §22d 分流体:span+行号 融合收集到 [nr, 2nr) 单缓冲(单次 D2H 取双数组,省 2 个同步点)
-static __global__ void span_row_gather_kernel(const int *rows, int nr, const int *span_len, int *out2n) {
-    int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (j < nr) { out2n[j] = span_len[rows[j]]; out2n[nr + j] = rows[j]; }
-}
 
 // §25 密度三元组 → §26 四元组:span+行号+est+a_len → [nr,4nr)
 // (a_len = A_row_ptr 差分,在内核里算免多传一数组)
@@ -1737,86 +1674,6 @@ static __global__ void dcest_compact_copy_kernel(const int *rows, int nr,
 // 对标 Ocean hashNumericSubWarpKernel<4>(它 4 线程/行,hash 表在 SMEM;我们寄存器更轻)。
 #define SUBW_HT SUBW_HT_STRUCT  // warp_size/4
 
-// 干净版:8 线程/行,SMEM 小表(32 slot),warp 内 4 行不共享表
-static __global__ void hash_subwarp8_kernel(
-    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
-    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
-    int upper_tri,
-    const int *bucket_rows, int n_in_bucket,
-    const long long *row_off, const int *est,
-    unsigned long long *tmp_key, double *tmp_val,
-    int *row_nnz, int *overflow_flag,
-    int *ovf_rows, int *ovf_cnt, int *row_ovf)
-{
-    int lane = threadIdx.x & 31;
-    int row_slot = lane >> 3;                    // 0-3
-    int sub_lane = lane & 7;                     // 0-7
-    int rows_per_warp = 32 >> 3;                 // 4
-    int row_idx = ((blockIdx.x * blockDim.x + threadIdx.x) >> 5) * rows_per_warp + row_slot;
-    if (row_idx >= n_in_bucket) return;
-    int i = bucket_rows[row_idx];
-
-    // SMEM 表:每 warp 4 行 × 32 slot × 12B = 1.5KB/warp,256 线程 8 warp = 12KB
-    __shared__ int s_col[8][4][32];              // [warp][row_slot][slot]
-    __shared__ double s_val[8][4][32];
-    int warp = threadIdx.x >> 5;
-    int *my_col = s_col[warp][row_slot];
-    double *my_val = s_val[warp][row_slot];
-    for (int s = sub_lane; s < 32; s += 8) { my_col[s] = -1; my_val[s] = 0.0; }
-    __syncwarp(0xFFu << (row_slot * 8));         // 同行 8 线程同步(warp 内子组)
-
-    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
-    for (int p = rs; p < re; p++) {
-        int k = A_col_idx[p];
-        double a = A_val[p];
-        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
-        for (int q = ks + sub_lane; q < ke; q += 8) {
-            int j = B_col_idx[q];
-            if (upper_tri && j < i) continue;
-            double v = a * B_val[q];
-            unsigned slot = ((unsigned)(j * 2654435761u)) & 31;
-            int probes = 0;
-            while (true) {
-                int old = atomicCAS(&my_col[slot], -1, j);
-                if (old == -1 || old == j) { atomicAdd(&my_val[slot], v); break; }
-                slot = (slot + 1) & 31;
-                if (++probes >= 32) {
-                    atomicExch(overflow_flag, 1);
-                    if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
-                    break;
-                }
-            }
-        }
-    }
-    __syncwarp(0xFFu << (row_slot * 8));
-
-    // 提取 + 插入排序(单线程,8 线程中 sub_lane==0 做)
-    long long base = row_off[i];
-    long long cap = row_off[i + 1] - row_off[i];
-    if (sub_lane == 0) {
-        int cols[32]; double vals[32]; int cnt = 0;
-        for (int s = 0; s < 32; s++) {
-            if (my_col[s] >= 0) { cols[cnt] = my_col[s]; vals[cnt] = my_val[s]; cnt++; }
-        }
-        // 插入排序
-        for (int t = 1; t < cnt; t++) {
-            int c = cols[t]; double v = vals[t];
-            int s2 = t - 1;
-            while (s2 >= 0 && cols[s2] > c) { cols[s2+1] = cols[s2]; vals[s2+1] = vals[s2]; s2--; }
-            cols[s2+1] = c; vals[s2+1] = v;
-        }
-        if (cnt > cap) {
-            atomicExch(overflow_flag, 1);
-            if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
-            cnt = (int)cap;
-        }
-        for (int t = 0; t < cnt; t++) {
-            tmp_key[base + t] = ((unsigned long long)i << 32) | (unsigned int)cols[t];
-            tmp_val[base + t] = vals[t];
-        }
-        row_nnz[i] = cnt;
-    }
-}
 
 
 #define BATCH_HT BATCH_HT_STRUCT  // α=0.5 负载因子推导
@@ -2043,100 +1900,6 @@ __global__ void hash_spa_batched_kernel(
 }
 
 // S1 死码剔除验证(临时):multirow 核整体 #if 0
-#if 0
-// ══ batched 战役刀(study/59):hash_spa_batched_multirow —— 微行巨阵人口几何修正 ══
-// 机理定谳(§batched 战役·机理定谳):warp-per-row 的 j 32 路固定并行在 B 行 ~7 人口
-// = lane 利用率 22%(ocean 动态分组自适应);本核 = 每 warp RPW 行,32/RPW-lane 组
-// (RPW=2→16 lane;RPW=4→8 lane 配 HT=64),组私有表+组内 k 串行 × j 组内并行,
-// extract/rank/溢出语义与 batched 同款。分歧规避:循环一律 warp 统一界(HT),组守卫内置。
-template<int HT, int RPW>
-__global__ void hash_spa_batched_multirow_kernel(
-    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
-    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
-    int upper_tri,
-    const int *bucket_rows, int n_in_bucket,
-    const long long *row_off, const int *est,
-    unsigned long long *tmp_key, double *tmp_val,
-    int *row_nnz, int *overflow_flag,
-    int *ovf_rows, int *ovf_cnt, int *row_ovf)
-{
-    constexpr int LG = 32 / RPW;                 // 组内 lane 数
-    constexpr int WPB = 8;                       // 与原 batched 同块几何(256T)
-    const int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
-    const int lane = threadIdx.x & 31;
-    if ((long long)warp * RPW >= n_in_bucket) return;   // warp 首行即越界(warp 统一退出)
-    const int g = lane / LG, gl = lane % LG;     // 组 id / 组内 lane
-    const int ridx = warp * RPW + g;
-    const int i = (ridx < n_in_bucket) ? bucket_rows[ridx] : -1;
-
-    __shared__ int bsmem[WPB][RPW][5 * HT];
-    __shared__ int g_cnt[WPB][RPW];
-    int *t_col = bsmem[warp & (WPB - 1)][g];
-    double *t_val = (double *)(bsmem[warp & (WPB - 1)][g] + HT);
-    int *pack_col = bsmem[warp & (WPB - 1)][g] + 3 * HT;
-    int *pack_slot = bsmem[warp & (WPB - 1)][g] + 4 * HT;
-
-    if (gl == 0) g_cnt[warp & (WPB - 1)][g] = 0;
-    for (int s = gl; s < HT; s += LG) { t_col[s] = -1; t_val[s] = 0.0; }
-    __syncwarp();
-    if (i >= 0) {
-        int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
-        for (int p = rs; p < re; p++) {              // k 组内串行
-            int k = A_col_idx[p];
-            double a = A_val[p];
-            int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
-            for (int q = ks + gl; q < ke; q += LG) { // j 组内并行
-                int j = B_col_idx[q];
-                if (upper_tri && j < i) continue;
-                double v = a * B_val[q];
-                unsigned slot = ((unsigned)(j * 2654435761u)) & (HT - 1);
-                int probes = 0;
-                while (true) {
-                    int old = atomicCAS(&t_col[slot], -1, j);
-                    if (old == -1 || old == j) { atomicAdd(&t_val[slot], v); break; }
-                    slot = (slot + 1) & (HT - 1);
-                    if (++probes >= HT) {
-                        atomicExch(overflow_flag, 1);
-                        if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    __syncwarp();
-    // extract(组内 count-rank;循环统一界 HT,组守卫内置防分歧 sync)
-    long long base = i >= 0 ? row_off[i] : 0;
-    int cap = i >= 0 ? est[i] : 0;
-    for (int s = gl; s < HT; s += LG) {
-        int c = i >= 0 ? t_col[s] : -1;
-        if (c >= 0) {
-            int pos = atomicAdd(&g_cnt[warp & (WPB - 1)][g], 1);
-            if (pos < HT) { pack_col[pos] = c; pack_slot[pos] = s; }
-        }
-    }
-    __syncwarp();
-    int n = g_cnt[warp & (WPB - 1)][g];
-    if (n > HT) n = HT;
-    for (int idx = gl; idx < HT; idx += LG) {         // 统一界(HT),idx<n 组守卫
-        if (idx < n && i >= 0) {
-            int c = pack_col[idx];
-            int rank = 0;
-            for (int m = 0; m < n; m++) if (pack_col[m] < c) rank++;
-            if (rank >= cap) { atomicExch(overflow_flag, 1); continue; }
-            tmp_key[base + rank] = ((unsigned long long)i << 32) | (unsigned int)c;
-            tmp_val[base + rank] = t_val[pack_slot[idx]];
-        }
-    }
-    __syncwarp();
-    if (gl == 0 && i >= 0) {
-        if (n > cap) { if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; } }
-        row_nnz[i] = (n <= cap) ? n : cap;
-    }
-}
-
-
-#endif
 // ══ 刀C3(study/57 §十七):hash_spa_packed —— bin4 多行封包内核 ════════════════
 // 病灶:bin4-5 并发逆差 2.85×(tick7 逐行对拍:我方周期 0.53× 赢,系统 1.51× 输);
 // 刀C2 证伪块宽杠杆(共享表组数减单调恶化);本核 = C2 未测设计点:
@@ -2885,81 +2648,6 @@ static __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kern
     if (rowtime && tid == 0 && !rt_pre_extract) rowtime[i] = clock64() - rt0;   // 大/小行公共尾(extract 完成;NOEXTRACT 模式已在循环尾写过)
 }
 
-// hash_spa_hkv_kernel:Hybrid Value 全 bin 版(docs/24 §4.1,治大表行低占用):
-// keys 留 SMEM(4B/槽,occupancy ×3)+ values 走全局 L2 atomicAdd(Ocean HYBRID_HASHMAP 同款)。
-// 仅用于 ht ≥ 4096 的 bin(ht > CSORT_HT 恒真)→ 只保留无序 extract 路径(compact 走 csort)。
-static __global__ void hash_spa_hkv_kernel(
-    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
-    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
-    int upper_tri,
-    const int *bucket_rows, int n_in_bucket, int ht_size,
-    const long long *row_off,
-    unsigned long long *tmp_key, double *tmp_val,
-    int *row_nnz, int *overflow_flag,
-    int *ovf_rows, int *ovf_cnt, int *row_ovf,
-    double *gval, const long long *gval_off)
-{
-    int idx = blockIdx.x;
-    if (idx >= n_in_bucket) return;
-    int i = bucket_rows[idx];
-    int tid = threadIdx.x;
-    int mask = ht_size - 1;
-
-    extern __shared__ __align__(8) int smem[];
-    int *sh_col = smem;                        // [ht_size] 仅 keys(12B→4B/槽)
-    for (int s = tid; s < ht_size; s += HASH_BLOCK) sh_col[s] = -1;
-    __syncthreads();
-
-    long long gb = gval_off[i];                // 本行 value 池基址(host 已 memset 0)
-    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
-    int G = 1 << hash_logG(ht_size);   // 同 hash_logG 梯({4,8,16,32})
-    int num_groups = HASH_BLOCK / G;
-    int my_group = tid / G, my_id = tid % G;
-    for (int p = rs + my_group; p < re; p += num_groups) {
-        int k = A_col_idx[p];
-        double a_ik = A_val[p];
-        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
-        for (int q = ks + my_id; q < ke; q += G) {
-            int j = B_col_idx[q];
-            if (upper_tri && j < i) continue;
-            double v = a_ik * B_val[q];
-            unsigned slot = ((unsigned)(j * 2654435761u)) & mask;
-            int probes = 0;
-            while (true) {
-                int old = atomicCAS(&sh_col[slot], -1, j);
-                if (old == -1 || old == j) { atomicAdd(&gval[gb + slot], v); break; }
-                slot = (slot + 1) & mask;
-                if (++probes >= ht_size) {
-                    atomicExch(overflow_flag, 1);
-                    if (!atomicExch(&row_ovf[i], 1)) { int p = atomicAdd(ovf_cnt, 1); ovf_rows[p] = i; }
-                    break;
-                }
-            }
-        }
-    }
-    __syncthreads();
-
-    // 无序 extract(ht ≥ 4096 > CSORT_HT;compact 侧 csort 排序)
-    __shared__ int cnt;
-    if (tid == 0) cnt = 0;
-    __syncthreads();
-    long long base = row_off[i];
-    long long cap = row_off[i + 1] - row_off[i];
-    for (int s = tid; s < ht_size; s += HASH_BLOCK) {
-        int c = sh_col[s];
-        if (c >= 0) {
-            int pos = atomicAdd(&cnt, 1);
-            if (pos >= cap) { atomicExch(overflow_flag, 1); continue; }
-            tmp_key[base + pos] = ((unsigned long long)i << 32) | (unsigned int)c;
-            tmp_val[base + pos] = gval[gb + s];
-        }
-    }
-    __syncthreads();
-    if (tid == 0) {
-        if (cnt > cap) { if (!atomicExch(&row_ovf[i], 1)) { int p = atomicAdd(ovf_cnt, 1); ovf_rows[p] = i; } }
-        row_nnz[i] = (cnt <= cap) ? cnt : (int)cap;
-    }
-}
 
 // spec98 轮1:WMA 重行归并累积器(分列段多 warp 流式归并;一 block 一行,8 warp 各认一个
 // 列子区间;两阶段=count→块内前缀→re-merge 直写 tmp_key 兼容 hash 下游;dup 在归并中合并)。
@@ -3088,17 +2776,6 @@ static __global__ void margin_kernel(const long long *eoff, const int *crp, int 
     marg[j] = eoff[j] - (long long)crp[j];
 }
 
-// 每行 HT 梯表尺寸(与 compute_bucket 同梯;hybrid value 池的 scan 输入)
-static __global__ void ladder_ht_kernel(const int *est, int A_rows, int *lht)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= A_rows) return;
-    int e = est[i];
-    int target = (e <= TABLE_DOUBLING_THR) ? 2 * e : e;  // α=0.5 松弛(仅默认档内)
-    int ht = WARP_SIZE;   // 最小表 = 1 warp 槽
-    while (ht < target && ht < HASH_CAP) ht <<= 1;
-    lht[i] = ht;
-}
 
 // hash_spa_priv_kernel:warp 私有 SPA(HASH_PRIV 门控):k 按 warp 分区→Phase A 无 atomicAdd 累加,Phase B 跨 warp merge,Phase C extract
 static __global__ void hash_spa_priv_kernel(
@@ -3446,89 +3123,7 @@ static __global__ void retry2_gextract_kernel(
 // host 按 ht ≤ HYBRID_HT_MAX 分两批launch。
 #define HYBRID_HT_MAX HYBRID_HT_MAX_STRUCT  // = HASH_CAP×2(半档留 val 池)
 
-static __global__ void hash_global_hybrid_kernel(
-    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
-    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
-    int upper_tri,
-    const int *bucket_rows, int n_in_bucket,
-    const long long *row_ht, const long long *tab_off,
-    int *tab_col_global, double *tab_val,     // tab_val 全局;tab_col_global 仅大行用(此 kernel 不写)
-    const long long *row_off, const int *est, long long tmp_total,
-    unsigned long long *tmp_key, double *tmp_val,
-    int *row_nnz, int *overflow_flag,
-    int *ovf_rows, int *ovf_cnt, int *row_ovf)
-{
-    int idx = blockIdx.x;
-    if (idx >= n_in_bucket) return;
-    int i = bucket_rows[idx];
-    int tid = threadIdx.x;
-    int ht_size = (int)row_ht[idx];
-    int mask = ht_size - 1;
-    double *sh_val = tab_val + tab_off[idx];               // 值:全局(与纯全局版共用 arena)
-    extern __shared__ __align__(8) int hkey[];             // 键:SMEM [ht_size]
-    for (int s = tid; s < ht_size; s += blockDim.x) hkey[s] = -1;
-    __syncthreads();
 
-    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
-    int G = WARP_SIZE, num_groups = blockDim.x / G, my_group = tid / G, my_id = tid % G;   // G-group ≤ warp(免跨 warp 同步)
-    for (int p = rs + my_group; p < re; p += num_groups) {
-        int k = A_col_idx[p];
-        double a = A_val[p];
-        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
-        for (int q = ks + my_id; q < ke; q += G) {
-            int j = B_col_idx[q];
-            if (upper_tri && j < i) continue;
-            double v = a * B_val[q];
-            unsigned slot = ((unsigned)(j * 2654435761u)) & mask;
-            int probes = 0;
-            while (true) {
-                int old = atomicCAS(&hkey[slot], -1, j);                   // SMEM CAS
-                if (old == -1 || old == j) { atomicAdd(&sh_val[slot], v); break; }  // 全局 val
-                slot = (slot + 1) & mask;
-                if (++probes >= ht_size) {
-                    atomicExch(overflow_flag, 1);
-                    int p2 = atomicAdd(ovf_cnt, 1); if (!atomicExch(&row_ovf[i], 1)) ovf_rows[p2] = i;
-                    break;
-                }
-            }
-        }
-    }
-    __syncthreads();
-
-    __shared__ int cnt;
-    if (tid == 0) cnt = 0;
-    __syncthreads();
-    long long base = row_off[i];
-    int cap = est[i];
-    for (int s = tid; s < ht_size; s += blockDim.x) {
-        int c = hkey[s];
-        if (c >= 0) {
-            int pos = atomicAdd(&cnt, 1);
-            if (pos >= cap) { atomicExch(overflow_flag, 1); continue; }
-            tmp_key[base + pos] = ((unsigned long long)i << 32) | (unsigned int)c;
-            tmp_val[base + pos] = sh_val[s];
-        }
-    }
-    __syncthreads();
-    if (tid == 0) {
-        if (cnt > cap && !atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
-        row_nnz[i] = cnt > cap ? cap : cnt;
-    }
-}
-
-// heavy 拆分辅助:从全表 gather (ht, tab_off) 到子表(按子表行号)
-static __global__ void heavy_gather_kernel(
-    int *sub_rows, int n_sub, const int *full_rows,
-    const long long *full_ht, const long long *full_off,
-    long long *sub_ht, long long *sub_off)
-{
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= n_sub) return;
-    int idx = sub_rows[t];          // heavy 表内位置
-    sub_ht[t] = full_ht[idx];
-    sub_off[t] = full_off[idx];
-    sub_rows[t] = full_rows[idx];   // 原地换成真实行号(kernel 按此读 A/B)
-}
 
 // heavy 行分段排序的 begin/end 偏移(基于 gapped d_off + 真实 row_nnz)
 static __global__ void heavy_seg_kernel(
@@ -3695,25 +3290,7 @@ static __global__ void diter_gapped_copy_kernel(   // spec89-#4'-L2b⑤:CNT_FUSE
     for (int j = 0; j < k; j++) { out_col[dst + j] = tmp_col[src + j]; out_val[dst + j] = tmp_val[src + j]; }
 }
 
-static __global__ void hash_compact_kernel(
-    int A_rows, const long long *row_off, const int *row_nnz, const int *C_row_ptr,
-    const unsigned long long *tmp_key, const double *tmp_val,
-    unsigned long long *out_key, double *out_val)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= A_rows) return;
-    long long src = row_off[i]; int dst = C_row_ptr[i], n = row_nnz[i];
-    for (int t = 0; t < n; t++) {
-        out_key[dst + t] = tmp_key[src + t];
-        out_val[dst + t] = tmp_val[src + t];
-    }
-}
 
-// 拆 key 低 32 位 → col
-static __global__ void split_key_kernel(const unsigned long long *key, int *col, int n) {
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t < n) col[t] = (int)(key[t] & 0xffffffffu);
-}
 
 // per-row compact+sort:每 block 一行,BlockRadixSort 行内按 col 排→直接写 CSR;一次替掉 compact+全局 sort+split_key
 template<int TPB, int IPT>
@@ -4359,102 +3936,6 @@ __global__ void hash_esc_kernel(
 }
 
 
-// ESC64(study/50 靶1,10-20):flop∈(32,64] 的行——1 warp/行、每线程 2 乘积(IPT=2)。
-// 机理同 hash_esc_kernel 的零表 counting-sort,差别:64 虚拟 lane → smaller 位图 64bit(ull),
-// 每线程两套 (key,sum,leader) 状态;A 槽(虚拟 t)恒先于 B 槽(虚拟 t+32),同键时 A 领导。
-static __global__ void hash_esc64_kernel(
-    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
-    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
-    int upper_tri,
-    const int *bucket_rows, int n_in_bucket,
-    const long long *row_off, const int *est,
-    unsigned long long *tmp_key, double *tmp_val,
-    int *row_nnz, int *overflow_flag, int *ovf_rows, int *ovf_cnt, int *row_ovf)
-{
-    int w = (int)((blockIdx.x * blockDim.x + threadIdx.x) >> 5);
-    int t = threadIdx.x & 31;
-    if (w >= n_in_bucket) return;
-    int i = bucket_rows[w];
-    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
-
-    // ① 每线程装第 t(A 槽)与 t+32(B 槽)个乘积;哨兵 0x7fffffff,过滤项 -1
-    int kA = 0x7fffffff, kB = 0x7fffffff; double vA = 0.0, vB = 0.0;
-    {
-        int needA = t, needB = t + 32, cnt = 0;
-        for (int p = rs; p < re && (needA != INT_SENTINEL || needB != INT_SENTINEL); p++) {
-            int k = A_col_idx[p];
-            int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
-            int len = ke - ks;
-            if (needA != INT_SENTINEL && needA >= cnt && needA < cnt + len) {
-                int col = B_col_idx[ks + (needA - cnt)];
-                if (upper_tri && col < i) { kA = -1; } else { kA = col; vA = A_val[p] * B_val[ks + (needA - cnt)]; }
-                needA = INT_SENTINEL;
-            }
-            if (needB != INT_SENTINEL && needB >= cnt && needB < cnt + len) {
-                int col = B_col_idx[ks + (needB - cnt)];
-                if (upper_tri && col < i) { kB = -1; } else { kB = col; vB = A_val[p] * B_val[ks + (needB - cnt)]; }
-                needB = INT_SENTINEL;
-            }
-            cnt += len;
-        }
-    }
-    __syncwarp();
-
-    // ② counting-sort fused:32 轮 shfl,每轮广播 2 键(A 槽=虚拟 k,B 槽=虚拟 k+32)
-    double sumA = vA, sumB = vB;
-    unsigned long long smallerA = 0ull, smallerB = 0ull;
-    bool leadA = true, leadB = true;
-    #pragma unroll
-    for (int k = 0; k < 32; k++) {
-        int okA = __shfl_sync(0xffffffffu, kA, k);
-        double ovA = __shfl_sync(0xffffffffu, vA, k);
-        int okB = __shfl_sync(0xffffffffu, kB, k);
-        double ovB = __shfl_sync(0xffffffffu, vB, k);
-        // 守卫=【我自己】的键有效(n23 超计根因:旧版用广播方 lane k 的 B 有效性(vB_)做外层门,
-        // 当 k 无 B 槽时整块被跳过——连本该触发的 A-B 夺领导也跳过 → A/B 同键双双当 leader,超计 ~4/行;
-        // 独立复现件 /tmp/esc64_fix.cu 定谎,22/22 对齐)
-        const bool myA = kA != 0x7fffffff && kA != -1, myB = kB != 0x7fffffff && kB != -1;
-        // —— 对我的 A 键(虚拟 t;B 槽同键恒不夺领导[t+32>t],但其值要被领导者吸收)——
-        if (myA) {
-            if (okA < kA) smallerA |= (1ull << k);
-            else if (okA == kA && k != t) { sumA += ovA; if (k < t) leadA = false; }
-            if (okB == kA) sumA += ovB;   // 哨兵恒不等,无需 vB_ 守卫
-        }
-        // —— 对我的 B 键(虚拟 t+32;A 槽同键恒夺领导[k<t+32];广播 A 的哨兵 0x7fffffff 恒不等于 kB)——
-        if (myB) {
-            if (okA < kB) smallerB |= (1ull << k);
-            if (okA == kB) { sumB += ovA; leadB = false; }
-            if (okB < kB) smallerB |= (1ull << (k + 32));
-            else if (okB == kB && k != t) { sumB += ovB; if (k < t) leadB = false; }   // B-B 同键:低 lane 夺领导
-        }
-    }
-    __syncwarp();
-    unsigned lA = __ballot_sync(0xffffffffu, leadA && kA != 0x7fffffff && kA != -1);
-    unsigned lB = __ballot_sync(0xffffffffu, leadB && kB != 0x7fffffff && kB != -1);
-    unsigned long long leaders64 = (unsigned long long)lA | ((unsigned long long)lB << 32);
-    smallerA &= leaders64;   // 只数"更小且是 leader"的虚拟 lane(同 32 档语义)
-    smallerB &= leaders64;
-    int n_out = __popcll(leaders64);
-    if (n_out > est[i]) {   // est 欠估 → 标准 retry 兜底(同 32 档)
-        if (t == 0) {
-            if (!atomicExch(&row_ovf[i], 1)) { int q2 = atomicAdd(ovf_cnt, 1); ovf_rows[q2] = i; }
-            atomicExch(overflow_flag, 1);
-        }
-        return;
-    }
-    long long base = row_off[i];
-    if (leadA && kA != 0x7fffffff && kA != -1) {
-        int pos = __popcll(smallerA);
-        tmp_key[base + pos] = (unsigned long long)(unsigned)kA;
-        tmp_val[base + pos] = sumA;
-    }
-    if (leadB && kB != 0x7fffffff && kB != -1) {
-        int pos = __popcll(smallerB);
-        tmp_key[base + pos] = (unsigned long long)(unsigned)kB;
-        tmp_val[base + pos] = sumB;
-    }
-    if (t == 0) row_nnz[i] = n_out;
-}
 
 // ── T3(study/53 §T3 设计简报,10-21):NT=64/128 子组秩排序 ──────────────────────
 // 机理 = ocean countSortCompactFused(AccumulatorESC.cuh:71-131)的 smem 广播形态:
@@ -5059,13 +4540,6 @@ static void launch_csort(int n, const int *rows_ptr, const long long *d_off, con
 // DBG 校验:输出 CSR 每行 col 严格升序(验证 compact_sort 排序正确)。
 #endif   // P1 G1 结束(compact/csort host 助手区;hash_check_sorted 起 TU-61 可见——死码无害)
 
-static __global__ void hash_check_sorted_kernel(const int *row_ptr, const int *col, int A_rows, int *violations) {
-    int r = blockIdx.x * blockDim.x + threadIdx.x;
-    if (r >= A_rows) return;
-    int s = row_ptr[r], e = row_ptr[r + 1];
-    for (int i = s; i < e - 1; i++)
-        if (col[i] >= col[i + 1]) atomicAdd(violations, 1);
-}
 
 // ═════ spec99 刀1:重行同构复刻 kernel(2026-09-29 开工,study/26 §5 蓝图/inno/99)══════
 // 对照形态非创新(用户批准):机理吸收 ocean hashNumeric 五要素,代码自研——
