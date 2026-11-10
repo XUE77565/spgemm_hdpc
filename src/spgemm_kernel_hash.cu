@@ -56,23 +56,6 @@ extern __global__ void dense_struct_numeric_kernel(
     int win_cols,
     const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
     const int *row_flop);   // 刀D2a:精确 avg_B(G 分配用)
-// D3(T7c):低 dup 短 a_len merge 核(pre2 型;env D3EXP)
-extern __global__ void d3_merge_kernel(
-    const int *A_rp, const int *A_ci, const double *A_val,
-    const int *B_rp, const int *B_ci, const double *B_val,
-    int upper_tri, int A_rows,
-    const int *rows, int n_rows,
-    const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
-    unsigned long long *rowtime);
-// T3(10-04):两行共块变体(命名屏障+SMEM 半分区;env T3EXP)——模板声明(实例子段在 struct.cu)
-template<int TPB> __global__ void dense_struct_numeric_2r_kernel(
-    const int *A_rp, const int *A_ci, const double *A_val,
-    const int *B_rp, const int *B_ci, const double *B_val,
-    int upper_tri, int A_rows,
-    const int *bucket_rows, int nr_bucket, const int *span_lo, const int *span_len,
-    int win_cols,
-    const int *exact_rp, int *out_col, double *out_val, int *row_nnz,
-    const int *row_flop);
 
 // 二分:返回 [lo,hi) 内第一个 arr[idx] >= val 的下标(与 spgemm_merge.cu 同款,跨 TU 内联用本地拷贝)
 __device__ __forceinline__ int dev_lower_bound(const int *arr, int lo, int hi, int val) {
@@ -1907,100 +1890,6 @@ __global__ void hash_spa_batched_kernel(
 // 保留我方资产:read-first 探测(逐行赢面的探测半)+ 溢出熔断全套(probes≥HT 早退
 // → row_ovf → retry 换 flop 表,est 欠估人群保命机制,铁律不剥)。
 // extract:表内 bitonic 全序(HT=2^n,-1 哨兵升序沉头部)—— 零额外 smem、免 pack 数组、
-// 免 O(n²) rank(n≈300 时 2813 seq-op 判死)与 CS2 直方图 3KB hist;45 趟 × 16 idx/lane。
-// smem 静态 24KB/块(4 warp × [512 col | 512 val])→ 9 块/SM = 36 行在飞(现 8,4.5×)。
-// 路由:bin4 整桶(env HASH_B4PACK,默认关);est>448 高 LF 行自然走 overflow→retry
-// = 现路径逃生。tmp 契约与 batched 同:row_off+rank 有序写,compact 走 copy。
-template<int HT>
-__global__ __launch_bounds__(128) void hash_spa_packed_kernel(
-    const int *A_row_ptr, const int *A_col_idx, const double *A_val,
-    const int *B_row_ptr, const int *B_col_idx, const double *B_val,
-    int upper_tri,
-    const int *bucket_rows, int n_in_bucket,
-    const long long *row_off, const int *est,
-    unsigned long long *tmp_key, double *tmp_val,
-    int *row_nnz, int *overflow_flag,
-    int *ovf_rows, int *ovf_cnt, int *row_ovf)
-{
-    constexpr int WPB = 4;                       // 128T = 4 warp,每 warp 一行
-    int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
-    int lane = threadIdx.x & 31;
-    if (warp >= n_in_bucket) return;
-    int i = bucket_rows[warp];
-    __shared__ int    s_col[WPB][HT];
-    __shared__ double s_val[WPB][HT];
-    int    *t_col = s_col[warp & (WPB - 1)];
-    double *t_val = s_val[warp & (WPB - 1)];
-    for (int s = lane; s < HT; s += 32) { t_col[s] = -1; t_val[s] = 0.0; }
-    __syncwarp();
-
-    int rs = A_row_ptr[i], re = A_row_ptr[i + 1];
-    for (int p = rs; p < re; p++) {              // k 串行(ocean 形态;a_len p50=45 紧凑)
-        int k = A_col_idx[p];
-        double a = A_val[p];
-        int ks = B_row_ptr[k], ke = B_row_ptr[k + 1];
-        for (int q = ks + lane; q < ke; q += 32) {   // j 32 路并行
-            int j = B_col_idx[q];
-            if (upper_tri && j < i) continue;
-            double v = a * B_val[q];
-            unsigned slot = ((unsigned)(j * 2654435761u)) & (HT - 1);
-            int probes = 0;
-            while (true) {                        // read-first:命中零 CAS(我方资产)
-                int entry = t_col[slot];
-                if (entry == j) { atomicAdd(&t_val[slot], v); break; }
-                if (entry == -1) {
-                    int prev = atomicCAS(&t_col[slot], -1, j);
-                    if (prev == -1) { t_val[slot] = v; break; }
-                    if (prev == j) { atomicAdd(&t_val[slot], v); break; }
-                }
-                slot = (slot + 1) & (HT - 1);
-                if (++probes >= HT) {             // 熔断器全套(铁律不剥)
-                    atomicExch(overflow_flag, 1);
-                    if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
-                    break;
-                }
-            }
-        }
-    }
-    __syncwarp();
-    // 表内 bitonic 全序:-1 哨兵 < 任意 col → 沉头部;完美匹配每趟单交换者,免锁
-    for (int ks = 2; ks <= HT; ks <<= 1)
-        for (int j = ks >> 1; j > 0; j >>= 1) {
-            for (int idx = lane; idx < HT; idx += 32) {
-                int l = idx ^ j;
-                if (l > idx) {
-                    bool up = ((idx & ks) == 0);
-                    int a = t_col[idx], b = t_col[l];
-                    if (a != b && (a > b) == up) {
-                        t_col[idx] = b; t_col[l] = a;
-                        double va = t_val[idx], vb = t_val[l];
-                        t_val[idx] = vb; t_val[l] = va;
-                    }
-                }
-            }
-            __syncwarp();
-        }
-    int cnt = 0;
-    for (int s = lane; s < HT; s += 32) cnt += (t_col[s] >= 0);
-    for (int off = 16; off; off >>= 1) cnt += __shfl_down_sync(0xffffffffu, cnt, off);
-    int n = __shfl_sync(0xffffffffu, cnt, 0);
-    long long base = row_off[i];
-    int cap = est[i];
-    if (lane == 0) {
-        row_nnz[i] = (n <= cap) ? n : cap;
-        if (n > cap) { atomicExch(overflow_flag, 1); if (!atomicExch(&row_ovf[i], 1)) { int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; } }
-    }
-    for (int s = lane; s < HT; s += 32) {         // 有序写 tmp(-1 头部长度 HT-n)
-        if (t_col[s] >= 0) {
-            int rank = s - (HT - n);
-            if (rank < cap) {
-                tmp_key[base + rank] = ((unsigned long long)i << 32) | (unsigned)t_col[s];
-                tmp_val[base + rank] = t_val[s];
-            }
-        }
-    }
-}
-
 
 // 按桶跑:ht_size = 该桶 hash 表大小;轻行小表、重行大表,distinct>ht_size → overflow_flag
 // MODE:0=legacy(gapped tmp + packed key,compact 阶段善后)1=count-only(只插 key 出精确 row_nnz,
@@ -6966,24 +6855,6 @@ static void hash_product(
     // Stage 3: scan row_nnz → C_row_ptr + C_nnz(精确)
     int *dC_rp; dC_rp = decltype(dC_rp)(dev_alloc((A_rows + 1) * sizeof(int)));
     int C_nnz_result;
-    if (h_d3_n > 0 && d_d3_rows) {   // D3 count(T7c 修复v2:必须先于 cnnz_scan,原位置嵌在不执行分支=prefix 漏 D3 行根因)
-        size_t d3sm = (size_t)16384 * 9 + 256;
-        CHECK_CUDA(cudaFuncSetAttribute(dense_struct_count_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)d3sm));
-        dense_struct_count_kernel<<<h_d3_n, HASH_BLOCK_STRUCT, d3sm>>>(
-            dA_rp, dA_ci, dB_rp, dB_ci, upper_tri, A_rows,
-            d_d3_rows, d_span_lo, d_span_len, 16384, d_row_nnz);
-        CHECK_CUDA(cudaGetLastError());
-        dbg("[%s] D3 count v2:%d 行\n", tag, h_d3_n);
-        {   // T7c 取证:count 后即刻 Σ(分"count 值错"vs"prefix/流程错")
-            std::vector<int> rn(A_rows);
-            CHECK_CUDA(cudaMemcpy(rn.data(), d_row_nnz, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToHost));
-            std::vector<int> rr2(h_d3_n);
-            CHECK_CUDA(cudaMemcpy(rr2.data(), d_d3_rows, h_d3_n * sizeof(int), cudaMemcpyDeviceToHost));
-            long long sum = 0;
-            for (int z = 0; z < h_d3_n; z++) sum += rn[rr2[z]];
-            dbg("[%s] D3 count 后 Σ=%lld(对比 numeric Σ=110.3M)\n", tag, sum);
-        }
-    }
     prof("cnnz_scan", [&]{
         CHECK_CUDA(cudaMemset(dC_rp, 0, sizeof(int)));
         if (A_rows <= MAX_BLOCK_THREADS) {
@@ -7179,22 +7050,6 @@ static void hash_product(
             }
             // ---- 档位梯 per-tier 发射(窗 = 档上限,块宽 = 档块宽;1:1 落 5 个显式实例)----
             if (dstr2_on) {
-                if (h_d3_n > 0 && d_d3_rows) {   // D3:merge 核(pre2 型;count 已出 exact_rp)
-                    int wpb = 256 >> 5;
-                    d3_merge_kernel<<<(h_d3_n + wpb - 1) / wpb, 256>>>(
-                        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, upper_tri, A_rows,
-                        d_d3_rows, h_d3_n, dC_rp, dC_ci, d_val, d_row_nnz, d_rt);
-                    CHECK_CUDA(cudaGetLastError());
-                    dbg("[%s] D3 merge 核:%d 行(warp/行)\n", tag, h_d3_n);
-                    if (getenv("D3CHK")) {   // T7c 取证:实际 row_nnz dump
-                        std::vector<int> rn(A_rows), rr(h_d3_n);
-                        CHECK_CUDA(cudaMemcpy(rr.data(), d_d3_rows, h_d3_n * sizeof(int), cudaMemcpyDeviceToHost));
-                        CHECK_CUDA(cudaMemcpy(rn.data(), d_row_nnz, (size_t)A_rows * sizeof(int), cudaMemcpyDeviceToHost));
-                        FILE *f = fopen(getenv("D3CHK"), "w");
-                        for (int z = 0; z < h_d3_n; z++) fprintf(f, "%d %d\n", rr[z], rn[rr[z]]);
-                        fclose(f);
-                    }
-                }
                 if (g_dtier_single) {   // §22c:档内行全部单发最大档(窗 7277/块宽 1024;§22 数值形态)
                     if (big_off > 0) {
                         const int t = DENSE_TIER_COUNT - 1;
