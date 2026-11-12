@@ -156,3 +156,37 @@
 打扫战役已关账(认证通过);A 线成本公式(§五的 G1-G7)为当前进行时主线;
 AC 代码三批(出处注释/setenv 消灭/发射梯分表)排 P1;投稿主推 SC(CCF-A,
 约 4 月截稿,artifact track)。
+
+---
+
+## 附录:查新对质档案 v4.1(11-12,用户五轮追问收敛,创新点封版依据)
+
+> 每条含证据行号/链接与引用义务。写作时 §4 各节按此执行措辞。
+
+### 创新点终版(四条,全部经源码/文献对质)
+
+| # | 创新点 | 对质结果 | 引用义务 |
+|---|---|---|---|
+| 1 | **有序直写 + hash_heavy 新核**(领衔) | spECK=累积后压紧+后置排序(SortModes::InPlace,spECK_HashSpGEMM.cuh:599-700);nsparse=thrust::sort 后置(kernel_spgemm_hash_*.cu:20);ocean=核内后置排序——**三家均无"写入时定序"**;素数表=ocean 机制(Common.h:114 "Hard-coded prime bin sizes",673 梯) | 素数梯引 ocean;排序后置形态引三家 |
+| 2 | **无偏 MinHash 定容** | 无偏 MinHash 数学=sketching 经典;**与 ocean HLL 独立谱系**(ocean Common.h HLL_CONSTANT/HLL_K_CONSTRUCT 实锤;我方 src:274 MinHash σ=1.04/√k) | sketch 定容大类一句 |
+| 3 | **LLB 行内并行粒度自适应** | spECK LoadBalancer=块级行调度(spECK_HashLoadBalancer.cuh);我方=行内组大小 G 按行长动态——**层次不同**;跨度不变量设计定律自有 | 引 spECK 并措辞划界"intra-row granularity vs block scheduling" |
+| 4 | **merge3 列域分桶**(升回) | 思想前身=splitter 式键域分割归并(数据库/外排经典:Albutiu 2012 MPSM join;Ross 2009 最优 splitter;Otaki 层级 vs 键域归并对比);**GPU SpGEMM 领域无人用键域**(RMerge=迭代树归并 SIAM JSC 2015;Merge-Path=路径分解 Merrill SC15/Dalton 2015;PACT 2025=等量块);形态自有(每行列跨度收紧[merge.cu:501-503]+链长加权细桶边界[:552-554] v1→v3 迭代+(row,bucket) 粒度+flop-ub 桶区分配) | 引 Albutiu/Ross+Merrill/Dalton+RMerge;措辞="首次将 splitter 式键域分割应用于 GPU SpGEMM 行归并,区别于 Merge-Path 路径分解" |
+
+### 设计点(非创新点,如实引用)
+
+DIRECT5(位图累积 Gustavson 系)/CS2 d 门/档位梯(8.25B/列)/素数梯取值(ocean)/
+cursor(Ocean 三件套移植+自研,docs/86)/估直写推广件。
+
+### 修正记录(对质过程)
+
+①素数表:原列 hash_heavy 设计点①→判 ocean 前人(撤创新性,保留引用);
+②LLB:两轮修正——初判 spECK 变体过度降级,复核确认层次不同(块级调度 vs 行内粒度);
+③merge3:三轮修正——初判 RMerge 家族变体→用户指出与 Merge-Path 机制不同→
+键域分割经典文献核对→定谳"领域首用+形态自有",升回创新点;
+④编译层条件性:维持 §4.2 复活副线定位(证据面=单族单卡,不扛 thesis)。
+
+### 遗留核对(写作前完成)
+
+- 有序直写文献级扫描(ballot+popc in-accumulation ordering,保守起见);
+- PACT 2025 全文精读(划等量块 vs 键域的最后边界);
+- merge3 +22.3%/生态位当前二进制重验;机制精读已有(merge.cu:489-596 本轮完成)。
