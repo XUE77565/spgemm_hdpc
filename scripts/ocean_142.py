@@ -6,7 +6,7 @@ import csv, os, re, subprocess, sys
 
 REPO = "/home/xueyizhou/spgemm-challenge"
 OCEAN = os.path.join(REPO, "ocean")
-DIR = os.path.join(REPO, "external_sota/FlexSpGEMM/data/test142")
+DIR = os.path.join(REPO, "data/flex142")
 CSR_DIR = "/tmp/ocean_csr_142"
 OUT = os.path.join(REPO, "compare/flexbench142/ocean.csv")
 os.makedirs(CSR_DIR, exist_ok=True)

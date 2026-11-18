@@ -2,12 +2,12 @@
 """FlexSpGEMM 142 测试集下载(UF 老镜像版,11-16 找到的活源):
 www.cise.ufl.edu/research/sparse/MM/<group>/<name>.tar.gz —— Flex AE 脚本的第一备选,
 tamu 主源 S3 AccessDenied 期间仍 200。tar 内含 <name>.mtx 与 <name>_b.mtx(取主件)。
-断点续传式(有 .mtx 跳过);失败阵重试 3 轮;输出 external_sota/FlexSpGEMM/data/test142/。
+断点续传式(有 .mtx 跳过);失败阵重试 3 轮;输出 data/flex142/。
 """
 import csv, os, subprocess, sys, tarfile, tempfile, time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEST = os.path.join(REPO, "external_sota/FlexSpGEMM/data/test142")
+DEST = os.path.join(REPO, "data/flex142")
 os.makedirs(DEST, exist_ok=True)
 rows = list(csv.reader(open(os.path.join(REPO, "external_sota/FlexSpGEMM/data/mat-142.csv"))))
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0"

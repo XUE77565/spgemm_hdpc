@@ -2,14 +2,14 @@
 """FlexSpGEMM 自家 142 测试集上的双雄对(数据就绪后一键跑):
 每阵:我方 spgemm_test(标准 env,compute-only)+ 对方 src/test(其官方协议,time_tile 三相和),
 nnz 双向对拍,GM/赢面按完成对口径。输出 compare/flexbench142/pair.csv。
-前置:external_sota/FlexSpGEMM/data/test142/<name>.mtx 齐备(下载守护 tools/flex142_fetch.sh)。
+前置:data/flex142/<name>.mtx 齐备(下载守护 tools/flex142_fetch.sh)。
 用法:flexbench142_pair.py [gpu]
 """
 import csv, math, os, subprocess, sys, re
 
 REPO = "/home/xueyizhou/spgemm-challenge"
 FLEX = os.path.join(REPO, "external_sota/FlexSpGEMM")
-DIR = os.path.join(FLEX, "data/test142")
+DIR = os.path.join(REPO, "data/flex142")
 OUT = os.path.join(REPO, "compare/flexbench142/pair.csv")
 TOT = re.compile(r"TOTAL\(GPU\)\s+([\d.]+)")
 H2D = re.compile(r"\[hash-prof\] h2d\s+([\d.]+)")
