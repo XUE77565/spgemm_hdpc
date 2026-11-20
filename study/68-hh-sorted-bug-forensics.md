@@ -171,6 +171,28 @@ cage15 1.228→1.044/Bump 1.147→1.037);F2 **0.761**/arc130 0.946/1138_bus 0.89
 - 事故记录:WRITE_MTX 转储写满 /home(101GB,results/matrices/)致 ENOSPC,清理后
   101G 空闲——后续带 WRITE_MTX 的批量跑须转储定向到 /(root 盘)。
 
+## 九、confirm17 官方账(11-20 晚,commit 28ea718 形态,428+ocean 同卡配对)
+
+**GM(我方/ocean)= 0.9289(n=427,赢面 206/426≈48.4%),零 TIMEOUT/NOPROF。**
+带病 confirm18 同共同集 = 0.8137/赢面 69.8% → **Δ0.115 = 还掉的假赢面**。
+对照:confirm17hh0(HH=0 消融,ocean 复用)在跑——判"组件 vs census 税"的终审。
+退化解剖:大阵=HH 人口还债(ldoor 电池 HH0=39.1≈confirm17=40.2 双证);
+**小阵翻倍族(FEM_3D_thermal2 2.1→5.5/pkustk10 2.5→5.2/offshore 3.0→4.7)= 嫌疑
+门普查流同步税(每 HH bin 一次 sync,小阵 compute 2-5ms 被吃 20-100%;16 阵
+电池全 HH 重阵,稀释了此税=抽样偏差)**——若 hh0 批证实,Gv4.2(普查上提至
+h_cnt 读回,零新增同步)当天可修。恢复路线:Gv4.2 census 税 → Gv4.3 BM_WORDS
+旋钮(bins4/5 64K→128K 列,ldoor/nlpkkt/hangGlider"刚过门"人口)→ Gv5 长.span
+位图(SB/c-big 类)。0.8054 正式退役,新底座=0.9289。
+
+## 九-2、Gv4.2 正式账(11-20 晚,commit 7662d4c,confirm18)
+
+**GM=0.9251,赢面 212/427(49.6%),ocean 列同日同卡复用 confirm17。**
+四行总账:带病 0.8137(退役)→ HH=0 消融 0.9278 → Gv4.1 0.9289 → **Gv4.2 0.9251(现役)**。
+Gv4.2 净进 0.0038(census 税的账面权重=0.4%,小于受税带逐阵比值的直观外推——
+校准教训:逐阵大比值≠大账面,人口权重决定)。位图赢人口(cfd2/s3d 族 34-42%)
+与 FEM_3D_thermal2 类 kept-bin 交换税并存,下一档优化=Gv4.3(BM_WORDS 旋钮,
+bins4/5 门 64K→128K 接"刚过门"人口)+普查性能化(位图 vs 载体预测入判据)。
+
 ## 八、待办(修复收口)
 
 - [ ] v3 电池收尾(cage15/Bump)→ hhfix4 值级快验(legacy-flip 四代表)→ 终版电池
