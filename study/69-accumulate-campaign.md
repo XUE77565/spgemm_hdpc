@@ -59,3 +59,29 @@ GPU 单任务/报错即停/测量分级(微<1ms 不作单阵裁决)/代码走别
 ---
 *版本:11-20 v1(开篇+三线地图+排刀)。关联:study/68(§五 Gv5a 设计/§九-3 K7 终案
 /§十 测量纪律)、study/57(b45 战史/spec99)、study/53(T3/ESC)。*
+
+## 五、刀一实现规格(Gv5a 载体融合,复现器已 ALL-GREEN,待生产落地)
+
+**内核侧**(hash_heavy_kernel legacy 分支,仅 bins4/5 v1):
+- 触发条件:force_legacy==1 ∧ HT_P≤2048(bin4/512、bin5/2048;bin7+ v2 再说,smem 不够);
+- 流程:legacy 提取处不走无序写,改融合提取——走表收集(原子票机,复现器同构)→
+  smem 位偶排序(键值对,哨兵 SENTINEL_KEY=0x7fffffff 沉底,N_POW2=2048)→
+  有序直写 tmp[base..base+k);smem 预算=表(6/24KB)+排序区(2048×12B=24KB)=
+  30/48KB,launch 侧 hhsm += 24KB(fused 时);row_nnz=k(票机计数,与 bitmap 分支同语义);
+- 超帽(k>cap):沿用既有 ovf→retry 熔断,融合排序自然不做(收集后判 k 与 cap)。
+
+**契约侧**(hh_used/hh_flip 三态):
+- hh_flip=2(新:fused-sorted):bins4/5 翻 bin 且走了融合提取 → compact 侧
+  视同 h_hh_used=1 走 copy/FLAT(行已有序),不再进 csort 载体;
+- ctx 增 hh_fused 出参;compact 的 bins4/5 条件改为
+  `!(hh_sorted_host() && (h_hh_used[bi] || h_hh_flip_fused[bi]))`。
+
+**发射侧**:HH_LAUNCH 增 FUSED_ 参(仅 bi∈{4,5} 且 hh_leg=1 时=1);
+hhsm 条件追加排序区;hh_elig/hh_leg 决策逻辑不变。
+
+**验证链**:①值级:nlpkkt80/nlpkkt120/cage15/ldoor(融合路径)三判 L1=L2=0;
+②ab_pair(A=HH=0 基线,B=别名):compact 线阵(nlpkkt120/cage15/ldoor/nlpkkt80)
+应显著赢,其余平;③绿→commit→confirm19。预期:compact 池吃 50-70%≈+1.0-1.5% GM。
+
+**复现器**:tools/hh_repro3.cu(606 用例 ALL-GREEN,11-20)——生产实现须与其逐行同构
+(收集/排序/写三段),分叉处仅 smem 布局(表+排序区共存)。
