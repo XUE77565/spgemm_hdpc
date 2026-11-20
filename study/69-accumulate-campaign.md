@@ -85,3 +85,14 @@ hhsm 条件追加排序区;hh_elig/hh_leg 决策逻辑不变。
 
 **复现器**:tools/hh_repro3.cu(606 用例 ALL-GREEN,11-20)——生产实现须与其逐行同构
 (收集/排序/写三段),分叉处仅 smem 布局(表+排序区共存)。
+
+## 五-1、刀一编辑点锚定(11-21,供生产实现直接落锤)
+
+- 内核 legacy 提取分支:src/spgemm_kernel_hash.cu:4626 起("提取(legacy)"注释处)——
+  融合分支插在此 if-else 的 legacy 侧,条件 force_legacy∧HT_P≤2048;
+- ctx 字段:4706(hh_flip 声明处,加 hh_fused);
+- 出参赋值:4950(c.hh_flip=hh_leg 处,加 fused 三态);
+- 发射宏调用:HH_LAUNCH(7,512/8,2048,...)(bi==4/5 两行,加 FUSED 参);
+- compact 契约:7534(bins4/5 载体条件,按 §五 三态式改);
+- GPU 空闲已确认;实现顺序:内核→ctx→发射→compact→别名构建→值级(nlpkkt80/120/cage15/ldoor)
+  →ab_pair→confirm19。
