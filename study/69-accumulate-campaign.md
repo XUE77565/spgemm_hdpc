@@ -96,3 +96,31 @@ hhsm 条件追加排序区;hh_elig/hh_leg 决策逻辑不变。
 - compact 契约:7534(bins4/5 载体条件,按 §五 三态式改);
 - GPU 空闲已确认;实现顺序:内核→ctx→发射→compact→别名构建→值级(nlpkkt80/120/cage15/ldoor)
   →ab_pair→confirm19。
+
+## 六、11-20 日终状态快照(明日续点)
+
+**今日全弧线**(study/68 §七-十 + 本档):
+- 正确性:Gv3v2 蝶式 rank 定谳→Gv4 位图修复→Gv4.1 翻bin legacy→Gv4.2 普查上提,
+  三 commit(28ea718/7662d4c/01417a5)+ 认证件重建;
+- 记分:confirm18 **0.9251 现役**(赢面 49.6%),0.8054 退役;四行消融账:
+  带病 0.8137/HH=0 0.9278/Gv4.1 0.9289/Gv4.2 0.9251(全部同日同卡);
+- 纪律:测量分级(微<1ms 不作裁决)入 ab_pair(commit 0c1671a);案底=bcsstk17
+  1.186→10× 0.984、bcspwr01 n=39 假自然实验、探针 TOTAL≠compute-only;
+- K7 终案:全账 0.9389 净负,三度证伪 opt-in 归档(90256eb);8 真赢/32 真输;
+  **资格门≠竞争力门原则**入指派表设计;
+- 地图:三线(accumulate 179/compact 148/dense 116ms),旧图 63% 单点说推翻
+  (方法论:地图与二进制同代);
+- 刀一(Gv5a 载体融合):复现器 606 全绿(cdcfd0a)→生产实现→值级双 PASS
+  (nlpkkt80/ldoor)→v1 电池 web-Google 2.03× 红→**根因=固定 2048 宽网络
+  (隐式宽度路由)→v1.1 宽度截断补丁已构建(spgemm_gv5a2,审计绿)**。
+
+**明日续点(按序)**:
+1. v1 电池结果入档(/tmp/ab_gv5a.log + results/ab_gv5a_vs_hh0.csv,v1 回归记录);
+2. spgemm_gv5a2 值级双向复验:web-Google(小 k)+ nlpkkt80/ldoor(大 k)+ F2,
+   三判 L1=L2=0;
+3. 重跑电池(A=HH=0 基线 vs B=spgemm_gv5a2):预期 web-Google 塌回 ≤1.05、
+   nlpkkt/ldoor compact 赢兑现 → 绿则 commit(src 当前含未提交 Gv5a 改动,
+   **红不 commit 纪律维持**)→ confirm19(ocean 复用,~2h);
+4. 刀二(SB/rajat dense 线)解剖开工;
+**源码状态**:src/spgemm_kernel_hash.cu 含 Gv5a v1.1 未提交改动(通过编译+审计,
+值级/电池未过,按纪律不入库)。
