@@ -4646,38 +4646,15 @@ static int g_ai_h45 = -1, g_ai_h55 = -1, g_ai_h69 = -1;
 // B1 骨架:仅证 TU-61 符号层(device 模板区在 compute_61 下可编、门内零 host 发射)。
 // P1 cutover(study/58 附录A.1):accumulate 上下文——TU-90 构造,TU-61 消费。
 // 字段=移动体(generic-else 内部原文)引用的全部外层名(编译器驱动核对)。
-struct HashAccumCtx {
-    const int *dA_rp; const int *dA_ci; const double *dA_val;
-    const int *dB_rp; const int *dB_ci; const double *dB_val;
-    const int *rows_ptr; int n;
-    long long *d_off; unsigned long long *d_tmp_key; double *d_tmp_val;
-    int *d_row_nnz; int *d_overflow; int *d_ovf_rows; int *d_ovf_cnt; int *d_row_ovf;
-    int *d_flop; int *d_maxbl; unsigned long long *d_rt; int *d_est;
-    const int *d_span_lo; const int *d_span_len;   // Gv4(study/68):HH 位图有序直写门+原点(docs/24 跨度窗)
-    int hh_used;   // Gv4 出参:1=本 bin 实际走了 HH 位图有序直写(门普查可翻 0);compact 侧按此分派
-    int hh_flip;   // Gv4 出参:1=本 bin 被门普查整 bin 翻(累积=LHT;compact 应回原生形态而非 E1 载体)
-    unsigned *d_phist; uint4 *dB16;
-    double **d_gv_bins;              // 刀E v2 per-bin VG 池(hash_product 本体数组,TU-61 侧填充分配)
-    cudaStream_t cur_s; const char *tag;
-    int upper_tri, A_rows, A_cols, g_llb, g_hyb_tier, g_priv, PRIV_W;
-    bool att;
-};
-void hash_accum_c61(HashAccumCtx &c, int bi);   // TU-61(spgemm_kernel_hash_c61.o)提供
-#if HASH_TB == 61
-// TU-61 大表/托付形态发射器:generic-else 内部原文移入(仅删 bi2/3 分支保实例集不相交)
-
-// Gv4(study/68):HH 位图门的 bin 级普查——统计本 bin 门控行(span>BM_COLS)的 Σflop。
-// 超预算(HH_GATED_FLOP_BUDGET)则整 bin 退回 hash_spa LHT:内核门把门控行交给
-// ovf/retry 机具,而 retry 按 flop 分配槽位(≈12B/flop),人口级门控行会打爆显存
-// (Hook_1498 实证:9.6G flop → 115GB cudaMalloc OOM)。普查与内核门同数据
-// (d_span_len)同判据,unsigned 比较兜空行,两处天然一致。
-#define HH_GATED_FLOP_BUDGET (64LL << 20)   // 64M flop ≈ retry 槽 768MB 帽
-// 判据二(比例):门控 Σflop > 5%×bin 总量也翻——绝对帽兜显存,比例帽防"每 bin 都
-// 不超帽但人口级门控行进 kernel 内 ovf→retry 双重累积"(电池:web-Google 5.98×/
-// ldoor 1.91×/StocF 1.59× 实证;1.9×≈双算签名)。
+// Gv4(study/68):HH 位图门的 bin 级普查——统计本 bin 门控行(span>BM_COLS)的 Σflop/Σ总flop。
+// Gv4.2:普查上提至 scatter 后的既有 D2H 批(全部 bin 一次发射+零新增同步;原 per-bin
+// 发射+流同步在 428 小阵带实测吃 16-25%——bcspwr05 0.75/bcsstm02 0.80 实锤)。
+// 判据:绝对帽(64M≈retry 槽 768MB)+ 比例帽(>5%×bin 总量亦翻——防人口级门控行
+// 进 kernel 内 ovf→retry 双重累积,web-Google 5.98× 实证);翻=HH legacy 提取(基线同款)。
+#define HH_GATED_FLOP_BUDGET (64LL << 20)
 #define HH_GATED_FLOP_FRAC_NUM 5
 #define HH_GATED_FLOP_FRAC_DEN 100
-__global__ void hh_gate_census_kernel(const int *rows, int n, const int *d_span_len,
+static __global__ void hh_gate_census_kernel(const int *rows, int n, const int *d_span_len,
                                       const int *d_flop, unsigned bm_cols,
                                       long long *out /* [gated_flop, total_flop] */)
 {
@@ -4689,6 +4666,56 @@ __global__ void hh_gate_census_kernel(const int *rows, int n, const int *d_span_
     if ((unsigned)d_span_len[i] > bm_cols)
         atomicAdd((unsigned long long *)&out[0], (unsigned long long)f);
 }
+
+// Gv4.2 上提版:行集自取(d_sort+bin_off[bi],n=bin_off[bi+1]-bin_off[bi])——发射时
+// h_cnt 尚未回宿主,grid 用 A_rows 上界,超额线程自然早退。结果 out+bi*2。
+static __global__ void hh_gate_census_off_kernel(const int *d_sort, const int *bin_off, int bi, int A_rows,
+                                          const int *d_span_len, const int *d_flop,
+                                          unsigned bm_cols, long long *out)
+{
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    const int n = bin_off[bi + 1] - bin_off[bi];
+    if (t >= n) return;
+    const int i = d_sort[bin_off[bi] + t];
+    const long long f = (long long)d_flop[i];
+    atomicAdd((unsigned long long *)&out[bi * 2 + 1], (unsigned long long)f);   // 总量=全量(与内联版判据一致)
+    if ((unsigned)d_span_len[i] > bm_cols)
+        atomicAdd((unsigned long long *)&out[bi * 2], (unsigned long long)f);
+    (void)A_rows;
+}
+
+// Gv4.2:上提普查宿主侧结果(file-scope:binning lambda 写入/ctx 初始化读取跨作用域;
+// 每次 run 被下方 async D2H 全量覆写,无跨阵残留)
+static long long hh_gfall_host[2 * N_BINS] = {0};
+
+// Gv4.2:bin→BM_WORDS 图(与 HH_LAUNCH 发射同图;census 与决策共用)
+static inline int hh_bm_words_for_bin(int bi)
+{
+    return (bi == 8) ? 4096 : (bi == 9) ? 8192 : 2048;
+}
+
+struct HashAccumCtx {
+    const int *dA_rp; const int *dA_ci; const double *dA_val;
+    const int *dB_rp; const int *dB_ci; const double *dB_val;
+    const int *rows_ptr; int n;
+    long long *d_off; unsigned long long *d_tmp_key; double *d_tmp_val;
+    int *d_row_nnz; int *d_overflow; int *d_ovf_rows; int *d_ovf_cnt; int *d_row_ovf;
+    int *d_flop; int *d_maxbl; unsigned long long *d_rt; int *d_est;
+    const int *d_span_lo; const int *d_span_len;   // Gv4(study/68):HH 位图有序直写门+原点(docs/24 跨度窗)
+    int hh_used;   // Gv4 出参:1=本 bin 实际走了 HH 位图有序直写(门普查可翻 0);compact 侧按此分派
+    int hh_flip;   // Gv4 出参:1=本 bin 被门普查整 bin 翻(累积=LHT;compact 应回原生形态而非 E1 载体)
+    const long long *h_gfall;   // Gv4.2 入参:上提普查结果宿主侧 [bi*2]=gated/[bi*2+1]=total;null=回内联普查
+    unsigned *d_phist; uint4 *dB16;
+    double **d_gv_bins;              // 刀E v2 per-bin VG 池(hash_product 本体数组,TU-61 侧填充分配)
+    cudaStream_t cur_s; const char *tag;
+    int upper_tri, A_rows, A_cols, g_llb, g_hyb_tier, g_priv, PRIV_W;
+    bool att;
+};
+void hash_accum_c61(HashAccumCtx &c, int bi);   // TU-61(spgemm_kernel_hash_c61.o)提供
+#if HASH_TB == 61
+// TU-61 大表/托付形态发射器:generic-else 内部原文移入(仅删 bi2/3 分支保实例集不相交)
+// Gv4.2:门普查内核/判据已上提至 TU 共享区(struct HashAccumCtx 前)——发射批在
+// hash_product 的 scatter 后既有 D2H 批,零新增同步;结果经 ctx.h_gfall 传入。
 
 void hash_accum_c61(HashAccumCtx &c, int bi) {
     // §六十六:E3 同类雷的 TU-61 版——tagged 实例独立符号,原 opt-in 块(TU-90 untagged)
@@ -4901,14 +4928,18 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                     const bool hh_elig = g_s99 && ((bi >= 7 && bi <= 8) || (g_h45 && bi == 4) || (g_h55 && bi == 5) || (g_h69 && bi == 9) || (g_h69 >= 2 && bi == 6)) && !g_wm && !g_pht;
                     int hh_leg = 0;
                     if (hh_elig) {
-                        const int bmw_sel = (bi == 8) ? 4096 : (bi == 9) ? 8192 : 2048;   // 与下方发射同图
-                        long long *d_gf = decltype(d_gf)(dev_alloc(16));
-                        CHECK_CUDA(cudaMemsetAsync(d_gf, 0, 16, cur_s));
-                        hh_gate_census_kernel<<<(n + 255) / 256, 256, 0, cur_s>>>(rows_ptr, n, d_span_len, d_flop, (unsigned)(bmw_sel * 32), d_gf);
-                        CHECK_CUDA(cudaStreamSynchronize(cur_s));   // 普查 μs 级;HH bin ≤6 个
                         long long h_gf[2] = {0, 0};
-                        CHECK_CUDA(cudaMemcpy(h_gf, d_gf, 16, cudaMemcpyDeviceToHost));
-                        dev_free(d_gf);
+                        if (c.h_gfall) {   // Gv4.2:读上提普查结果(scatter 后既有批已 D2H,零同步)
+                            h_gf[0] = c.h_gfall[bi * 2]; h_gf[1] = c.h_gfall[bi * 2 + 1];
+                        } else {           // 回退:内联普查(发射+流同步;仅非 hash_product 主链调用时)
+                            const int bmw_sel = hh_bm_words_for_bin(bi);
+                            long long *d_gf = decltype(d_gf)(dev_alloc(16));
+                            CHECK_CUDA(cudaMemsetAsync(d_gf, 0, 16, cur_s));
+                            hh_gate_census_kernel<<<(n + 255) / 256, 256, 0, cur_s>>>(rows_ptr, n, d_span_len, d_flop, (unsigned)(bmw_sel * 32), d_gf);
+                            CHECK_CUDA(cudaStreamSynchronize(cur_s));
+                            CHECK_CUDA(cudaMemcpy(h_gf, d_gf, 16, cudaMemcpyDeviceToHost));
+                            dev_free(d_gf);
+                        }
                         if (h_gf[0] > HH_GATED_FLOP_BUDGET ||
                             h_gf[0] * HH_GATED_FLOP_FRAC_DEN > h_gf[1] * HH_GATED_FLOP_FRAC_NUM) {
                             hh_leg = 1;
@@ -5574,6 +5605,18 @@ static void hash_product(
                                thrust::device_ptr<int>(d_offb));
         // (d_pos 清零已前移并入 binning_zero2 —— 1c-②a)
         scatter_rows_kernel<<<(A_rows + (HASH_BLOCK_STRUCT - 1)) / HASH_BLOCK_STRUCT, HASH_BLOCK_STRUCT>>>(d_bkid, A_rows, d_offb, d_pos, d_sort);
+        // Gv4.2(study/68):门普查上提——bins4-9 一次发射批,D2H 挂进下方既有 async 批,
+        // 消 hash_accum_c61 内 per-bin 流同步(428 小阵带实测税 16-25%:bcspwr05 0.75 实锤)。
+        // h_cnt 未回宿主 → 行集由内核从 d_sort+bin_off 自取;人口空 bin 自然 no-op。
+        {
+            long long *d_gfall = decltype(d_gfall)(dev_alloc(2 * N_BINS * sizeof(long long)));
+            CHECK_CUDA(cudaMemsetAsync(d_gfall, 0, 2 * N_BINS * sizeof(long long)));
+            for (int cbi = 4; cbi <= 9 && cbi < N_BINS - 1; cbi++)
+                hh_gate_census_off_kernel<<<(A_rows + 255) / 256, 256>>>(
+                    d_sort, d_offb, cbi, A_rows, d_span_len, d_flop,
+                    (unsigned)(hh_bm_words_for_bin(cbi) * 32), d_gfall);
+            CHECK_CUDA(cudaMemcpyAsync(hh_gfall_host, d_gfall, 2 * N_BINS * sizeof(long long), cudaMemcpyDeviceToHost));
+        }
         // 3 个 D2H 合并:async + 单 sync(省 2 同步点;total_est 从 est_scan 延后到此)
         CHECK_CUDA(cudaMemcpyAsync(h_cnt, d_cnt,  N_BINS * sizeof(int), cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaMemcpyAsync(h_off, d_offb, N_BINS * sizeof(int), cudaMemcpyDeviceToHost));
@@ -6577,7 +6620,7 @@ static void hash_product(
                     } else {
                         HashAccumCtx c61 = { dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, rows_ptr, n,
         d_off, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-        d_flop, d_maxbl, d_rt, d_est, d_span_lo, d_span_len, 0, 0, d_phist, dB16, d_gv_bins, cur_s, tag,
+        d_flop, d_maxbl, d_rt, d_est, d_span_lo, d_span_len, 0, 0, hh_gfall_host, d_phist, dB16, d_gv_bins, cur_s, tag,
         upper_tri, A_rows, A_cols, g_llb, g_hyb_tier, g_priv, PRIV_W, att };
                         hash_accum_c61(c61, bi);
                         h_hh_used[bi] = c61.hh_used;   // Gv4:记录实际路径(普查退 LHT 的 bin,compact 不可再直拷)
