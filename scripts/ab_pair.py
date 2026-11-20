@@ -79,20 +79,33 @@ def main():
         if r["nnz"] > 0: nnzmap.setdefault((r["mat"], r["bin"]), set()).add(r["nnz"])
     ratios = []; bad = []
     print("\n===== 判读(B/A 中位)=====")
+    # 测量分级纪律(memory/measurement-class-discipline,11-20 用户钦定):
+    # 中位 <1ms=微级(不作单阵裁决,只进 GM 聚合);1-10ms=中级;>=10ms=稳级。
+    # 交错发射(A/B 相邻)由主循环保证;本 3 轮口径对微级仅方向参考。
+    micro = []
     for name, _, _ in MATS:
         a, b = by.get((name,"A")), by.get((name,"B"))
         na, nb = nnzmap.get((name,"A")), nnzmap.get((name,"B"))
         nnz_bad = (na != nb) or na is None
         if not a or not b:
             bad.append(name); print(f"{name:>12}  FAIL(缺数据)"); continue
-        ratio = statistics.median(b) / statistics.median(a)
+        med_a = statistics.median(a)
+        ratio = statistics.median(b) / med_a
+        cls = "微" if med_a < 1.0 else ("中" if med_a < 10.0 else "稳")
+        if cls == "微" and not nnz_bad:
+            micro.append(name)
+            print(f"{name:>12}  {ratio:.4f}  [微级<1ms—不作裁决,需10×交错]")
+            ratios.append(ratio)
+            continue
         ratios.append(ratio)
         flag = "NNZ-MISMATCH!" if nnz_bad else ("Δ>5%" if abs(ratio-1) > 0.05 else "")
-        print(f"{name:>12}  {ratio:.4f}  {flag}")
+        print(f"{name:>12}  {ratio:.4f}  {flag}  [{cls}]")
         if nnz_bad: bad.append(name)
     if ratios:
         gm = math.exp(sum(math.log(x) for x in ratios)/len(ratios))
         print(f"\nGM(B/A) = {gm:.4f} | 最差 = {max(ratios):.4f} | nnz 异常 = {len([x for x in bad])}")
+        if micro:
+            print(f"微级(不作单阵裁决): {', '.join(micro)} — 单阵结论无效,如需判决改 10× 交错")
         print("裁定:", "红-停" if bad or (gm > 1.02) else "绿-进下批(≤2% 带内)")
 
 if __name__ == "__main__":
