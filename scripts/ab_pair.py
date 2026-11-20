@@ -32,9 +32,13 @@ RE_D2H = re.compile(r"\[hash-prof\] d2h\s+([\d.]+)")
 RE_M3  = re.compile(r"\[mrg3-prof\] TOTAL\(GPU\)\s+([\d.]+)")
 RE_NNZ = re.compile(r"Result C:.*nnz = (\d+)")
 
-def run_one(binary, mat_path, method, gpu):
+def run_one(binary, mat_path, method, gpu, extra_env=None):
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=gpu, METHOD=method,
                WARMUP_N="3", USE_MEMPOOL="1", MP_HOST_MB="8192", D6EXP="0")
+    if extra_env:
+        for kv in extra_env.split(","):
+            if "=" in kv:
+                k, v = kv.split("=", 1); env[k.strip()] = v.strip()
     try:
         r = subprocess.run([f"./{binary}", mat_path], cwd=REPO, env=env,
                            capture_output=True, text=True, timeout=600)
@@ -55,11 +59,12 @@ def main():
     bin_a, bin_b, out = sys.argv[1], sys.argv[2], sys.argv[3]
     rounds = int(sys.argv[4]) if len(sys.argv) > 4 else 3
     gpu = sys.argv[5] if len(sys.argv) > 5 else "1"
+    a_env = sys.argv[6] if len(sys.argv) > 6 else None   # A 臂专属 env("K=V,K=V")——正确性修复刀的对照基线(如 HH_SORTED=0 正确形态)
     rows = []
     for name, path, method in MATS:
         for r in range(rounds):
             for label, b in (("A", bin_a), ("B", bin_b)):
-                res = run_one(b, path, method, gpu)
+                res = run_one(b, path, method, gpu, a_env if label == "A" else None)
                 rows.append({"mat": name, "bin": label, "round": r,
                              "co": res[0] if res else -1, "nnz": res[1] if res else -1})
                 print(f"{name:>12} {label} r{r} {'%.3f' % res[0] if res else 'FAIL'} nnz={res[1] if res else '-'}", flush=True)

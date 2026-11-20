@@ -4438,7 +4438,7 @@ static void launch_csort(int n, const int *rows_ptr, const long long *d_off, con
 // ovf_rows→retry 机具(hash_spa 同款);rowtime[i]=探测环完成处(同彼 ROWCYCLES 窗,不含提取)。
 // SPEC99 env 门(默认关=零生产影响);bins7-8 接管,bin9+ 仍走原路径。
 // 刀2:B16ON 模板参(交织 B 装载,每乘积 1 次 uint4 vs 2 次分离读——hash_spa 同款,编译期消分支)
-template<int LOG_NTHR, int HT_P, int B16ON = 0, int OCH = 0>   // OCH=1:彼 id*11 哈希 A/B(刀10:错峰机理直测)
+template<int LOG_NTHR, int HT_P, int B16ON = 0, int OCH = 0, int BM_WORDS = 2048>   // OCH=1:彼 id*11 哈希 A/B(刀10:错峰机理直测);BM_WORDS=Gv4 位图词数(study/68)
 __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heavy_kernel(
     const int *__restrict__ A_rp, const int *__restrict__ A_ci, const double *__restrict__ A_val,
     const int *__restrict__ B_rp, const int *__restrict__ B_ci, const double *__restrict__ B_val,
@@ -4447,7 +4447,9 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     unsigned long long *tmp_key, double *tmp_val, int *row_nnz,
     int *overflow_flag, int *ovf_rows, int *ovf_cnt, int *row_ovf,
     const int *d_flop, const int *d_maxbl, unsigned long long *rowtime,
-    const int *d_est, int est_lo, int est_hi, const int rot_on)   // 刀3过滤+刀11旋转总闸(SPEC99_ROT,host 读入)
+    const int *d_est, int est_lo, int est_hi, const int rot_on,   // 刀3过滤+刀11旋转总闸(SPEC99_ROT,host 读入)
+    const int *d_span_lo, const int *d_span_len,   // Gv4(study/68):docs/24 跨度窗,位图门+原点
+    const int force_legacy)   // Gv4.1:普查翻 bin 时=1——本 launch 走 legacy 无序提取(=HH_SORTED=0 同 bin 形态:HH累积+载体),不进位图路径/入口门
 {
     (void)nrows;
     extern __shared__ int smem_hh[];                        // [HT_P]=sh_col(int);对齐后 sh_val(double)
@@ -4464,6 +4466,17 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     if (est_hi > 0) {                       // 刀3:raw est 域过滤(还 d_est 的 1.8× 膨胀;ncu 实证彼 2719 档 issue 77%)
         const int raw_est = (int)(((long long)d_est[i] * 5) / 9);
         if (raw_est < est_lo || raw_est > est_hi) return;
+    }
+    // Gv4(study/68):位图有序直写的行跨度门——span_len > BM_COLS(位图装不下)的行
+    // 不进本核累积,注册 ovf 交既有 retry 机具(hash_spa 单次累积接管,零双算);
+    // compact 侧 copy_warp 的 skip[row]=row_ovf 天然跳过这些行。
+    // g_hh_sorted_d=0 或 force_legacy(Gv4.1 普查翻 bin)时无位图不走门。unsigned 比较兜空行。
+    if (g_hh_sorted_d && !force_legacy && (unsigned)d_span_len[i] > (unsigned)(BM_WORDS * 32)) {
+        if (tid == 0) {
+            atomicExch(overflow_flag, 1);
+            if (!atomicExch(&row_ovf[i], 1)) { const int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
+        }
+        return;
     }
     const int rs = A_rp[i], re = A_rp[i + 1];
     const long long base = d_off[i];
@@ -4554,47 +4567,55 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     // 之前在探测环后测 = 不含提取,跟彼方 ROWCYCLES(含提取)不同窗 → 偏向我们
     // 现在两边都是"从 kernel 开始到 kernel 结束"的完整时间
 
-    // 提取:刀Gv3v2(study/57 §六十)有序直写——v1 三死因逐一拆:
-    // ①段认领=seg=warp序+k×nw(每段 32 连续槽,全体 warp 进环;v1 的 tid*32 步进=仅 1/4 线程);
-    // ②段内位移 rank=5 轮 __shfl_xor 广播同段键累"有效且小于我"位掩码,popc(v1 逐槽串行比较);
-    // ③跨段前缀按表序入 smem 段数组(段序=表序,v1 的 warp 前缀在 warp 段跨表序散布=次序错);
-    // ④cap=d_off 行槽宽,rank≥cap 走既有 retry 熔断语义(v1 cap2=INT_MAX 裸写)。
-    // 表内键天然无重 → rank 直写=行内有序,下游免 counting sort 载体趟(刀G载体悖论正解)。
-    if (g_hh_sorted_d) {
-        const int lane5 = tid & 31, wid = tid >> 5, nw = (int)(blockDim.x >> 5);
-        const int nseg = (HT_P + 31) >> 5;
-        __shared__ int seg_pre[(HT_P + 31) >> 5 > 1 ? (HT_P + 31) >> 5 : 1];   // 段 exclusive 前缀(HT_P=8192 → 256 int=1KB)
-        // Pass A:段计数——ballot 必须全体 lane 到场(§六十一:首版把 ballot 写进
-        // if(lane5==0) = 仅 lane0 等全掩码 = 必挂;结果由 lane0 落账)
-        for (int seg = wid; seg < nseg; seg += nw) {
-            const int lo = (seg << 5) + lane5;
-            const int c = (lo < HT_P) ? sh_col[lo] : -1;
-            const unsigned valid = __ballot_sync(0xffffffffu, c != -1);
-            if (lane5 == 0) seg_pre[seg] = __popc(valid);
+    // 提取:Gv4(study/68)列域位图有序直写——Gv3v2 槽域蝶式 rank 的整体替换。
+    // v2 双重死因:①__shfl_xor 蝶式不传播(每 lane 只见 5 个固定伙伴 L^1/2/4/8/16,
+    // 段内位次系统性错 → rank 碰撞互覆+空洞);②即便修好①,seg 前缀是表槽序 ≠ 列序,
+    // 直写行序仍非列序。v4 改列域:位图 bit=列,位次=列前缀+词内低位前缀;
+    // 表内键无重(CAS 去重)→ 位图位无重 → 位次是 [0,k) 双射,构造性无碰撞无空洞。
+    // 位图区=表区之后的动态 smem 尾部(发射侧 hhsm 已含 BM_WORDS 词);门在核入口
+    // (span_len>BM_COLS 注册 ovf 交 retry)。微复现器:tools/hh_repro2.cu 五档全绿。
+    if (g_hh_sorted_d && !force_legacy) {
+        unsigned *bm = (unsigned *)(smem_hh + (((HT_P + 1) & ~1) + 2 * HT_P));   // 表区(col+val)之后
+        constexpr int NG = (BM_WORDS + 31) >> 5;      // 组数(32 词/组,组前缀+组内现算)
+        __shared__ int gpre[NG > 1 ? NG : 1];         // 组 exclusive 前缀(≤256 int)
+        const int cbase = d_span_lo[i];               // 位图原点(docs/24 跨度窗下界=输出列下界的保守界)
+        // span 界定:只清/只扫本行实际需要的词(小 span 行免全位图清零;门保证 cw≤BM_WORDS)
+        const int cw = (int)(((unsigned)d_span_len[i] + 31u) >> 5);
+        const int ng_row = (cw + 31) >> 5;            // 本行实际组数(≤NG)
+        for (int w = tid; w < cw; w += blockDim.x) bm[w] = 0u;        // 清位图(界定)
+        __syncthreads();                              // 栅栏 3/6
+        for (int s = tid; s < HT_P; s += blockDim.x) {                // Pass 1:置位
+            const int c = sh_col[s];
+            if (c != -1) { const int b = c - cbase; atomicOr(&bm[b >> 5], 1u << (b & 31)); }
         }
-        __syncthreads();
-        if (tid == 0) {   // exclusive 前缀(段序=表序;单线程 nseg≤256 串行,亚 μs)
+        __syncthreads();                              // 栅栏 4/6
+        for (int g = tid; g < ng_row; g += blockDim.x) {              // 组计数(界定,原地)
+            int sc = 0;
+            #pragma unroll 4
+            for (int w = g * 32; w < (g + 1) * 32 && w < cw; w++) sc += __popc(bm[w]);
+            gpre[g] = sc;
+        }
+        __syncthreads();                              // 栅栏 5/6
+        if (tid == 0) {                               // 组独占前缀+总数(界定,亚μs)
             int acc = 0;
-            for (int s = 0; s < nseg; s++) { const int t = seg_pre[s]; seg_pre[s] = acc; acc += t; }
-            row_nnz[i] = acc;
+            for (int g = 0; g < ng_row; g++) { const int t = gpre[g]; gpre[g] = acc; acc += t; }
+            row_nnz[i] = acc;                         // 溢出行会被 retry 覆盖(同上方 4470 语义)
         }
-        __syncthreads();
+        __syncthreads();                              // 栅栏 6/6
         const int cap = (int)(d_off[i + 1] - d_off[i]);   // 行 est 槽宽
-        // Pass B:重算段内 rank(shfl 现算,免 smem 位次表)+ 直写
-        for (int seg = wid; seg < nseg; seg += nw) {
-            const int lo = (seg << 5) + lane5;
-            const int c = (lo < HT_P) ? sh_col[lo] : -1;
-            unsigned lt = 0;   // 段内"有效且小于我"位掩码
-            #pragma unroll
-            for (int off = 1; off < 32; off <<= 1) {
-                const int other = __shfl_xor_sync(0xffffffffu, c, off);
-                if (other != -1 && other < c) lt |= (1u << (lane5 ^ off));
-            }
+        for (int s = tid; s < HT_P; s += blockDim.x) {                // Pass 2:位次直写
+            const int c = sh_col[s];
             if (c != -1) {
-                const int r = seg_pre[seg] + __popc(lt);
+                const int b = c - cbase;
+                const int w = b >> 5;
+                const unsigned bit = 1u << (b & 31);
+                unsigned pre = 0;                     // 组内词前缀(≤31 popc;组=32 词)
+                const int gw = w & ~31;
+                for (int q = gw; q < w; q++) pre += __popc(bm[q]);
+                const int r = gpre[w >> 5] + (int)pre + __popc(bm[w] & (bit - 1));
                 if (r < cap) {
                     tmp_key[base + r] = ((unsigned long long)i << 32) | (unsigned int)c;
-                    tmp_val[base + r] = sh_val[lo];
+                    tmp_val[base + r] = sh_val[s];
                 } else {   // 超帽:既有 retry 熔断语义(探测环满表同款)
                     atomicExch(overflow_flag, 1);
                     if (!atomicExch(&row_ovf[i], 1)) { const int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
@@ -4632,6 +4653,9 @@ struct HashAccumCtx {
     long long *d_off; unsigned long long *d_tmp_key; double *d_tmp_val;
     int *d_row_nnz; int *d_overflow; int *d_ovf_rows; int *d_ovf_cnt; int *d_row_ovf;
     int *d_flop; int *d_maxbl; unsigned long long *d_rt; int *d_est;
+    const int *d_span_lo; const int *d_span_len;   // Gv4(study/68):HH 位图有序直写门+原点(docs/24 跨度窗)
+    int hh_used;   // Gv4 出参:1=本 bin 实际走了 HH 位图有序直写(门普查可翻 0);compact 侧按此分派
+    int hh_flip;   // Gv4 出参:1=本 bin 被门普查整 bin 翻(累积=LHT;compact 应回原生形态而非 E1 载体)
     unsigned *d_phist; uint4 *dB16;
     double **d_gv_bins;              // 刀E v2 per-bin VG 池(hash_product 本体数组,TU-61 侧填充分配)
     cudaStream_t cur_s; const char *tag;
@@ -4641,6 +4665,31 @@ struct HashAccumCtx {
 void hash_accum_c61(HashAccumCtx &c, int bi);   // TU-61(spgemm_kernel_hash_c61.o)提供
 #if HASH_TB == 61
 // TU-61 大表/托付形态发射器:generic-else 内部原文移入(仅删 bi2/3 分支保实例集不相交)
+
+// Gv4(study/68):HH 位图门的 bin 级普查——统计本 bin 门控行(span>BM_COLS)的 Σflop。
+// 超预算(HH_GATED_FLOP_BUDGET)则整 bin 退回 hash_spa LHT:内核门把门控行交给
+// ovf/retry 机具,而 retry 按 flop 分配槽位(≈12B/flop),人口级门控行会打爆显存
+// (Hook_1498 实证:9.6G flop → 115GB cudaMalloc OOM)。普查与内核门同数据
+// (d_span_len)同判据,unsigned 比较兜空行,两处天然一致。
+#define HH_GATED_FLOP_BUDGET (64LL << 20)   // 64M flop ≈ retry 槽 768MB 帽
+// 判据二(比例):门控 Σflop > 5%×bin 总量也翻——绝对帽兜显存,比例帽防"每 bin 都
+// 不超帽但人口级门控行进 kernel 内 ovf→retry 双重累积"(电池:web-Google 5.98×/
+// ldoor 1.91×/StocF 1.59× 实证;1.9×≈双算签名)。
+#define HH_GATED_FLOP_FRAC_NUM 5
+#define HH_GATED_FLOP_FRAC_DEN 100
+__global__ void hh_gate_census_kernel(const int *rows, int n, const int *d_span_len,
+                                      const int *d_flop, unsigned bm_cols,
+                                      long long *out /* [gated_flop, total_flop] */)
+{
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= n) return;
+    const int i = rows[t];
+    const long long f = (long long)d_flop[i];
+    atomicAdd((unsigned long long *)&out[1], (unsigned long long)f);
+    if ((unsigned)d_span_len[i] > bm_cols)
+        atomicAdd((unsigned long long *)&out[0], (unsigned long long)f);
+}
+
 void hash_accum_c61(HashAccumCtx &c, int bi) {
     // §六十六:E3 同类雷的 TU-61 版——tagged 实例独立符号,原 opt-in 块(TU-90 untagged)
     // 不覆盖 → bin9 大表(196KB)launch invalid argument(Ga10As10H30 实证,40 阵批量空值)。
@@ -4687,6 +4736,7 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
     auto &d_row_nnz = c.d_row_nnz; auto &d_overflow = c.d_overflow;
     auto &d_ovf_rows = c.d_ovf_rows; auto &d_ovf_cnt = c.d_ovf_cnt; auto &d_row_ovf = c.d_row_ovf;
     auto &d_flop = c.d_flop; auto &d_maxbl = c.d_maxbl; auto &d_rt = c.d_rt; auto &d_est = c.d_est;
+    auto &d_span_lo = c.d_span_lo; auto &d_span_len = c.d_span_len;   // Gv4(study/68)
     auto &d_phist = c.d_phist; auto &dB16 = c.dB16;
     auto &d_gv_bins = c.d_gv_bins; double *d_gv = nullptr;   // decltype 锚(VG 池分配)
     auto &cur_s = c.cur_s; auto &tag = c.tag;
@@ -4846,28 +4896,53 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                     if (g_ai_h45 >= 0 && s_env_h45 < 0) g_h45 = g_ai_h45;
                     if (g_ai_h55 >= 0 && s_env_h55 < 0) g_h55 = g_ai_h55;
                     if (g_ai_h69 >= 0 && s_env_h69 < 0) g_h69 = g_ai_h69;
-                    if (g_s99 && ((bi >= 7 && bi <= 8) || (g_h45 && bi == 4) || (g_h55 && bi == 5) || (g_h69 && bi == 9) || (g_h69 >= 2 && bi == 6)) && !g_wm && !g_pht) {
-#define HH_LAUNCH2(LNT_, P_, OCH_, LO_, HI_, ROT_) do { \
-    const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double); \
-    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1, (OCH_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
-    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 0, (OCH_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
-    if (dB16) hash_heavy_kernel<(LNT_), (P_), 1, (OCH_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
+                    // Gv4 门普查(study/68)+Gv4.1:翻 bin 不退 LHT,改 HH legacy 无序提取
+                    // (= HH_SORTED=0 同 bin 形态:HH 累积+载体 compact)——翻 bin 代价构造性归零。
+                    const bool hh_elig = g_s99 && ((bi >= 7 && bi <= 8) || (g_h45 && bi == 4) || (g_h55 && bi == 5) || (g_h69 && bi == 9) || (g_h69 >= 2 && bi == 6)) && !g_wm && !g_pht;
+                    int hh_leg = 0;
+                    if (hh_elig) {
+                        const int bmw_sel = (bi == 8) ? 4096 : (bi == 9) ? 8192 : 2048;   // 与下方发射同图
+                        long long *d_gf = decltype(d_gf)(dev_alloc(16));
+                        CHECK_CUDA(cudaMemsetAsync(d_gf, 0, 16, cur_s));
+                        hh_gate_census_kernel<<<(n + 255) / 256, 256, 0, cur_s>>>(rows_ptr, n, d_span_len, d_flop, (unsigned)(bmw_sel * 32), d_gf);
+                        CHECK_CUDA(cudaStreamSynchronize(cur_s));   // 普查 μs 级;HH bin ≤6 个
+                        long long h_gf[2] = {0, 0};
+                        CHECK_CUDA(cudaMemcpy(h_gf, d_gf, 16, cudaMemcpyDeviceToHost));
+                        dev_free(d_gf);
+                        if (h_gf[0] > HH_GATED_FLOP_BUDGET ||
+                            h_gf[0] * HH_GATED_FLOP_FRAC_DEN > h_gf[1] * HH_GATED_FLOP_FRAC_NUM) {
+                            hh_leg = 1;
+                            dbg("[%s] Gv4 门普查: bin%d 门控Σflop=%lld / 总%lld → HH legacy提取(位图免)\n", tag, bi, h_gf[0], h_gf[1]);
+                        }
+                    }
+                    c.hh_used = (hh_elig && !hh_leg) ? 1 : 0;   // Gv4 出参:本 bin 实际走位图有序直写?
+                    c.hh_flip = hh_leg;   // Gv4.1 出参:legacy 形态(compact 走载体=基线同款)
+                    if (hh_elig) {
+#define HH_LAUNCH2(LNT_, P_, BM_, OCH_, LO_, HI_, ROT_, LEG_) do { \
+    const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double) + ((LEG_) ? 0 : (size_t)(BM_) * sizeof(unsigned)); \
+    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1, (OCH_), (BM_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
+    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 0, (OCH_), (BM_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
+    if (dB16) hash_heavy_kernel<(LNT_), (P_), 1, (OCH_), (BM_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, dB16, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
-        d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_), (ROT_)); \
-    else      hash_heavy_kernel<(LNT_), (P_), 0, (OCH_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
+        d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_), (ROT_), d_span_lo, d_span_len, (LEG_)); \
+    else      hash_heavy_kernel<(LNT_), (P_), 0, (OCH_), (BM_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, nullptr, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
-        d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_), (ROT_)); } while (0)
-#define HH_LAUNCH(LNT_, P_) do { if (g_s99och) HH_LAUNCH2((LNT_), (P_), 1, 0, 0, g_s99rot); else HH_LAUNCH2((LNT_), (P_), 0, 0, 0, g_s99rot); } while (0)
+        d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_), (ROT_), d_span_lo, d_span_len, (LEG_)); } while (0)
+#define HH_LAUNCH(LNT_, P_, BM_, LEG_) do { if (g_s99och) HH_LAUNCH2((LNT_), (P_), (BM_), 1, 0, 0, g_s99rot, (LEG_)); else HH_LAUNCH2((LNT_), (P_), (BM_), 0, 0, 0, g_s99rot, (LEG_)); } while (0)
                         // 刀6:pow2 档终极 A/B(4096/8192=hash_spa 同表经济,mask 1 条 vs magic-div 6 条)——
                         // 隔离 3 栅栏结构 vs 18 栅栏的净价值;刀5 素数版(4111/8209)留 git 史
-                        if (bi == 7)      HH_LAUNCH(9, 4096);
-                        else if (bi == 8) HH_LAUNCH(10, 8192);
-                        else if (bi == 9) HH_LAUNCH(10, 16253);   // 刀①:bin9 素数紧档(195KB≤227KB,opt-in 随宏;1024T 同 bin8 几何)
-                        else if (bi == 6) HH_LAUNCH(9, 2719);     // 刀①:bin6 素数档(32.6KB 免 opt-in;512T 同 bin7 几何)
-                        else if (bi == 5) HH_LAUNCH(8, 2048);   // 刀G:bin5 ht=2048 档 256T×8/SM
-                        else              HH_LAUNCH(7, 512);   // 刀E1:bin4 ht=512 pow2(deployed 形态同款),128T=16 块/SM
+                        // Gv4 BM_WORDS(位图词数→列门):bin4-7=2048(64K列)/bin8=4096(128K)/bin9=8192(256K,
+                        // 195+32KB=227.8≤232448B 极限压线,单块/SM 本就如此);occupancy:bin4 6+8=14KB
+                        // →16 块=线程帽不降,bin7 56KB/4 块、bin8 112KB/2 块皆不变(电池复核)
+                        // Gv4.1:hh_leg=1 时发射免位图 smem(=原几何,与基线逐位同形态)
+                        if (bi == 7)      HH_LAUNCH(9, 4096, 2048, hh_leg);
+                        else if (bi == 8) HH_LAUNCH(10, 8192, 4096, hh_leg);
+                        else if (bi == 9) HH_LAUNCH(10, 16253, 8192, hh_leg);   // 刀①:bin9 素数紧档(195KB≤227KB,opt-in 随宏;1024T 同 bin8 几何)
+                        else if (bi == 6) HH_LAUNCH(9, 2719, 2048, hh_leg);     // 刀①:bin6 素数档(32.6KB 免 opt-in;512T 同 bin7 几何)
+                        else if (bi == 5) HH_LAUNCH(8, 2048, 2048, hh_leg);   // 刀G:bin5 ht=2048 档 256T×8/SM
+                        else              HH_LAUNCH(7, 512, 2048, hh_leg);   // 刀E1:bin4 ht=512 pow2(deployed 形态同款),128T=16 块/SM
 #undef HH_LAUNCH
 #undef HH_LAUNCH2
                         CHECK_CUDA(cudaGetLastError());
@@ -6150,6 +6225,10 @@ static void hash_product(
         // INITDBG 历史注释保留:study/18 曾用此分叉定位 denormal 垃圾来源。
         CHECK_CUDA(cudaMemset(d_tmp_val, 0, (size_t)tmp_slots * sizeof(double)));
     }
+    // Gv4(study/68):本 bin 累积实际走 HH 位图有序直写?(门普查可整 bin 翻 0;compact 侧契约)
+    // 函数层作用域:accumulate 写 / compact 读。h_hh_flip=普查翻(累积退 LHT)。
+    int h_hh_used[N_BINS] = {0};
+    int h_hh_flip[N_BINS] = {0};
     if (dense_nr > 0 && (dense_mode || dense_win_mode)) {
         // 方案5 矩阵级:count 已出精确 row_nnz,数值 pass 在 cnnz_scan 后直写(此分支无 accumulate)
     } else
@@ -6498,9 +6577,11 @@ static void hash_product(
                     } else {
                         HashAccumCtx c61 = { dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, rows_ptr, n,
         d_off, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-        d_flop, d_maxbl, d_rt, d_est, d_phist, dB16, d_gv_bins, cur_s, tag,
+        d_flop, d_maxbl, d_rt, d_est, d_span_lo, d_span_len, 0, 0, d_phist, dB16, d_gv_bins, cur_s, tag,
         upper_tri, A_rows, A_cols, g_llb, g_hyb_tier, g_priv, PRIV_W, att };
                         hash_accum_c61(c61, bi);
+                        h_hh_used[bi] = c61.hh_used;   // Gv4:记录实际路径(普查退 LHT 的 bin,compact 不可再直拷)
+                        h_hh_flip[bi] = c61.hh_flip;   // Gv4:记录普查翻(bins4/5 回 FLAT 原生形态)
                     }
                     CHECK_CUDA(cudaGetLastError());   // 发射即时检查(>48KB 表 opt-in 类问题即抓)
             }
@@ -7407,12 +7488,13 @@ static void hash_product(
                 else
                     launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());
-            } else if (bi == 4 && h45_pilot_on() && !hh_sorted_host()) {
+            } else if (bi == 4 && h45_pilot_on() && !(hh_sorted_host() && h_hh_used[bi])) {
                 // 刀E1:bin4 行走 hash_heavy(无序写 tmp)→ csort 善后(CAP 512 紧贴 bin4 表容)
-                // Gv3v2(§六十):HH_SORTED=1 时输出已行内有序 → 跳过载体,落下方 copy/FLAT 路(免 counting sort 趟)
+                // Gv4/Gv4.1(study/68):位图放行(h_hh_used=1)时输出已行内有序 → 跳过载体;
+                // 普查翻 bin(hh_used=0)走 HH legacy 无序提取 → 载体(=HH_SORTED=0 同 bin 形态)
                 launch_csort<128, 4>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());
-            } else if (bi == 5 && h45_pilot_on() && !hh_sorted_host()) {
+            } else if (bi == 5 && h45_pilot_on() && !(hh_sorted_host() && h_hh_used[bi])) {
                 // 刀G:bin5 行走 hash_heavy(无序写)→ 两级计数排序善后(spec84 同款;
                 // d~200 → CAP 2048 counting O(nnz+CAP) 免 radix padding 税,crankseg bin6/7 已转正同型)
                 launch_csort_counting<CSC_TPB, CSC_CAP>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
@@ -7439,11 +7521,11 @@ static void hash_product(
                 if (g_cs_cnt && bi == 6) {
                     // counting 变体无融合键位约束,免 valid_bits/A_cols 门
                     launch_csort_counting<CSC_TPB, CSC_CAP>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
-                } else if (g_cs_cnt && bi == 7 && !hh_sorted_host()) {
+                } else if (g_cs_cnt && bi == 7 && !(hh_sorted_host() && h_hh_used[bi])) {
                     // spec84:bin7 扩展——radix <512,8> REG:79 = 1 块/SM(25% warps) vs counting 3 块(75%),
                     // 占用+指令双优;SMEM 60KB(helper 条件 opt-in);crankseg bin7 人口主判
                     launch_csort_counting<512, 4096>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
-                } else if (bi == 7 && hh_sorted_host()) {
+                } else if (bi == 7 && hh_sorted_host() && h_hh_used[bi]) {
                     // §六十四:HH_SORTED 下 bin7/8 hash_heavy 输出已行内有序 → 免排序载体直拷
                     // (nsys 定谳:有序输入撞 counting<512,4096> 0.59→3.78ms 病理;TSOPF/c-64/pre2 回退元凶)
                     launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
@@ -7457,10 +7539,10 @@ static void hash_product(
                     else                   launch_csort<CSORT_TPB_A, CSORT_IPT_A>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 }
                 CHECK_CUDA(cudaGetLastError());
-            } else if (bi == 8 && hh_sorted_host()) {
+            } else if (bi == 8 && hh_sorted_host() && h_hh_used[bi]) {
                 launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);   // §六十四:bin8 有序直拷(同 bin7)
                 CHECK_CUDA(cudaGetLastError());
-            } else if (bi == 9 && hh_sorted_host() && h69_route_on()) {
+            } else if (bi == 9 && hh_sorted_host() && h_hh_used[bi] && h69_route_on()) {
                 // 刀①'(study/59):H69 开时 bin9 行全部来自 HH(16253)+有序直写 → 免 SEGRTS
                 // 排序阶梯直拷(A/B 实证:HH acc −41~−58% 但 SEGRTS compact 天价 42ms 级吃光)
                 launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
