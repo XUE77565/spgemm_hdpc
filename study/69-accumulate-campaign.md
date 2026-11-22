@@ -185,3 +185,15 @@ HH=0 0.9278/Gv4.1 0.9289/Gv4.2 0.9251/**Gv5a 0.9085(现役)**。
 compact 线(148ms 池)主力收割完毕;剩余:pre2 +5.9%(带内,重行载体回归税)、
 bin7-9 fused 未扩(v2 候选)。下一刀:刀二 SB/rajat dense 线(116ms 池,
 病灶已定谳=search 路径无空窗跳过+路由误判,修法=先路由后内核)。
+
+## 十二、刀二 SB 定谳(11-23):dense_direct 的 SMEM 原子争用 + dup 门放行
+
+**画像翻案**:SB 5263 dense 行 = F=11930/est=2666/span=2141/**est-span=1.0(窗内全满)**/
+dup=5.7——span 窄窗内全密,路由方向本身对;"空窗跳过"假说否(早前误诊)。
+**真凶**:dup=5.7 → 每输出位 5.7 次同地址 SMEM atomicAdd(争用吞吐 1/4),
+62.7M 乘积×4-6 cycle ≈ 232ms——与 dense_direct 227ms 算术吻合。
+**对照实验**:DITER_MIN_FLOP=∞ 推回 hash → SB 360→261ms(−27%),diter 5263→417。
+hash 的 CAS 分散恰是 dup 的克星。**修法二选一**:①DUP_LIGHT 8→4(dup≥4 行
+回 hash;SB 5.7 落网外;需全账电池防 F2/c-64 类 dup<4 dense 赢家回归);
+②dense_direct 内核 K1_ACC 争用消解(flag 门控累加替代 atomicAdd)。
+优先①(一行常数,带电池);rajat16/20/25 同画像待验。
