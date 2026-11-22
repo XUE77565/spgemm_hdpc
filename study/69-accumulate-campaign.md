@@ -152,3 +152,14 @@ web-Google 0.918——判别定谳(重行双重走表)修正后翻 bin 人口载
 count 43ms+dstr_split#1)——440MB/232ms=1.9GB/s,**离带宽 1500×**,内环病理
 (嫌疑:全局窗零化/原子争用/窗口溢出),下一步=读 dense_direct 内核定位。
 其余人口:ESC8/16/32=47.8 万轻行+bin0 8.1 万(warp 路径,非主矛盾)。
+
+## 九、刀二 SB 病灶定谳(11-23):search 路径无空窗跳过
+
+hash_dense_direct_kernel(src:1304,search 路径 1375-1387):`for wi∈[0,nw_win)` 全跨度
+逐窗,每窗付 PB2_W 零化(dval+dflag)+每 A 索引一次 dev_lower_bound 二分,无空窗跳过。
+SB hub 行(5263 条,avg 7000 出/683k 跨度≈1% 密度)→ 170-330 窗/行 × 零化+二分
+= 232ms(1.9GB/s 病理)。cursor 路径有 smap 前进,search 无。
+**双重病**:①路由——1% 密度宽跨行根本不该进 dense(diter 门误判);②内核——
+search 路径需空窗跳过(候选:行实际列域窗表预扫,或移植 merge3 有效列域思想)。
+**修法优先序**:先修路由(diter/dense 门按密度 est/span 判,把 SB hub 行送回
+hash 路径)——便宜;内核跳窗作 v2。rajat16/20/25 同病(33ms/阵)。
