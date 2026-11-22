@@ -124,3 +124,20 @@ hhsm 条件追加排序区;hh_elig/hh_leg 决策逻辑不变。
 4. 刀二(SB/rajat dense 线)解剖开工;
 **源码状态**:src/spgemm_kernel_hash.cu 含 Gv5a v1.1 未提交改动(通过编译+审计,
 值级/电池未过,按纪律不入库)。
+
+## 七、刀一 v1→v1.2 迭代史与 v1.3 方案(11-22)
+
+**v1.0**(固定 2048 宽位偶):电池 GM 1.6481 红;cage15/Hook/Bump 5.5×/ldoor 4.9×
+——每行 log² 屏障,百万轻行人口被杀。教训:载体的真优势=批处理零 per-row 屏障。
+**v1.1**(宽度截断):ldoor 单测仍 5.9×——屏障数不减,无效,证屏障是主犯。
+**v1.2**(k≤384 走 O(k²) 秩排序单屏障;>384 位偶):电池 GM 1.0656——**轻行层全绿**
+(ldoor 1.008/web-Google 0.972/12 阵 ≤1.01),重行层仍红(pre2 1.64/Hook 1.25/
+Bump 1.20/cage15 1.09)。
+**v1.2 红因双嫌疑**:①位偶屏障在 k∈(384,2048];②融合区 24KB smem 降 occupancy
+殃及同核累积相(bin4 6→30KB,驻留减半)——②更符合"累积重阵全红"图案。
+
+**v1.3 方案(待实现)**:秩-only 融合,门槛 384,融合区缩 4.6KB(occupancy 无损);
+k>384 行回 legacy 无序写。**硬骨头=混合行 compact 契约**:sorted/unsorted 同 bin
+并存——carrier 全 bin 重排无害但白费,真收益需 per-row 有序标志(方案:row_nnz
+符号位或独立 flag 数组,copy 跳 sorted 行、carrier 只吃 unsorted 行列表)。
+nlpkkt80(0.897 手测赢)不在 16 阵电池内,终判需 confirm 或换电池清单。
