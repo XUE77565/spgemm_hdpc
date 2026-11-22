@@ -163,3 +163,16 @@ SB hub 行(5263 条,avg 7000 出/683k 跨度≈1% 密度)→ 170-330 窗/行 × 
 search 路径需空窗跳过(候选:行实际列域窗表预扫,或移植 merge3 有效列域思想)。
 **修法优先序**:先修路由(diter/dense 门按密度 est/span 判,把 SB hub 行送回
 hash 路径)——便宜;内核跳窗作 v2。rajat16/20/25 同病(33ms/阵)。
+
+## 十、刀一 v1.3 值级门拦截(11-23 晨):混合行契约破裂
+
+电池绿(GM 0.9451,nnz 0 异常)但值级 FAIL:ldoor L2 乱序 17654/web-Google 3622。
+根因:v1.3 重行(cap>384)走 legacy 无序写,compact 契约 hh_flip=2 仍整 bin 走
+copy——sorted/unsorted 混合行,无序行直拷出厂。§七预警的硬骨头应验。
+**性能证据保留但刀不可 commit**——值级门拦截 = 三层验证顺序正确(电池放行/
+值级拦截,带病 commit 被挡)。
+**v1.4 方案(混合契约三件)**:①d_fus_unsort 标志数组(重行无序时置 1);
+②copy_warp 的 skip 接该标志(copy 跳无序行——skip 机制现成,row_ovf 同款);
+③gather 内核收集标志行成紧凑列表 → launch_csort 只吃该列表(载体只跑无序行)。
+预期:轻行免载体赢保留,重行回载体形态(v1.3 性能大部分保留,因大赢来自轻行
+人口的 copy 化)。电池+值级双绿才 commit。
