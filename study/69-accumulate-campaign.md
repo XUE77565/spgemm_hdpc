@@ -141,3 +141,14 @@ k>384 行回 legacy 无序写。**硬骨头=混合行 compact 契约**:sorted/un
 并存——carrier 全 bin 重排无害但白费,真收益需 per-row 有序标志(方案:row_nnz
 符号位或独立 flag 数组,copy 跳 sorted 行、carrier 只吃 unsorted 行列表)。
 nlpkkt80(0.897 手测赢)不在 16 阵电池内,终判需 confirm 或换电池清单。
+
+## 八、11-23 晨战报:刀一 v1.3 突破 + 刀二开刀
+
+**刀一 v1.3(est 槽宽前置路由)四阵**:pre2 1.007/Hook **0.822**/ldoor **0.673**/
+web-Google 0.918——判别定谳(重行双重走表)修正后翻 bin 人口载体税整体塌。
+电池(基线 vs gv5a4)后台中。v1.0→v1.3 五轮=判别-修正循环(屏障→宽度→双走→
+路由),每轮单因实验,非乱补。
+**刀二 SB 解剖**:232ms dense_direct 服务 5263 条 hub 重行(Σnnz=36.6M,avg 7000/行;
+count 43ms+dstr_split#1)——440MB/232ms=1.9GB/s,**离带宽 1500×**,内环病理
+(嫌疑:全局窗零化/原子争用/窗口溢出),下一步=读 dense_direct 内核定位。
+其余人口:ESC8/16/32=47.8 万轻行+bin0 8.1 万(warp 路径,非主矛盾)。
