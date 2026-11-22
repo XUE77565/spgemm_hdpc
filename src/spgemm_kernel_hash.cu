@@ -1914,6 +1914,7 @@ static inline bool probe_rf_on() {
 
 __device__ int g_xbit_d = 0;
 __device__ int g_hh_sorted_d = 0;   // 刀Gv3(study/57 §五十):HH_SORTED → host 装载;hash_heavy 表内有序 rank 直写   // 刀E5(study/57 §三一):HASH_XBIT → host cudaMemcpyToSymbol;extract 每行一次分支,零热径成本
+__device__ int *g_fus_unsort_d = nullptr;   // v1.4(§十):混合行无序标志(内核写/compact gather;指针每 run 装载)
 
 // 刀E1/E2/G(study/57 §廿五/廿六/四十九):bin 被无序写内核接管(hash_heavy 或 VG)→ compact 侧 csort 载体
 static inline bool h69_route_on() {   // 刀①'(study/59):bin9 胖行→HH(16253)+有序直写+直拷(五阵 −27.9~−47.1% §刀①'定谳);默认 1;HASH_H69=0 逃生门
@@ -3994,6 +3995,16 @@ static __global__ void hash_compact_copy_warp_v2_kernel(
 // TU-61 编译这些发射器会实例化未打签 csort 模板 → 探针P2 弱合并雷(静默错 codegen)。
 // 区内全为 compact 侧家族,TU-61 accumulate 梯零引用(已核函数地图 4449-4880)。
 #if HASH_TB != 61
+// v1.4(§十)混合行契约:gather 无序行成紧凑列表(载体只跑这些行;sorted 行已 copy)
+static __global__ void fus_gather_kernel(const int *rows, int n, const int *flag,
+                                         int *out_list, int *out_cnt)
+{
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= n) return;
+    const int row = rows[t];
+    if (flag[row]) { const int idx = atomicAdd(out_cnt, 1); out_list[idx] = row; }
+}
+
 // 刀C1 发射 helper:5 个调用点统一走此门(env 读一次;默认 0 = 原核逐位)。
 static void launch_copy_warp(int n_rows, const int *rows_ptr,
                              const long long *d_off, const int *d_row_nnz, const int *dC_rp,
@@ -4438,7 +4449,7 @@ static void launch_csort(int n, const int *rows_ptr, const long long *d_off, con
 // ovf_rows→retry 机具(hash_spa 同款);rowtime[i]=探测环完成处(同彼 ROWCYCLES 窗,不含提取)。
 // SPEC99 env 门(默认关=零生产影响);bins7-8 接管,bin9+ 仍走原路径。
 // 刀2:B16ON 模板参(交织 B 装载,每乘积 1 次 uint4 vs 2 次分离读——hash_spa 同款,编译期消分支)
-template<int LOG_NTHR, int HT_P, int B16ON = 0, int OCH = 0, int BM_WORDS = 2048>   // OCH=1:彼 id*11 哈希 A/B(刀10:错峰机理直测);BM_WORDS=Gv4 位图词数(study/68)
+template<int LOG_NTHR, int HT_P, int B16ON = 0, int OCH = 0, int BM_WORDS = 2048, int FUSED = 0>   // OCH=1:彼 id*11 哈希 A/B(刀10:错峰机理直测);BM_WORDS=Gv4 位图词数(study/68);FUSED=Gv5a 融合排序提取(study/69 刀一,HT_P≤2048 编译期门)
 __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heavy_kernel(
     const int *__restrict__ A_rp, const int *__restrict__ A_ci, const double *__restrict__ A_val,
     const int *__restrict__ B_rp, const int *__restrict__ B_ci, const double *__restrict__ B_val,
@@ -4623,6 +4634,53 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
             }
         }
     } else
+    // 提取:Gv5a(study/69 刀一)融合排序直写——翻 bin 人口(HT_P≤2048 编译期门)免载体:
+    // 表收集(原子票机)→ smem 位偶排序(键值对,哨兵沉底)→ 有序直写。消"无序写 tmp→
+    // 载体内核读回+CAP 直方图+排序+再写"一趟 DRAM 往返;O(k·log²k) 与 span 无关
+    // (与位图分支互补:位图补不了的宽 span 低密度人口由本分支接)。复现器 hh_repro3 同构。
+    if (FUSED && force_legacy) {
+    // v1.3(study/69 刀一):est 槽宽前置路由——cap≤384 走核内秩排序融合(O(k²) 单屏障,
+    // 键唯一故"小于我的键数"=精确位次,载体的零屏障优势入核),cap>384 直接 legacy+载体
+    // (重行零额外走表;判别实验定谳:v1.2b 红=票机+legacy 双重走表,occupancy 无罪)。
+        const int capf = (int)(d_off[i + 1] - d_off[i]);
+        if (capf > 384) {
+            if (tid == 0 && g_fus_unsort_d) g_fus_unsort_d[i] = 1;   // v1.4:无序行标志(compact gather 用)
+            for (int s = tid; s < HT_P; s += blockDim.x) {
+                if (sh_col[s] != -1) {
+                    const int pos = atomicAdd(&row_nnz[i], 1);
+                    tmp_key[base + pos] = ((unsigned long long)i << 32) | (unsigned int)sh_col[s];
+                    tmp_val[base + pos] = sh_val[s];
+                }
+            }
+        } else {
+            constexpr int FN = 384;   // 融合区 4.6KB(k≤cap≤384 恒成立,est 低估走 retry)
+            unsigned *fkey = (unsigned *)(smem_hh + (((HT_P + 1) & ~1) + 2 * HT_P));
+            double  *fval = (double *)(fkey + FN);
+            __shared__ int fcnt;
+            if (tid == 0) fcnt = 0;
+            __syncthreads();                          // 栅栏 F1
+            for (int s = tid; s < HT_P; s += blockDim.x) {
+                const int c = sh_col[s];
+                if (c != -1) { const int idx = atomicAdd(&fcnt, 1); fkey[idx] = (unsigned)c; fval[idx] = sh_val[s]; }
+            }
+            __syncthreads();                          // 栅栏 F2
+            const int kf = fcnt;
+            if (tid == 0) row_nnz[i] = kf;            // 溢出行会被 retry 覆盖(同 bitmap 分支语义)
+            for (int x = tid; x < kf; x += blockDim.x) {
+                const unsigned my = fkey[x];
+                int r = 0;
+                for (int y = 0; y < kf; y++) r += (fkey[y] < my);
+                if (r < capf) {
+                    tmp_key[base + r] = ((unsigned long long)i << 32) | (unsigned long long)my;
+                    tmp_val[base + r] = fval[x];
+                } else {                              // est 低估:既有 retry 熔断语义
+                    atomicExch(overflow_flag, 1);
+                    if (!atomicExch(&row_ovf[i], 1)) { const int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
+                    break;
+                }
+            }
+        }
+    } else
     // 提取(legacy):无序 compact 写(hash_spa 大行同款;行内有序由下游 compact_sort_kernel 保证)
     for (int s = tid; s < HT_P; s += blockDim.x) {
         if (sh_col[s] != -1) {
@@ -4705,6 +4763,7 @@ struct HashAccumCtx {
     int hh_used;   // Gv4 出参:1=本 bin 实际走了 HH 位图有序直写(门普查可翻 0);compact 侧按此分派
     int hh_flip;   // Gv4 出参:1=本 bin 被门普查整 bin 翻(累积=LHT;compact 应回原生形态而非 E1 载体)
     const long long *h_gfall;   // Gv4.2 入参:上提普查结果宿主侧 [bi*2]=gated/[bi*2+1]=total;null=回内联普查
+    int *d_fus_unsort;   // v1.4 入参:混合行无序标志数组(重行 legacy 写时置 1;compact gather)
     unsigned *d_phist; uint4 *dB16;
     double **d_gv_bins;              // 刀E v2 per-bin VG 池(hash_product 本体数组,TU-61 侧填充分配)
     cudaStream_t cur_s; const char *tag;
@@ -4718,6 +4777,8 @@ void hash_accum_c61(HashAccumCtx &c, int bi);   // TU-61(spgemm_kernel_hash_c61.
 // hash_product 的 scatter 后既有 D2H 批,零新增同步;结果经 ctx.h_gfall 传入。
 
 void hash_accum_c61(HashAccumCtx &c, int bi) {
+    // v1.4:无序标志指针每 run 装载(arena 地址随 run 变;加载本 TU 的符号副本)
+    if (c.d_fus_unsort) CHECK_CUDA(cudaMemcpyToSymbol(g_fus_unsort_d, &c.d_fus_unsort, sizeof(int *)));
     // §六十六:E3 同类雷的 TU-61 版——tagged 实例独立符号,原 opt-in 块(TU-90 untagged)
     // 不覆盖 → bin9 大表(196KB)launch invalid argument(Ga10As10H30 实证,40 阵批量空值)。
     // 镜像 TU-90 块(hash_product 6080-6112)为 TB_TAG=61 全家:一次性 opt-in。
@@ -4947,33 +5008,33 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                         }
                     }
                     c.hh_used = (hh_elig && !hh_leg) ? 1 : 0;   // Gv4 出参:本 bin 实际走位图有序直写?
-                    c.hh_flip = hh_leg;   // Gv4.1 出参:legacy 形态(compact 走载体=基线同款)
+                    c.hh_flip = hh_leg ? ((bi == 4 || bi == 5) ? 2 : 1) : 0;   // Gv4.1/Gv5a:1=legacy+载体;2=fused 排序直写(bins4/5,study/69 刀一)→compact 走 copy
                     if (hh_elig) {
-#define HH_LAUNCH2(LNT_, P_, BM_, OCH_, LO_, HI_, ROT_, LEG_) do { \
-    const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double) + ((LEG_) ? 0 : (size_t)(BM_) * sizeof(unsigned)); \
-    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1, (OCH_), (BM_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
-    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 0, (OCH_), (BM_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
-    if (dB16) hash_heavy_kernel<(LNT_), (P_), 1, (OCH_), (BM_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
+#define HH_LAUNCH2(LNT_, P_, BM_, OCH_, LO_, HI_, ROT_, LEG_, FUS_) do { \
+    const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double) + ((LEG_) ? ((FUS_) ? (size_t)384 * 12 : 0) : (size_t)(BM_) * sizeof(unsigned)); \
+    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1, (OCH_), (BM_), (FUS_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
+    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 0, (OCH_), (BM_), (FUS_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
+    if (dB16) hash_heavy_kernel<(LNT_), (P_), 1, (OCH_), (BM_), (FUS_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, dB16, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_), (ROT_), d_span_lo, d_span_len, (LEG_)); \
-    else      hash_heavy_kernel<(LNT_), (P_), 0, (OCH_), (BM_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
+    else      hash_heavy_kernel<(LNT_), (P_), 0, (OCH_), (BM_), (FUS_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, nullptr, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_), (ROT_), d_span_lo, d_span_len, (LEG_)); } while (0)
-#define HH_LAUNCH(LNT_, P_, BM_, LEG_) do { if (g_s99och) HH_LAUNCH2((LNT_), (P_), (BM_), 1, 0, 0, g_s99rot, (LEG_)); else HH_LAUNCH2((LNT_), (P_), (BM_), 0, 0, 0, g_s99rot, (LEG_)); } while (0)
+#define HH_LAUNCH(LNT_, P_, BM_, LEG_, FUS_) do { if (g_s99och) HH_LAUNCH2((LNT_), (P_), (BM_), 1, 0, 0, g_s99rot, (LEG_), (FUS_)); else HH_LAUNCH2((LNT_), (P_), (BM_), 0, 0, 0, g_s99rot, (LEG_), (FUS_)); } while (0)
                         // 刀6:pow2 档终极 A/B(4096/8192=hash_spa 同表经济,mask 1 条 vs magic-div 6 条)——
                         // 隔离 3 栅栏结构 vs 18 栅栏的净价值;刀5 素数版(4111/8209)留 git 史
                         // Gv4 BM_WORDS(位图词数→列门):bin4-7=2048(64K列)/bin8=4096(128K)/bin9=8192(256K,
                         // 195+32KB=227.8≤232448B 极限压线,单块/SM 本就如此);occupancy:bin4 6+8=14KB
                         // →16 块=线程帽不降,bin7 56KB/4 块、bin8 112KB/2 块皆不变(电池复核)
                         // Gv4.1:hh_leg=1 时发射免位图 smem(=原几何,与基线逐位同形态)
-                        if (bi == 7)      HH_LAUNCH(9, 4096, 2048, hh_leg);
-                        else if (bi == 8) HH_LAUNCH(10, 8192, 4096, hh_leg);
-                        else if (bi == 9) HH_LAUNCH(10, 16253, 8192, hh_leg);   // 刀①:bin9 素数紧档(195KB≤227KB,opt-in 随宏;1024T 同 bin8 几何)
-                        else if (bi == 6) HH_LAUNCH(9, 2719, 2048, hh_leg);     // 刀①:bin6 素数档(32.6KB 免 opt-in;512T 同 bin7 几何)
-                        else if (bi == 5) HH_LAUNCH(8, 2048, 2048, hh_leg);   // 刀G:bin5 ht=2048 档 256T×8/SM
-                        else              HH_LAUNCH(7, 512, 2048, hh_leg);   // 刀E1:bin4 ht=512 pow2(deployed 形态同款),128T=16 块/SM
+                        if (bi == 7)      HH_LAUNCH(9, 4096, 2048, hh_leg, 0);
+                        else if (bi == 8) HH_LAUNCH(10, 8192, 4096, hh_leg, 0);
+                        else if (bi == 9) HH_LAUNCH(10, 16253, 8192, hh_leg, 0);   // 刀①:bin9 素数紧档(195KB≤227KB,opt-in 随宏;1024T 同 bin8 几何)
+                        else if (bi == 6) HH_LAUNCH(9, 2719, 2048, hh_leg, 0);     // 刀①:bin6 素数档(32.6KB 免 opt-in;512T 同 bin7 几何)
+                        else if (bi == 5) HH_LAUNCH(8, 2048, 2048, hh_leg, 1);   // 刀G:bin5 ht=2048 档 256T×8/SM
+                        else              HH_LAUNCH(7, 512, 2048, hh_leg, 1);   // 刀E1:bin4 ht=512 pow2(deployed 形态同款),128T=16 块/SM
 #undef HH_LAUNCH
 #undef HH_LAUNCH2
                         CHECK_CUDA(cudaGetLastError());
@@ -6272,6 +6333,10 @@ static void hash_product(
     // 函数层作用域:accumulate 写 / compact 读。h_hh_flip=普查翻(累积退 LHT)。
     int h_hh_used[N_BINS] = {0};
     int h_hh_flip[N_BINS] = {0};
+    // v1.4(§十):混合行契约三件之缓冲——重行无序标志 + gather 列表/计数
+    int *d_fus_unsort = decltype(d_fus_unsort)(dev_alloc((size_t)A_rows * sizeof(int)));
+    int *d_fus_list   = decltype(d_fus_list)(dev_alloc((size_t)A_rows * sizeof(int)));
+    int *d_fus_cnt    = decltype(d_fus_cnt)(dev_alloc(sizeof(int)));
     if (dense_nr > 0 && (dense_mode || dense_win_mode)) {
         // 方案5 矩阵级:count 已出精确 row_nnz,数值 pass 在 cnnz_scan 后直写(此分支无 accumulate)
     } else
@@ -6282,6 +6347,10 @@ static void hash_product(
             CHECK_CUDA(cudaMemset(d_overflow, 0, sizeof(int)));
             CHECK_CUDA(cudaMemset(d_ovf_cnt, 0, sizeof(int)));
             CHECK_CUDA(cudaMemset(d_row_ovf, 0, (size_t)A_rows * sizeof(int)));
+            CHECK_CUDA(cudaMemset(d_fus_unsort, 0, (size_t)A_rows * sizeof(int)));   // v1.4:混合行标志清零
+            CHECK_CUDA(cudaMemset(d_fus_cnt, 0, sizeof(int)));
+        CHECK_CUDA(cudaMemset(d_fus_unsort, 0, (size_t)A_rows * sizeof(int)));
+        CHECK_CUDA(cudaMemset(d_fus_cnt, 0, sizeof(int)));
             // T6-v4:host 判 multi:窗 3072×13≈40KB + smap(maxrow×4);
             // multi 条件:省 smem(窗+map < n×13)且 map 装得下(≤16KB)
             int maxrow_dense = 0;
@@ -6315,6 +6384,10 @@ static void hash_product(
             CHECK_CUDA(cudaMemset(d_overflow, 0, sizeof(int)));
             CHECK_CUDA(cudaMemset(d_ovf_cnt, 0, sizeof(int)));
             CHECK_CUDA(cudaMemset(d_row_ovf, 0, (size_t)A_rows * sizeof(int)));
+            CHECK_CUDA(cudaMemset(d_fus_unsort, 0, (size_t)A_rows * sizeof(int)));   // v1.4:混合行标志清零
+            CHECK_CUDA(cudaMemset(d_fus_cnt, 0, sizeof(int)));
+        CHECK_CUDA(cudaMemset(d_fus_unsort, 0, (size_t)A_rows * sizeof(int)));
+        CHECK_CUDA(cudaMemset(d_fus_cnt, 0, sizeof(int)));
             size_t wsm = ((size_t)DENSE_MAX_N * 9 + 3) / 4 * 4 + (size_t)DENSE_MAX_N * sizeof(int);
             CHECK_CUDA(cudaFuncSetAttribute(hash_dense_window_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)wsm));
             hash_dense_window_kernel<<<A_rows, DENSE_BLK, wsm>>>(
@@ -6328,6 +6401,8 @@ static void hash_product(
         CHECK_CUDA(cudaMemset(d_overflow, 0, sizeof(int)));
         CHECK_CUDA(cudaMemset(d_ovf_cnt, 0, sizeof(int)));
         CHECK_CUDA(cudaMemset(d_row_ovf, 0, (size_t)A_rows * sizeof(int)));
+        CHECK_CUDA(cudaMemset(d_fus_unsort, 0, (size_t)A_rows * sizeof(int)));
+        CHECK_CUDA(cudaMemset(d_fus_cnt, 0, sizeof(int)));
         static int g_bsearch_s = -1;
     if (g_bsearch_s < 0) { const char *e = getenv("BSEARCH"); g_bsearch_s = (e && *e && atoi(e) > 0) ? 1 : 0; }
     // LLB=1:hash_spa_kernel 按行动态 G(localLoadBalance 移植,docs/27 §4.2;默认关待 A/B)
@@ -6620,7 +6695,7 @@ static void hash_product(
                     } else {
                         HashAccumCtx c61 = { dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, rows_ptr, n,
         d_off, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
-        d_flop, d_maxbl, d_rt, d_est, d_span_lo, d_span_len, 0, 0, hh_gfall_host, d_phist, dB16, d_gv_bins, cur_s, tag,
+        d_flop, d_maxbl, d_rt, d_est, d_span_lo, d_span_len, 0, 0, hh_gfall_host, d_fus_unsort, d_phist, dB16, d_gv_bins, cur_s, tag,
         upper_tri, A_rows, A_cols, g_llb, g_hyb_tier, g_priv, PRIV_W, att };
                         hash_accum_c61(c61, bi);
                         h_hh_used[bi] = c61.hh_used;   // Gv4:记录实际路径(普查退 LHT 的 bin,compact 不可再直拷)
@@ -7531,13 +7606,27 @@ static void hash_product(
                 else
                     launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());
-            } else if (bi == 4 && h45_pilot_on() && !(hh_sorted_host() && h_hh_used[bi])) {
+            } else if ((bi == 4 || bi == 5) && h45_pilot_on() && hh_sorted_host() && h_hh_flip[bi] == 2) {
+                // v1.4 混合行契约(study/69 §十):fused bin 内轻行已有序、重行无序——
+                // copy 跳无序行(skip=标志数组);gather 无序行;载体只跑该列表(分 bin 同款载体)
+                launch_copy_warp(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_fus_unsort);
+                fus_gather_kernel<<<(n + 255) / 256, 256>>>(rows_ptr, n, d_fus_unsort, d_fus_list, d_fus_cnt);
+                int h_fus_cnt = 0;
+                CHECK_CUDA(cudaMemcpy(&h_fus_cnt, d_fus_cnt, 4, cudaMemcpyDeviceToHost));
+                if (h_fus_cnt > 0) {
+                    if (bi == 4)
+                        launch_csort<128, 4>(h_fus_cnt, d_fus_list, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
+                    else
+                        launch_csort_counting<CSC_TPB, CSC_CAP>(h_fus_cnt, d_fus_list, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
+                }
+                CHECK_CUDA(cudaGetLastError());
+            } else if (bi == 4 && h45_pilot_on() && !(hh_sorted_host() && (h_hh_used[bi] || h_hh_flip[bi] == 2))) {
                 // 刀E1:bin4 行走 hash_heavy(无序写 tmp)→ csort 善后(CAP 512 紧贴 bin4 表容)
                 // Gv4/Gv4.1(study/68):位图放行(h_hh_used=1)时输出已行内有序 → 跳过载体;
                 // 普查翻 bin(hh_used=0)走 HH legacy 无序提取 → 载体(=HH_SORTED=0 同 bin 形态)
                 launch_csort<128, 4>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val, d_row_ovf);
                 CHECK_CUDA(cudaGetLastError());
-            } else if (bi == 5 && h45_pilot_on() && !(hh_sorted_host() && h_hh_used[bi])) {
+            } else if (bi == 5 && h45_pilot_on() && !(hh_sorted_host() && (h_hh_used[bi] || h_hh_flip[bi] == 2))) {
                 // 刀G:bin5 行走 hash_heavy(无序写)→ 两级计数排序善后(spec84 同款;
                 // d~200 → CAP 2048 counting O(nnz+CAP) 免 radix padding 税,crankseg bin6/7 已转正同型)
                 launch_csort_counting<CSC_TPB, CSC_CAP>(n, rows_ptr, d_off, d_row_nnz, dC_rp, d_tmp_key, d_tmp_val, dC_ci, d_val);
