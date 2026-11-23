@@ -255,3 +255,32 @@ c-big acc=83.0/compact=14.2/compute=105.5。**accumulate 占 compute 73-79%**,
 **资产位置**:spec99 = hash_heavy_kernel 本体(TU-61 tagged 实例);当年未批
 的 lean 方向 = 精简乘积内环(每乘积最少指令数,对齐彼 1.6cyc/乘积)。
 **这是外部模型(study/70 §四)的主战场之一**——本轮会话侦察完成,移交。
+
+## 十八、刀三·想法一(并发逆差)定谳(11-23 晚)
+
+**实验**:HASH_TGT_ALPHA 梯度(200 默认/120/80),acc 相位直接读取。
+**结果**:
+| 阵 | acc@200 | acc@120 | Δacc | compute Δ |
+|---|---|---|---|---|
+| Bump | 76.3 | 61.4 | **−19.5%** | −0.8%(被 retry 吃掉) |
+| c-big | 80.1 | 82.8 | +3.3% | +1.5% |
+| delaunay_n24 | 32.0 | 34.5 | +8.1% | — |
+| ldoor | — | — | — | **−12.3%**(compute 级) |
+| cage15 | — | — | — | −2.4% |
+| F2 | — | — | — | +7.8% |
+
+**定谳**:①**accumulate 相位确认为延迟遮蔽受限**(occupancy-sensitive)——
+Bump 缩表 40% → acc 相位 −19.5%,方向对了;②但 **retry 成本吃掉了增益**
+(表小→overflow 多→重算代价)→ 净 compute ≈ 平;③**人口分化**——
+ldoor/cage15 大赢,c-big/delaunay 微输,F2 输——**这是 per-population 路由
+决策,不是全局翻默认**(竞争力门原则第三次验证);④c-big/delaunay 的
+acc 反升=它们的行确实需要大表(冲突多,表小探测链更长)。
+
+**下一步方向**:
+A. **免表缩的 occupancy 攻击**——不缩表,缩非表 smem(dpref/smap/游标区)
+   → 块驻留增但不触发 retry cascade;
+B. **retry 降本**——溢出行不整行重算,只对溢出部分补(增量 retry);
+C. **人口自适应 alpha**——行级/矩阵级判据决定 alpha(竞争力门),但这是
+   路由不是 kernel,适合外部模型(study/70 §五)。
+
+当前推荐:先 A(改 hash_spa 的非表 smem 布局,零 retry 风险)。
