@@ -324,3 +324,9 @@ hash_heavy 翻 bin 人口(宽度受 BM_WORDS 限制)。想法二 = 同一思想�
 CAS 消解 ≈ 3-4× 内环加速。Bump acc 72.5 → ~20-25ms 理论值(6 cyc vs 25 cyc)。
 
 **验证**:微复现器先行(hh_repro4.cu)→ 值级 → 电池。
+
+## 二十一、想法二微复现器 ALL-PASS(11-23 晚)
+
+hh_repro4.cu(span≤8192, 500 用例含 dup 1-10×):位图 atomicOr 标记 → 前缀 →
+直寻累积,升序+值级全绿。正确性锚点就位,下一步=生产实现(hash_spa 的
+bins 2-8 路径加位图分支)。
