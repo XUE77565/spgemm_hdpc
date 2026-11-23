@@ -107,7 +107,7 @@ constexpr int SPANF_COEFF = 16;  // ≈ G×8.125/8 ≈ 16(G-group 摊薄后的�
 // dup 轻阈值 ⟺ 争用字节 ≤ compact 字节(flop−est)×争用B ≤ est×24B
 //   推导:争用B ≈ 3B(H100 同地址原子 ≈ 3 extra cycles × 1B/cycle)
 //   flop < 8×est → (flop−est)×3 < est×24 → 争用可忽略(docs/37 实证)
-constexpr int DUP_LIGHT = 8;
+constexpr int DUP_LIGHT = 4;   // 刀二(study/69 §十二):SB dup 5.7 同址原子争用实证(hash 快 27%),8→4;c-64 关 dense 反赢 10% 同受益
 // dup 重阈值 ⟺ 重行域(表 > SMEM 档 → 全局表)的争用容忍上界
 //   推导:flop ≥ HASH_CAP(表满)时的 dup 上界 = G-group×warp_size/争用系数
 constexpr int DUP_HEAVY = 64;  // = HASH_BLOCK/4(G-group 摊薄系数)
