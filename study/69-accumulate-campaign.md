@@ -330,3 +330,26 @@ CAS 消解 ≈ 3-4× 内环加速。Bump acc 72.5 → ~20-25ms 理论值(6 cyc v
 hh_repro4.cu(span≤8192, 500 用例含 dup 1-10×):位图 atomicOr 标记 → 前缀 →
 直寻累积,升序+值级全绿。正确性锚点就位,下一步=生产实现(hash_spa 的
 bins 2-8 路径加位图分支)。
+
+## 二十二、想法二生产实施锚点(11-23 深夜,移交)
+
+**CAS 探测环位置**:src/spgemm_kernel_hash.cu:2069-2105——hash_spa 主内环。
+结构:__match_any_sync(warp 内去重)→ 无伙伴路径(2072-2087 CAS+线性探测)
+或 Σv 归约路径(2088-2105 leader 单探测)。两路均有完整 CAS+探测+溢出。
+
+**位图替换方案**(不删 CAS 路径,加分支共存):
+- 模板参 `int BMODE = 0`(0=CAS 原路,1=位图两遍);
+- BMODE=1 时 Pass1 = 每乘积 `atomicOr(&bmp[(j-clo)>>5], 1u<<((j-clo)&31))`
+  (替换 2069-2105 整段);前缀+Pass2 追加在栅栏后(复用 Gv4 组前缀);
+- 需传 col_lo(=d_span_lo[i],已有)与位图 SMEM 区(复用表区 col 槽位);
+- compact 契约:BMODE=1 输出已行内有序(同 Gv4)→ copy 路;
+- 发射侧:HH_LAUNCH 已有完整基础设施可复用;
+- **实施约 200-300 行改动,半天到一天**——适合外部模型或下轮会话。
+
+**成本模型速算**:CAS 路径 dup=5.7 → 每乘积 ~25 cyc(探测 5 次×3+CAS 2+
+val add 3+match 2);位图两遍 ~6 cyc(Pass1 3+Pass2 3)+ 前缀 O(S/32)/行。
+Bump 理论 acc 72.5→~18ms(4×)。
+
+**注**:hash_spa 的 __match_any_sync 已做 warp 内去重(1 指令),对 dup
+有部分缓解——实测 CAS 环的真实成本可能低于 25 cyc/乘积(需 ncu 确认)。
+位图两遍的真实优势可能更接近 2× 而非 4×。
