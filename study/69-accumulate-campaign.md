@@ -290,3 +290,37 @@ C. **人口自适应 alpha**——行级/矩阵级判据决定 alpha(竞争力�
 BLK_LADDER 256/512/1024 三档:Bump acc 全平(72.5/72.6/72.6)——
 块宽不是 occupancy 的限制因子,SMEM 表大小才是。想法一(缩表)的 acc
 收益确认但被 retry 吃掉的结论不变。转想法二(位图两遍式)设计。
+
+## 二十、刀三·想法二(位图标记-累积两遍式)设计稿(11-23 晚)
+
+**机制**:
+Pass1(标记):每乘积一次 atomicOr(bitmap[j>>5], 1<<(j&31))——无 CAS
+无探测环无链追踪,~1cyc/乘积。
+Pass2(累积):第二遍读 B 行,每乘积 atomicAdd(&val[bitmap_rank(j)], product)
+——bitmap_rank 由 Pass1 后的前缀给出(每列唯一槽,无同槽争用)。
+
+**成本模型**:
+- 现状(CAS):每乘积 = 读 A 值(1) + 读 B 元素(1) + 哈希计算(1) + CAS 探测
+  (dup 次尝试 × ~3 cyc) + atomicAdd(1) ≈ dup × 4-6 cyc
+- 位图两遍:Pass1 = 读 A + 读 B + atomicOr ≈ 3 cyc;Pass2 = 读 A + 读 B +
+  atomicAdd ≈ 3 cyc;总 = ~6 cyc + 前缀扫描 O(S/32)
+- **交叉点:dup > 1.5 时位图赢**(dup=5.7 → CAS ~25 cyc vs 位图 ~6 cyc = 4× )
+
+**SMEM 预算**:位图 S/32 词(S=span)。b45 阵 span 2-8K → 位图 64-256 词 =
+0.25-1KB,微不足道。槽位数 = popcount(位图) ≤ S 但 ≤ est 上界。
+
+**与 Gv4 位图直写的关系**:Gv4 已做位图(标记+前缀+直写),但只覆盖
+hash_heavy 翻 bin 人口(宽度受 BM_WORDS 限制)。想法二 = 同一思想推广到
+**hash_spa 主梯**(bins 2-8 的主体人口),改 CAS 探测为位图直寻。
+
+**实现要点**:
+- 每行一块,块内两遍走 A 行引用的 B 行(两遍读同一 B 行 = L2 命中第二遍);
+- 位图在 SMEM(复用现有表的 col 槽位区域,表区在两遍式下不需要);
+- 前缀 = Gv4 的组前缀方案(已验证);
+- 溢出:est < popcount → fallback 到现有 hash 路径(保留 retry 机具);
+- compact 契约:输出已行内有序(位图前缀即位次),走 copy 路(同 Gv4)。
+
+**预期**:b45 池(Bump/c-big/delaunay/Hook)的 acc 相位 dup>1.5 人口,
+CAS 消解 ≈ 3-4× 内环加速。Bump acc 72.5 → ~20-25ms 理论值(6 cyc vs 25 cyc)。
+
+**验证**:微复现器先行(hh_repro4.cu)→ 值级 → 电池。
