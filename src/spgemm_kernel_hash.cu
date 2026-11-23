@@ -1387,7 +1387,7 @@ static __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct
                     if (B16p) { uint4 e = B16p[q]; j = (int)e.x - c0; bv = __hiloint2double(e.w, e.z); }
                     else { j = B_col_idx[q] - c0; bv = B_val[q]; }
                     if (upper_tri && (c0 + j) < i) continue;
-                    { const double old = atomicAdd(&dval[j], a * bv); if (old == 0.0) dflag[j] = 1; }   // 刀二(dflag-in-atomic):每位置一次 flag 写替代每乘积
+                    { atomicAdd(&dval[j], a * bv); dflag[j] = 1; }
                 }
             }
             __syncthreads();
@@ -1458,12 +1458,12 @@ static __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct
                         int j = jcol - win_lo;
                         if (j >= w) { atomicMin(&smap[p - rs], q); if (jcol < my_next) my_next = jcol; break; }
                         int col = win_lo + j;
-                        if (!(upper_tri && col < i)) { const double old = atomicAdd(&dval[j], a * bv); if (old == 0.0) dflag[j] = 1; }   // 刀二(dflag-in-atomic)
+                        if (!(upper_tri && col < i)) { atomicAdd(&dval[j], a * bv); dflag[j] = 1; }
                         if (jcol2 >= 0) {
                             int j2 = jcol2 - win_lo;
                             if (j2 >= w) { atomicMin(&smap[p - rs], q + G); if (jcol2 < my_next) my_next = jcol2; break; }
                             int col2 = win_lo + j2;
-                            if (!(upper_tri && col2 < i)) { if (k1fw) K1_ACC(dval, j2, dflag, a * bv2); else { const double old2 = atomicAdd(&dval[j2], a * bv2); if (old2 == 0.0) dflag[j2] = 1; } }
+                            if (!(upper_tri && col2 < i)) { if (k1fw) K1_ACC(dval, j2, dflag, a * bv2); else { atomicAdd(&dval[j2], a * bv2); dflag[j2] = 1; } }
                         }
                     }
                 } else
@@ -1479,7 +1479,7 @@ static __global__ void __launch_bounds__(MAX_BLOCK_THREADS, 2) hash_dense_direct
                     }
                     int col = win_lo + j;
                     if (upper_tri && col < i) continue;
-                    { const double old = atomicAdd(&dval[j], a * bv); if (old == 0.0) dflag[j] = 1; }   // 刀二(dflag-in-atomic):每位置一次 flag 写替代每乘积
+                    { atomicAdd(&dval[j], a * bv); dflag[j] = 1; }
                 }
             }
             if (my_next < n) atomicMin(&s_next_lo, my_next);
