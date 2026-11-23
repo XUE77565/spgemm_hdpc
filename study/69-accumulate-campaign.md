@@ -221,3 +221,13 @@ K1_ACC 已降级为裸 atomicAdd(判负废弃注释),k1fw 分支现效果=免 df
 dflag 写)。dflag-in-atomic 方案最便宜:atomicAdd 返回旧值,若加前为 0.0
 则本线程是首贡献者→由它置 flag(每位置仅一次 flag 写而非每乘积一次)。
 排队实施;磁盘纪律修订:WRITE_MTX 批跑后即清 results/matrices/。
+
+## 十五、刀二 v1:dfia(dflag-in-atomic,11-23)
+
+实施:三处乘积内环 atomicAdd 返回旧值判首写(旧值==0→置 dflag),每位置
+一次 flag 写替代每乘积一次。**c-64 0.887(−11%)且值级 PASS**(L1=L2=0,
+与 K1FW 的 19444 行集合错对照=首写判据修复了 dpref 漏计)。但 SB 1.025/
+F2 1.012 微红(返回值依赖链在低 dup 人口的税?)——**需要 16 阵电池定净账**。
+spregemm_dfia 别名已构建;下一跳电池(A=现役 confirm19 件 vs B=dfia)。
+若净绿→值级四阵(SB/c-64/F2/TSOPF)→commit→confirm20;净红→SB 的 +2.5%
+解剖(疑 cursor 路径的返回值依赖链)或收缩为 bin 级门控启用。
