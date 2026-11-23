@@ -242,3 +242,16 @@ cage15 B r2 一次 FAIL(前两臂正常)=瞬态(与 confirm17 同款)。
 study/70 §四(per-thread 私分+块内归约,更强的争用消解)继续。刀二
 在本次会话的结论:病灶定谳完整(dup 5.7 同址争用/梯子成本律低估/
 K1FW dpref 陷阱),内核级方案已明确但 dfia 这一版不够。
+
+## 十七、刀三(accumulate 墙)侦察基线(11-23)
+
+b45 战役终局(study/57 §廿四)结论回顾:ocean b45 人口走 wf=1 估计流(非精确
+symbolic),差距 = 纯 numeric 本体(65.1 vs 78.4ms,Bump);我方 hash_spa 四轴
+证伪 = "肥内核的局部最优"——瘦内核重写是终局方向,spec99 资产在(TU-61,
+bins7-8 接管,当年 lean 方向)。
+当前二进制基线(confirm19 形态):Bump acc=72.5/compact=15.8/compute=99.6;
+c-big acc=83.0/compact=14.2/compute=105.5。**accumulate 占 compute 73-79%**,
+是纯 kernel 内环差距,与路由无关。
+**资产位置**:spec99 = hash_heavy_kernel 本体(TU-61 tagged 实例);当年未批
+的 lean 方向 = 精简乘积内环(每乘积最少指令数,对齐彼 1.6cyc/乘积)。
+**这是外部模型(study/70 §四)的主战场之一**——本轮会话侦察完成,移交。
