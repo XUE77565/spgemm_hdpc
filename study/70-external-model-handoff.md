@@ -18,12 +18,8 @@ GPU SpGEMM(C = A·A 和 A·Aᵀ),NVIDIA H100,CUDA C++。核心思想:**不同形
 五线总账:带病 0.8137(退役)/HH=0 0.9278(正确地板)/Gv4.1 0.9289/Gv4.2 0.9251/
 Gv5a 0.9085(现役)。冲刺目标 0.8x。
 
-**三线战场(study/69,当前二进制实测)**:
-| 战线 | 可回收 | 状态 |
-|---|---|---|
-| accumulate 本体 | 179ms | 未开刀(b45 墙,最难) |
-| compact+sort | 148ms | 刀一 Gv5a 已落地(ldoor −33%/cage15 −19%) |
-| dense_direct | 116ms | 刀二 dfia 在跑(dflag-in-atomic) |
+**三线战场(study/69,当前二进制实测)**:accumulate 本体 179ms / compact+sort
+148ms / dense_direct 116ms 可回收——详细的当前进度见 study/69 §十一至十五。
 
 ## 二、目录与关键源码
 
