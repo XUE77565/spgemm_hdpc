@@ -197,3 +197,16 @@ hash 的 CAS 分散恰是 dup 的克星。**修法二选一**:①DUP_LIGHT 8→4
 回 hash;SB 5.7 落网外;需全账电池防 F2/c-64 类 dup<4 dense 赢家回归);
 ②dense_direct 内核 K1_ACC 争用消解(flag 门控累加替代 atomicAdd)。
 优先①(一行常数,带电池);rajat16/20/25 同画像待验。
+
+## 十三、刀二进展(11-23):门考古定谳 + LADDER 判别
+
+- dup4(DUP_LIGHT 8→4)几乎无效(diter 5263→5103):SB 行不走 dup_ok 主门;
+- LADDER=1(docs/67 双梯,默认关)赶走一半(diter→2680)但性能持平——
+  **被赶走的一半在 hash/dense 同速**;真亏的 ~2600 行恰是 ladder 成本律判
+  "dense 便宜"的行——**ladder 的争用项在 62.7M 乘积尺度低估**(物理推导的
+  dup<8 前提在此失守,SB dup 5.7 实测同址争用已主导);
+- DITER_MIN_FLOP=∞(全推 hash)SB −27% 且 c-64 −10%,F2/cage15 无回归;
+- **结论:刀二的正解=内核级**——dense_direct 的同址 atomicAdd 争用消解
+  (K1_ACC 通道或 per-thread 私分+归约),门调整已被判别为死路(梯子成本律
+  本身要重标定,那是调常数不是治机理)。排队为 v2;刀三(accumulate 墙)
+  是更大池,先转刀三侦察或做 K1_ACC 由用户裁决。
