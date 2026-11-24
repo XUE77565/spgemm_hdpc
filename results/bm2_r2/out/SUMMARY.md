@@ -55,3 +55,14 @@
 | web-Google | m1 | 29710164 | 0 / 46058 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 | 0 | 0.000000e+00 | 绿 |
 | web-Google | m2 | 29710164 | 0 / 46058 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 | 0 | 0.000000e+00 | 绿 |
 | nd3k | off | 18491738 | 0 / 0 | - | 2 | 1.099738e-15 | 对照 |
+| nd3k | m1 | 18491738 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=8948192 worst_rel_vs_global=5.115e-16 | 0 | 1.104094e-15 | 绿 |
+| nd3k | m2 | 18491738 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=8934839 worst_rel_vs_global=6.394e-16 | 1 | 1.099738e-15 | 绿 |
+| nd6k | off | 42198384 | 0 / 0 | - | 1 | 1.623558e-15 | 对照 |
+| nd6k | m1 | 42198384 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=22609773 worst_rel_vs_global=6.047e-16 | 2 | 1.849564e-15 | 绿 |
+| nd6k | m2 | 42198384 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=22612852 worst_rel_vs_global=7.256e-16 | 1 | 1.743201e-15 | 绿 |
+
+- 本轮值级里走两遍式的行数合计(m1+m2): 274124
+- S4(a+b): green
+
+## S5 三臂电池(同一二进制 spgemm_bm2;off=HH_BM2 关,m1=值区 SMEM,m2=值直写全局;5 轮交错)
+- 卡状态(S5 前): 0, 14 MiB, 0 %;1, 14 MiB, 0 %; 计算进程数: 0
