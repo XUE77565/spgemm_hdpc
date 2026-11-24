@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SpGEMM 项目创新点总结与路由规划(口头汇报版)</title>
+<style>
+@page{size:A4;margin:16mm 18mm 15mm}
+*{box-sizing:border-box}
+body{margin:0;background:#f4f4f1;color:#202629}
+main{background:white;max-width:880px;margin:auto;padding:54px 65px 65px;font-family:'Microsoft YaHei',sans-serif}
+h1{font-size:24px;line-height:1.45;text-align:left;margin:0 0 6px}
+h1 span{display:block;font-size:.72em;font-weight:500;margin-top:6px;color:#42525a}
+h2{font-size:19px;margin:28px 0 10px;font-weight:700;color:#2f4f4a}
+h3{font-size:15.5px;margin:14px 0 4px}
+p{font-size:15px;line-height:1.78;margin:9px 0;text-align:justify}
+.loop{background:#f2f4f0;border:1px solid #d4dad2;border-radius:6px;padding:12px 16px;margin:12px 0;break-inside:avoid;font-size:14px;line-height:1.75}
+.loop b{color:#2f6f6a}
+.loop .find{color:#8a4a22;font-weight:600}
+table{border-collapse:collapse;width:100%;font-size:13.5px;margin:10px 0}
+th,td{border:1px solid #c8cfc6;padding:5px 8px;text-align:left;vertical-align:top}
+th{background:#eef1ec}
+.note{font-size:13px;color:#5a6a62;background:#f6f5ef;border-left:3px solid #b3542e;padding:6px 12px;margin:10px 0}
+.big{font-size:17px;font-weight:700;color:#2f4f4a;margin:14px 0 6px}
+@media print{body{background:white}main{padding:0;max-width:none}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body><main>
+
+<h1>SpGEMM 项目创新点总结与路由规划<span>口头汇报版——说人话,不念论文</span></h1>
+
+<h2>一、一句话讲清楚我们做了什么</h2>
+<p><b>我们发现:同一个矩阵里,不同行的"长相"千差万别——有的行算一次只碰几个数,有的行碰几百万个数;有的行结果挤在一小块,有的行结果撒满全矩阵。传统方法假装所有行长得差不多,我们就让它别装了——<b>每种长相的行,配一种专门为它设计的 kernel</b>。</b></p>
+<p>三个描述行"长相"的量:<b>乘积数 F</b>(算多少)、<b>独立结果数 U</b>(存多少)、<b>列跨度 S</b>(结果分布在多宽)。这三个量互相独立,决定了三件事:留多少空间、怎么分工、怎么输出。我们的六个设计点,就是围绕这三根轴各打一枪。</p>
+
+<h2>二、六个创新点(每个都是"发现→启发→设计"的故事)</h2>
+
+<div class="loop">
+<b>①容量:MinHash 定容</b>
+<br><span class="find">发现</span>:两行算的次数一样多,存的结果数可以差一百倍(重复率不同)。按次数留空间,高重复行白占一堆内存。
+<br><span class="find">启发</span>:结果数可以"估"出来——每条 B 行建一次摘要,合并起来就得到并集大小,不用真的去重一遍。
+<br><span class="find">设计</span>:MinHash 摘要 + 四层保险(校准偏差 / 结构上界封顶 / 膨胀量记账 / 低估了就重算)。测下来的系统性偏差是 1.8 倍,校准还原后,一刀翻掉 79 个矩阵的容量档。
+<br><b>和 ocean(HLL)的区别</b>:ocean 用 HLL 估,我们用 MinHash 估——MinHash 在中小规模(我们的主力负载)更准,而且可以校准;ocean 的 HLL 偏大就偏大了,只能多留空间硬扛。我们多出的四层误差契约是 ocean 没有的工程完备性。
+</div>
+
+<div class="loop">
+<b>②重行提取:位图直写</b>
+<br><span class="find">发现</span>:最重的行的瓶颈不在"算",在"排"——从哈希表到有序输出要过一趟排序,这趟比算本身还贵(nlpkkt120 上排序 73ms vs 累积 33ms)。
+<br><span class="find">启发</span>:能不能在"提取"的时候就把顺序排好?答案是可以——每个结果在输出行里排第几,可以精确算出来(比它小的结果有几个,它就排第几)。
+<br><span class="find">设计</span>:列域位图前缀位次——在表上建一张位图(哪些列有结果),前缀一扫,每个结果的位次就定了,直接写到最终位置。不需要额外排序。对跨度大的行,改用"核内秩排序"(比我的键小的键有几个,我就排第几),一趟完成。
+<br>这一刀砍掉了排序载体,ldoor 快 33%、cage15 快 19%、Hook 快 11%。目前整体记分 0.9085(比 ocean 快 9.5%)。
+</div>
+
+<div class="loop">
+<b>③窄跨度行:窗口直寻 + DIRECT5</b>
+<br><span class="find">发现</span>:结果数相同的两行,列号可能挤在一个窄区间(跨度 4),也可能撒满全矩阵(跨度 16)。挤在一起的行,连哈希都不用——相对位置就是地址。
+<br><span class="find">启发</span>:跨度窄的行,直接用"列号减去起点"当数组下标,省掉哈希探测。如果还能提前数出这行有几个结果,连行间紧缩也能免。
+<br><span class="find">设计</span>:窗口直寻内核(DSTRUCT)+ DIRECT5(先精确计数,然后直接写进最终 CSR)。全套测试 −1%,但窗口人口的逐阵收益远大于总账均值。
+</div>
+
+<div class="loop">
+<b>④归并路径:有效列域分桶</b>
+<br><span class="find">发现</span>:对有序输入做多路归并,按全矩阵宽度等宽切分,会切出一堆空线程组(12 个乘积落在前 8 列,四组负载 8/4/0/0——两组白转)。
+<br><span class="find">启发</span>:切分应该切在"实际有数据的范围"内,边界按数据密度调,不是按列号等距。同一列的全部贡献必须归同组,不然合并不了。
+<br><span class="find">设计</span>:两步——先收缩到有效列域(消除空组),再按乘积密度调边界(8/4/0/0 → 3/3/3/3)。分区本身保序,各组拼接即有序输出。held-out 上 +22.3%。
+</div>
+
+<div class="loop">
+<b>⑤线程分工:LLB 行内粒度</b>
+<br><span class="find">发现</span>:八条长度为 1 的输入行,八线程一轮完;同样八项集中在一条长度为 8 的行上,单线程要八轮。总量一样,最长的那条行决定尾部。
+<br><span class="find">启发</span>:组宽(几个线程共推一条行)不应该是写死的,应该按行的实际构成现场调。
+<br><span class="find">设计</span>:平均 B 行长定初始组宽,最长行 vs 总量做双向 2 倍容差重平衡。email-Enron −14%、c-66 −29%,均匀阵回退 4-7%(所以按矩阵条件开关)。和 spECK 的区别:spECK 调的是块级,我们调的是行内粒度。
+</div>
+
+<div class="loop">
+<b>⑥体系:三层选择 + 编译维度</b>
+<br><span class="find">发现</span>:以上五个设计,各自在不同粒度上击破了不同假设。另外,同一份代码用不同编译目标(compute_61 vs sm_90)差 9%——编译目标也是内核选择的一维。
+<br><span class="find">设计</span>:三层选择(矩阵级选路径 → 行级选内核 → 行内调组宽)+ 同一源码双目标编译。而且淘汰和新增一样重要:假选择(oracle≈默认)焊死为常量,路由的修剪回答"为什么没有更复杂"。
+</div>
+
+<h2>三、验证协议(和内核设计同等地位)</h2>
+<p>这不是一个设计点,是我们踩了坑之后立下的规矩:<b>性能测试说"项数对了",不等于输出真的对了。</b>我们有一次优化项数全对但列号错位,静默存活了 23 天,最后是合作方平台的逐元素核对才发现的。所以我们建立了:</p>
+<table>
+<tr><th>层</th><th>检查什么</th><th>怎么查</th></tr>
+<tr><td>集合</td><td>每行的列号集合</td><td>对比参考输出的列集合</td></tr>
+<tr><td>次序</td><td>行内列号是否递增</td><td>逐位检查(项数对但乱序是盲区)</td></tr>
+<tr><td>数值</td><td>配对后的值</td><td>容差比较,噪声以同二进制自对拍定界</td></tr>
+</table>
+<p>另外还有同日同卡消融(每次改动都和基线在同一条件下跑)、微阵 10 次取中位(小于 1ms 的矩阵单次读数全是噪声)。这套协议本身就是贡献——它抓住了我们自己 23 天没发现的错误。</p>
+
+<h2>四、当前成绩</h2>
+<table>
+<tr><th>指标</th><th>值</th><th>说明</th></tr>
+<tr><td>vs Ocean(ICS 2026)</td><td><b>GM 0.9085</b>(快 9.5%)</td><td>427 个矩阵,H100,全程值级验证</td></tr>
+<tr><td>vs FlexSpGEMM</td><td>GM 0.361(快 2.8 倍)</td><td>且我们发现了 Flex 的数值正确性缺陷</td></tr>
+<tr><td>vs HSMU(HPCA 2025)</td><td>GM 0.235(快 4.3 倍)</td><td>—</td></tr>
+<tr><td>vs TileSpGEMM</td><td>类似 Flex</td><td>也发现了越界读缺陷</td></tr>
+</table>
+<div class="note">诚实说:Flex 和 TileSpGEMM 各有数值正确性问题(我们的值级验证抓到的)。四家里只有我们和 ocean 又快又对,而我们对 ocean 有 9.5% 的优势。</div>
+
+<h2>五、未来路由计划(说人话版)</h2>
+
+<p><b>现状</b>:现在的路由是"五级漏斗"——先选大路径(hash 还是归并),再按工作量分箱选内核,再在内核里调线程分工。这个体系是被一步一步"证伪"逼出来的(不是设计出来的),每一级的诞生都是因为上一级的"行都差不多"假设被打死了。</p>
+
+<p><b>问题</b>:每次加一个新内核,要手工去试"哪类行该给它"。我们试过用矩阵级的粗特征(重复度/跨度/行长)来猜——<b>猜不准</b>(同一个特征值,有的阵赢有的阵输,K7 内核试了三次都被证伪)。</p>
+
+<p><b>计划</b>:把"猜"变成"量"。分三步:</p>
+
+<div class="loop">
+<b>第一步:收集燃料(语料库扩建)</b>
+<br>从 UF 矩阵库(SuiteSparse)下载 1500-2500 个新矩阵,算出每行的特征(乘积数/结果数/跨度/重复度)。这是纯 CPU 的活,不占 GPU,可以在后台跑。
+</div>
+
+<div class="loop">
+<b>第二步:学习分类</b>
+<br>对所有矩阵的行做特征分析,看"几种行"是自然浮现的——有没有哪几群行的特征特别集中?每一群该配什么 kernel?这一步的产出是一张<b>"行类 × kernel 赢家"的表</b>,每个格子填的是<b>实测赢家</b>(不是猜的)。
+</div>
+
+<div class="loop">
+<b>第三步:指派表路由</b>
+<br>最终形态:一个三层的查表系统——
+<br>• <b>行类体系</b>(稳定):行结构的数据事实,定了就不动
+<br>• <b>内核菜单</b>(半稳定):五家族 kernel 清单,新内核 = 注册 + 粗标定
+<br>• <b>指派表</b>(易变):每类行配哪个内核,内核更新了就重标
+<br><b>关键原则:竞争力门,不是资格门</b>——每个表项判断的是"这行在这个内核下比现任内核快不快",不是"这行能不能进这个内核"。<b>这一条是 K7 内核三次死刑换来的教训。</b>
+</div>
+
+<p><b>预期收益</b>:路由精细化预计再拿 2-5%(当前 0.9085 → 0.87-0.89);加上 accumulate 内环优化(位图两遍式,理论 2-4 倍),中期目标 0.85-0.86,冲刺 0.80。</p>
+
+<h2>六、和现有工作的关系(不吹不黑)</h2>
+<table>
+<tr><th>方法</th><th>它们做了什么</th><th>我们多了什么</th></tr>
+<tr><td>nsparse (ICPP'17)</td><td>哈希表去重 + 后置排序</td><td>我们把排序融进提取,免掉排序趟</td></tr>
+<tr><td>spECK (PPoPP'20)</td><td>轻量分析选路径 + 块级分工</td><td>我们做到行内粒度 + 位图直写</td></tr>
+<tr><td>Ocean (ICS'26)</td><td>HLL 估计 + 路径选择</td><td>MinHash 可校准 + 四层误差契约 + 位图直写</td></tr>
+<tr><td>RMerge2 (SIAM'18)</td><td>迭代归并</td><td>我们用键域分桶(有效列域切分)</td></tr>
+<tr><td>HSMU (HPCA'25)</td><td>有序数组二分定位</td><td>…且我们比它快 4.3 倍</td></tr>
+</table>
+<p class="note">我们不声称任何一项是"从未有人做过"——我们的贡献是组合:六个设计点在统一的三轴框架下协同工作,并且有完整的验证协议保证它们真的正确。</p>
+
+</main></body></html>
