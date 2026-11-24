@@ -30,6 +30,8 @@ RE_PROF = re.compile(r"\[hash-prof\]\s+(\S+)\s+([\d.]+)\s*ms")
 RE_STAT = re.compile(r"\[bm2-stat\] bin=(\d+) mode=(\d+) leg=(\d+) rows=(\d+) taken_rows=(\d+) "
                      r"taken_flop=(\d+) skip_rows=(\d+) skip_flop=(\d+) ovf_rows=(\d+)")
 PHASES = ["accumulate", "compact+sort", "retry", "dense_direct"]
+RE_TFLOP = re.compile(r"total_flop=(\d+)")
+RE_AROWS = re.compile(r"Input A: (\d+) x (\d+), nnz = (\d+)")
 
 
 def parse_arm(s):
@@ -77,6 +79,10 @@ def run_one(binary, path, method, gpu, arm_env, warm="3", extra=None, timeout=90
     for p in PHASES:
         res[p] = ph.get(p, 0.0)
     res["stat"] = [tuple(int(x) for x in m) for m in RE_STAT.findall(r.stderr)]
+    tf = RE_TFLOP.findall(r.stderr)                         # dbg 行 "[hash] avg_product=… (total_flop=…)"
+    res["total_flop"] = int(tf[-1]) if tf else 0
+    ar = RE_AROWS.findall(out)
+    res["a_rows"] = int(ar[-1][0]) if ar else 0
     return res, None
 
 
@@ -122,7 +128,7 @@ def main():
     if missing:
         say("# 缺文件跳过: " + ", ".join("%s(%s)" % (m[0], m[1]) for m in missing))
 
-    rows, stats = [], []
+    rows, stats, share = [], [], {}
     fail = open(a.out + "_fail.log", "w")
     for name, path, method in present:
         if a.stat:
@@ -135,11 +141,12 @@ def main():
                     print("%14s %-10s STAT FAIL" % (name, an), flush=True)
                     continue
                 for st in res["stat"]:
-                    stats.append((name, an) + st + (res["nnz"],))
+                    stats.append((name, an) + st + (res["nnz"], res["total_flop"], res["a_rows"]))
                 tr = sum(s[4] for s in res["stat"]); sr = sum(s[6] for s in res["stat"])
                 tf = sum(s[5] for s in res["stat"]); sf = sum(s[7] for s in res["stat"])
-                print("%14s %-10s STAT taken_rows=%d skip_rows=%d taken_flop=%d skip_flop=%d nnz=%d"
-                      % (name, an, tr, sr, tf, sf, res["nnz"]), flush=True)
+                share[(name, an)] = (tr, sr, tf, sf, res["total_flop"], res["a_rows"])
+                print("%14s %-10s STAT taken_rows=%d skip_rows=%d taken_flop=%d skip_flop=%d total_flop=%d a_rows=%d nnz=%d"
+                      % (name, an, tr, sr, tf, sf, res["total_flop"], res["a_rows"], res["nnz"]), flush=True)
         for r in range(a.rounds):
             for an, ae in arms:
                 res, err = run_one(a.bin, path, method, a.gpu, ae)
@@ -164,7 +171,7 @@ def main():
         with open(a.out + "_stat.csv", "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["mat", "arm", "bin", "mode", "leg", "rows", "taken_rows", "taken_flop",
-                        "skip_rows", "skip_flop", "ovf_rows", "nnz"])
+                        "skip_rows", "skip_flop", "ovf_rows", "nnz", "total_flop", "a_rows"])
             w.writerows(stats)
 
     # ── 判读 ──
@@ -181,8 +188,9 @@ def main():
     for an, _ in arms[1:]:
         say("")
         say("===== 判读:%s / %s(逐阵中位比;测量分级)=====" % (an, base))
-        say("%14s %10s %10s %8s %6s  %9s %9s %8s  %s" % ("mat", base + "_ms", an + "_ms", "ratio", "级",
-                                                          "acc_" + base, "acc_" + an, "acc比", "备注"))
+        say("%14s %10s %10s %8s %6s  %9s %9s %8s %9s %9s  %s" % ("mat", base + "_ms", an + "_ms", "ratio", "级",
+                                                                  "acc_" + base, "acc_" + an, "acc比",
+                                                                  "flop占比", "行占比", "备注"))
         ratios, worst, bad, micro, nfail = [], 0.0, [], [], 0
         for name, _, _ in present:
             A, B = by.get((name, base)), by.get((name, an))
@@ -213,7 +221,11 @@ def main():
                     note.append("Δ>5%")
                 worst = max(worst, ratio)
             ratios.append(ratio)
-            say("%14s %10.3f %10.3f %8.4f %6s  %9.3f %9.3f %s  %s" % (name, ma, mb, ratio, cls, aa, ab_, accr, " ".join(note)))
+            sh = share.get((name, an))                      # 两遍式覆盖面:走两遍式的 Σflop / 全阵 Σflop;行数 / 全阵行数
+            fsh = ("%8.1f%%" % (100.0 * sh[2] / sh[4])) if sh and sh[4] > 0 else "        -"
+            rsh = ("%8.1f%%" % (100.0 * sh[0] / sh[5])) if sh and sh[5] > 0 else "        -"
+            say("%14s %10.3f %10.3f %8.4f %6s  %9.3f %9.3f %s %s %s  %s"
+                % (name, ma, mb, ratio, cls, aa, ab_, accr, fsh, rsh, " ".join(note)))
         if ratios:
             gm = math.exp(sum(math.log(x) for x in ratios) / len(ratios))
             green = (not bad) and gm <= 1.02 and worst <= 1.10
