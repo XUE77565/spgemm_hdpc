@@ -37,3 +37,4 @@
 | msc10848 | m2 | 6185646 | 3423 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=2702206 worst_rel_vs_global=1.900e-16) | 判定: FAIL(L1 集合错行: 0   (零抵消软判 benign: 0) L2 乱序行:   0 L3 数值错行: 9   全局最大相对误差: 5.785e-02 ) |
 | bcsstk30 | m1 | 8946070 | 21375 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00) | 判定: PASS(L1 集合错行: 0   (零抵消软判 benign: 0) L2 乱序行:   0 L3 数值错行: 0   全局最大相对误差: 0.000e+00 ) |
 | bcsstk30 | m2 | 8946070 | 21375 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00) | 判定: PASS(L1 集合错行: 0   (零抵消软判 benign: 0) L2 乱序行:   0 L3 数值错行: 0   全局最大相对误差: 0.000e+00 ) |
+| c-64 | m1 | 155006041 | 3236 / 380 | PASS(col_mismatch=0 unordered=0 text_diff=8420396 worst_rel_vs_global=1.383e-16) | 判定: PASS(L1 集合错行: 0   (零抵消软判 benign: 10254) L2 乱序行:   0 L3 数值错行: 0   全局最大相对误差: 2.148e-11 ) |
