@@ -106,3 +106,11 @@
 |---|---|---|---|---|
 | pre2 | m2 | 323445872 | 118675 / 26529 | PASS col_mismatch=0 unordered=0 text_diff=272061 worst_rel_vs_global=1.092e-27 |
 | ldoor | m1 | 145422935 | 85302 / 864220 | PASS col_mismatch=0 unordered=0 text_diff=50201517 worst_rel_vs_global=3.141e-16 |
+| ldoor | m2 | 145422935 | 96404 / 853118 | PASS col_mismatch=0 unordered=0 text_diff=50020562 worst_rel_vs_global=4.188e-16 |
+
+- S8: green
+
+## 结束
+- 结论: S1-S4、S8 全绿;S5/S6/S7 的计时结论见各段 GM/裁定 行与对应 txt/csv
+- 磁盘: /dev/sdb1        15T  8.4T  5.4T  61% /home
+- 结束时间: 2026-11-24T21:51:39Z,总用时 212 分钟
