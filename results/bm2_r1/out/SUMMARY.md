@@ -1,0 +1,4 @@
+# bm2_r1 汇总(想法二 HH_BM2 第一轮)
+
+## S0 环境
+- 主机: H100-187  开始: 2026-11-24T16:52:41Z  快照: /home/xueyizhou/exp-runs/bm2_r1/code
