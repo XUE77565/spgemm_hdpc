@@ -104,3 +104,4 @@
 
 | 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
 |---|---|---|---|---|
+| pre2 | m2 | 323445872 | 118675 / 26529 | PASS col_mismatch=0 unordered=0 text_diff=272061 worst_rel_vs_global=1.092e-27 |
