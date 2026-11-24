@@ -57,3 +57,10 @@
 | 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) | 官方口径错行(仅参考) | nerr 最大 | 本作业判 |
 |---|---|---|---|---|---|---|---|
 | TSOPF_RS_b678_c2 | off | 40139105 | 0 / 0 | - | 0 | 4.399041e-16 | 对照 |
+| TSOPF_RS_b678_c2 | m1 | 40139105 | 17002 / 0 | PASS col_mismatch=0 unordered=0 text_diff=760635 worst_rel_vs_global=1.987e-18 | 0 | 4.399041e-16 | 绿 |
+| TSOPF_RS_b678_c2 | m2 | 40139105 | 17002 / 0 | PASS col_mismatch=0 unordered=0 text_diff=772721 worst_rel_vs_global=1.987e-18 | 0 | 4.399041e-16 | 绿 |
+
+### ldoor(翻 bin 家族:legacy 形态 + 加宽 SMEM;1.45 亿 nnz,只跑差分门)
+
+| 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
+|---|---|---|---|---|

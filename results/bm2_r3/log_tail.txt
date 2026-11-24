@@ -1,11 +1,3 @@
-################ S2 构建 ################ (+0s 上一段,累计 0s)
-2026-11-24T22:11:43Z
-
-## S2 构建
-- make TARGET=spgemm_bm2: rc=0,用时 55s;审计: TU-90 模板实例: 26 个;TU-61: 75 个;✓ 实例集不相交(探针P2 风险解除);✓ opt-in 全覆盖;
-- WRITE_MTX 件 spgemm_bm2w: rc=0(只重编 main.cu)
-- S2: green
-
 ################ S3 冒烟 ################ (+58s 上一段,累计 58s)
 2026-11-24T22:12:41Z
 
@@ -198,3 +190,11 @@ OFFICIAL_BAD_ROWS m2 0
 
 (没有任何臂在官方口径下判错,清单为空)
 | TSOPF_RS_b678_c2 | off | 40139105 | 0 / 0 | - | 0 | 4.399041e-16 | 对照 |
+| TSOPF_RS_b678_c2 | m1 | 40139105 | 17002 / 0 | PASS col_mismatch=0 unordered=0 text_diff=760635 worst_rel_vs_global=1.987e-18 | 0 | 4.399041e-16 | 绿 |
+| TSOPF_RS_b678_c2 | m2 | 40139105 | 17002 / 0 | PASS col_mismatch=0 unordered=0 text_diff=772721 worst_rel_vs_global=1.987e-18 | 0 | 4.399041e-16 | 绿 |
+
+### ldoor(翻 bin 家族:legacy 形态 + 加宽 SMEM;1.45 亿 nnz,只跑差分门)
+
+| 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
+|---|---|---|---|---|
+---- 差分门 ldoor (data/ocean/square/ldoor.mtx)
