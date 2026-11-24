@@ -1911,8 +1911,7 @@ static inline bool probe_rf_on() {
 }
 
 __device__ int g_xbit_d = 0;
-__device__ int g_hh_sorted_d = 0;
-__device__ int *g_spa_spanlo_d = nullptr;   // 想法二(study/69):hash_spa 位图原点指针   // 刀Gv3(study/57 §五十):HH_SORTED → host 装载;hash_heavy 表内有序 rank 直写   // 刀E5(study/57 §三一):HASH_XBIT → host cudaMemcpyToSymbol;extract 每行一次分支,零热径成本
+__device__ int g_hh_sorted_d = 0;   // 刀Gv3(study/57 §五十):HH_SORTED → host 装载;hash_heavy 表内有序 rank 直写   // 刀E5(study/57 §三一):HASH_XBIT → host cudaMemcpyToSymbol;extract 每行一次分支,零热径成本
 __device__ int *g_fus_unsort_d = nullptr;   // v1.4(§十):混合行无序标志(内核写/compact gather;指针每 run 装载)
 
 // 刀E1/E2/G(study/57 §廿五/廿六/四十九):bin 被无序写内核接管(hash_heavy 或 VG)→ compact 侧 csort 载体
@@ -1945,7 +1944,7 @@ static inline bool h45_pilot_on() {
 // 命中路径零 CAS;空槽才 atomicCAS 占位(占败 = 他人已入他键,前进重探)。该探测模式为领域
 // 公共形态(nsparse kernel_spgemm_hash_s.cu:298-315 / spECK HashMap.cuh 同构先例);散列用
 // 自有 Knuth 乘法常数 2654435761u 全值域映射 + mask 线性探测(pow2 表)。
-template<int MODE, int PROBE_RF = 1, int PROBE_HIST_ON = 0, int VAL_GMEM = 0, int LOG_HT = 0, int HT_P = 0, int PROBE2 = 0, int WM_T = -1, int TB_TAG = 0, int BMODE = 0>
+template<int MODE, int PROBE_RF = 1, int PROBE_HIST_ON = 0, int VAL_GMEM = 0, int LOG_HT = 0, int HT_P = 0, int PROBE2 = 0, int WM_T = -1, int TB_TAG = 0>
 // PROBE2(刀D1,study/57 §十八):熔断换位——per-probe 计数器(IADD+ISETP 每探测步 +
 // ++probes 归纳寄存器)→ per-k occupancy 余量检查(ocean hashSymbolic 同构:occ+本k
 // B行宽 ≥ 表容 bail)+ wrap 检测(slot==起点,1 ISETP/步)作挂死保护。终止性:per-k
@@ -1978,7 +1977,6 @@ static __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kern
     int *row_nnz, int *overflow_flag,
     int *ovf_rows, int *ovf_cnt, int *row_ovf,
     const int *row_flop = nullptr,      // localLoadBalance 输入(行 flop);null=旧静态 G
-
     const int *row_maxbl = nullptr,     // 行 k 集内 B 行最大长;null=旧静态 G
     int llb = 0,                        // LLB=1:按行动态 G(docs/27 §4.2)
     const int *exact_rp = nullptr, int *dC_ci = nullptr, double *dC_val = nullptr,   // MODE=2
@@ -2047,10 +2045,6 @@ static __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kern
     int num_groups = blockDim.x / G;
     int my_group = tid / G, my_id = tid % G;
     const int wm_eff = (WM_T >= 0) ? WM_T : warp_merge;   // 刀E3:WM_T≥0 = 编译期定死(LHT 热实例 WM×3 死兄弟枚举环整体消码,REG 压力与调度空间同收);-1 = 运行时(legacy 发射点不变)
-    // 想法二:位图两遍式——位图复用表区 col 槽位(int* → unsigned* 无别名 UB)
-    unsigned *tab_bmp = (unsigned *)sh_col;   // 位图复用表区(sh_col 即表,类型安全转换)
-    const int col_lo_spa = g_spa_spanlo_d ? g_spa_spanlo_d[i] : 0;   // 想法二:位图原点
-    const int bmp_words = (ht_size + 31) >> 5;   // 位图词数 ≤ 表槽数/32
     if (wm_eff == 4) {
         // spec95 WM v4(§3.1s 三件套):①原生 q 环索引(消 WM2 走位平方税)②MATCH.ANY 单指令
         // dup 探针,无伙伴=原路径零附加③G=8 配套(HASH_WM=4+GFORCE=8):warp 跨 4 组×连续 k,
@@ -2074,11 +2068,6 @@ static __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kern
                 }
                 unsigned mm = __match_any_sync(0xffffffffu, j);   // 1 指令探针
                 if (j < 0) continue;                              // 哨组零成本
-                if (BMODE) {
-                    // 想法二(study/69 §二十):位图标记——1 cyc/乘积,无 CAS 无探测环
-                    atomicOr(&tab_bmp[(j - col_lo_spa) >> 5], 1u << ((j - col_lo_spa) & 31));
-                    continue;
-                }
                 if (mm == (1u << lane5)) {                        // 无同 j 伙伴:原路径
                     unsigned slot = ((unsigned)(j * 2654435761u)) & mask;
                     int probes = 0;
@@ -2304,25 +2293,6 @@ static __global__ void __launch_bounds__(HASH_BLOCK_STRUCT * 4, 2) hash_spa_kern
     // ——对齐 ocean ROWCYCLES 窗(彼方 numeric kernel 不含 epilogue 提取)。此前逐行对拍我方窗多付 extract
     // (crankseg 行约 5-15% 行时间),1.355 含此不对称成分;此仪器一开即剔除。
     if (rt_pre_extract && rowtime && tid == 0) { rowtime[i] = clock64() - rt0; }
-    if (BMODE) {
-        // 想法二 Pass2(study/69 §二十):前缀扫描 + 直寻累积 + 有序提取
-        // 位图已在 Pass1 标记(乘积环内 atomicOr);此处:前缀→rank→第二遍读 B→累积→直写
-        // SMEM 布局:位图复用表区前 bmp_words 词;值区复用表区后(按前缀偏移)
-        // (简化 v1:Pass2 也走乘积环,但用位图 rank 直寻替代 CAS)
-        // —— v1 先只做前缀+提取(值已在 Pass1 的 CAS 路径中累积)——这不对,需完整两遍
-        // 完整 v1:Pass1 只标记(continue),Pass2 重走乘积环做 atomicAdd(tmp_val[rank])
-        // 当前实现:先做前缀+提取,值累积暂走原 CAS 路径(BMODE 仅用于验证前缀正确性)
-        // TODO: 完整两遍式需要 Pass2 重走乘积环
-        int cnt = 0;
-        for (int w = tid; w < bmp_words; w += blockDim.x) cnt += __popc(tab_bmp[w]);
-        for (int off = 16; off; off >>= 1) cnt += __shfl_down_sync(0xffffffff, cnt, off);
-        __shared__ int bm_ccnt[32];
-        if ((tid & 31) == 0) bm_ccnt[tid >> 5] = cnt;
-        __syncthreads();
-        if (tid == 0) { int t = 0; for (int x = 0; x < (blockDim.x >> 5); x++) t += bm_ccnt[x]; row_nnz[i] = t; }
-        if (rowtime && tid == 0) rowtime[i] = clock64() - rt0;
-        return;
-    }
     if (MODE == 1) {   // count-only:occupancy 即精确 distinct;溢出行已在上面标记(row_nnz 留给 retry)
         int cnt = 0;
         for (int s = tid; s < ht_size; s += blockDim.x) cnt += (sh_col[s] != -1);
