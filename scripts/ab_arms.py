@@ -133,7 +133,7 @@ def main():
     for name, path, method in present:
         if a.stat:
             for an, ae in arms:
-                if "HH_BM2" not in ae or ae.get("HH_BM2") == "0":
+                if ae.get("HH_BM2", "0") == "0" and ae.get("HH_BM2_L1", "0") == "0":
                     continue
                 res, err = run_one(a.bin, path, method, a.gpu, ae, warm="0", extra={"HH_BM2_STAT": "1"})
                 if res is None:
