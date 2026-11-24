@@ -1,0 +1,8 @@
+nvcc -O3 -arch=sm_90 -std=c++14 -lineinfo  -DWRITE_MTX=1 -Iinclude -I/usr/local/cuda/include -c src/main.cu -o src/main.o
+tools/arch_probe/check_disjoint.sh
+TU-90 模板实例: 26 个;TU-61: 75 个
+✓ 实例集不相交(探针P2 风险解除)
+python3 tools/arch_probe/check_optin.py
+大表 tagged 发射实例: 12;opt-in 覆盖: 12
+✓ opt-in 全覆盖
+nvcc -O3 -arch=sm_90 -std=c++14 -lineinfo  -DWRITE_MTX=1 -o spgemm_bm2w src/main.o src/matrix_utils.o src/spgemm_kernel_cusparse.o src/spgemm_kernel_manual.o src/spgemm_kernel_formulations.o src/spgemm_kernel_hash.o src/spgemm_adaptive.o src/spgemm_merge.o src/spgemm_kernel_struct.o src/mempool.o src/spgemm_kernel_hash_c61.o -lcusparse -lcublas
