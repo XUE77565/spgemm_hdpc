@@ -1,0 +1,5 @@
+# bm2_r2 汇总(想法二 HH_BM2 第二轮)
+
+## S0 环境
+- 主机: H100-187  开始: 2026-11-24T18:19:22Z  快照: /home/xueyizhou/exp-runs/bm2_r2/code
+- nvcc(PATH): /usr/bin/nvcc / Build cuda_12.0.r12.0/compiler.32267302_0
