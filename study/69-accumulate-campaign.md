@@ -402,3 +402,50 @@ g_hh_sorted_d 模式)——hash_spa_kernel 内加 `if (g_spa_bm_d)` 运行时分
 - 微复现器 hh_repro4(500 全绿)
 
 **回滚说明**:git stash 已回退全部未提交改动;下轮从干净树开始按新架构实施。
+
+## 二十六、想法二改落 hash_heavy_kernel:HH_BM2 实施与第一轮作业(11-24,外部模型)
+
+**锚点勘误(读源码所得,先于实施)**:
+1. §二十二给的 CAS 环(src:2069-2105)在 hash_spa_kernel 的 `wm_eff==4` 分支——生产不可达
+   (`g_wm` 只取 0/1;LHT 实例 `WM_T=0`)。生产主内环是 HASH_INNER_LOOP 宏。
+2. b45(bin4/5)和 bin7/8/9 的生产累积核是 **hash_heavy_kernel**(默认 SPEC99=1、HASH_H45/H55/H69=1
+   → hh_elig);hash_spa 在 TU-61 默认只接 bin6 与 bin2/3。想打 b45 人口,必须落 hash_heavy。
+3. hash_heavy 只有一个发射宏(HH_LAUNCH2),模板实参本来就由宏参给——§二十五的"模板参与宏体系冲突"
+   是 hash_spa 20+ 发射点的问题,这里不存在。故开关用**模板参 BM2 + 宿主 env 经 if/else 选实例**
+   (同 g_s99och 手法):BM2=0 实例里新代码整块编译期消除,与改动前同一份机器码;行级门参数与普查
+   计数才走 `__device__` 全局符号(g_bm2_*,同 g_hh_sorted_d 模式)。
+4. b27d0fa 留在 hash_spa 的 BMODE 半成品已回退(提交 70d1dea,src/ 与 675b227 逐字节相同)。
+
+**实现**(`src/hh_bm2.cuh` 的 `hh_bm2_row`,生产与 `tools/hh_repro5.cu` 共用同一份):
+- 行级分流在 hash_heavy_kernel 入口、清表之前:合格行走两遍式后直接返回,不合格行原样走哈希路径。
+  合格 = 位图(+值区)装得进本次发射的动态 SMEM(`hh_bm2_fits`;字数与 hhsm 同源 `hh_smem_words`)
+  ∧ 行门(`HH_BM2_MINFLOP`、`HH_BM2_DUP`=flop×100/est 下限、`HH_BM2_SPANX`=span/est 上限;默认 0=不设,
+  门值待判别实验定——每行固定成本是 O(span/32) 的清位图/前缀/键枚举,所以密度轴和 dup 轴都留了旋钮)。
+- SMEM 布局:每个列域词一个 64 位条目(低 32=位图词,高 32=该词之前的置位数)→ Pass2 一次 8B 读
+  拿到"位图词+前缀",位次 = 高半 + popc(低半 & 低位掩码)。组前缀(32 词/组)沿用 Gv4 做法。
+- Pass1 只读 B 的列号流(4B/乘积),先读后 atomicOr;Pass2 读 B16,`atomicAdd(值[位次])`。
+- 值区两种形态都做成实例供实测:`HH_BM2=1` 值在 SMEM(软件模拟 F64 原子,末尾拷出);
+  `HH_BM2=2` 值直接累加到全局 `tmp_val[base+位次]`(原生 RED,免值区与拷出)。出处:study/57 §廿六
+  四格矩阵——128T 下 L2 原生快 11%,256T 下慢 4.5%,所以不预设赢家。
+- 输出契约 = Gv4 位图行:行内列升序直写 tmp、row_nnz=n;n>cap 不写输出、注册 ovf 交 retry。
+  位图 bin 走 copy;fused bin(hh_flip=2)不置无序标志走 copy;legacy bin 仍过载体。compact 侧零改动。
+- 覆盖面:位图 bin 里 TOTW 大的档(bin5 8192 字)能装下 span 到 ~11 万列的行,超过 Gv4 的 64K 门
+  (这些行原本被踢去 retry);翻 bin 的 fused 档里窄 span 行也能走。SMEM 装不下的宽 span 行仍走哈希。
+- 开关:`HH_BM2`(0 默认)、`HH_BM2_BINS`(bin 位掩码,默认 0x3f0)、`HH_BM2_STAT=1`(普查,诊断跑)。
+  att(A·Aᵀ)不开;OCH=1 的 A/B 实例不配 BM2。bin6 默认不走 hash_heavy,要测用 `HASH_H69=2`。
+
+**对成本模型的保留意见(入档,待实测裁决)**:§二十的"CAS 路径 dup×4-6 cyc"不成立——哈希路径每乘积
+只探测一次(CAS 只在首次插入),同列 atomicAdd 争用两种形态都有;两遍式每乘积反而多一趟 B 读 +
+一次 SMEM 读,省掉的是探测链、清表与表扫描提取。study/57 实测 b45 每乘积 ≈3.4 拍,不是 25 拍。
+另:Bump/Hook/cage15/ldoor 属翻 bin 家族(宽 span 行占比过门),SMEM 位图只接得住其中的窄 span 行,
+普查会给出实际覆盖面。**结论以作业读数为准,不预判。**
+
+**第一轮作业 `bm2_r1`**(jobs/bm2_r1/run.sh,红即停):S1 微复现器(9 档几何×B16×值区模式,逐行真值)
+→ S2 构建+审计 → S3 冒烟 → S4 值级(HH_BM2=1/2 对 =0 的 mtx_gate_fast;scipy 在则三判)
+→ S5 三臂电池 off/m1/m2(同一二进制,env 臂,16 阵+靶阵,带 accumulate 相位与普查)
+→ S6 行门判别(无门 / dup 门 250 / 密度门 32,只用 data/train_disp,测试账不参与标定)
+→ S7 无侵入电池(基线源码件 vs 新件关开关,官方 ab_pair.py)。
+新工具:`scripts/ab_arms.py`(多臂 env 电池,判读口径同 ab_pair)。
+
+**顺带发现,待用户裁决**:main 的 `DUP_LIGHT=4`,认证形态(8301300,confirm19)是 8。31fc667 快照带入,
+675b227 只回滚了 dfia 三处。§十三已判"门调整是死路",常数未改回。本刀未动它(两臂同常数,A/B 不受影响)。
