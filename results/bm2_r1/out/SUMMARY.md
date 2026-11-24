@@ -32,3 +32,8 @@
 | cfd2 | m1 | 13418644 | 90070 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=1749232 worst_rel_vs_global=4.353e-16) | 判定: PASS(L1 集合错行: 0   (零抵消软判 benign: 2595) L2 乱序行:   0 L3 数值错行: 0   全局最大相对误差: 1.261e-11 ) |
 | cfd2 | m2 | 13418644 | 90070 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=1735415 worst_rel_vs_global=3.265e-16) | 判定: PASS(L1 集合错行: 0   (零抵消软判 benign: 2595) L2 乱序行:   0 L3 数值错行: 0   全局最大相对误差: 1.261e-11 ) |
 | s3dkq4m2 | m1 | 13282553 | 88410 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=4484437 worst_rel_vs_global=4.853e-16) | 判定: FAIL(L1 集合错行: 0   (零抵消软判 benign: 267) L2 乱序行:   0 L3 数值错行: 88620   全局最大相对误差: 6.554e+04 ) |
+| s3dkq4m2 | m2 | 13282553 | 88410 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=5247095 worst_rel_vs_global=6.471e-16) | 判定: FAIL(L1 集合错行: 0   (零抵消软判 benign: 267) L2 乱序行:   0 L3 数值错行: 88663   全局最大相对误差: 1.311e+05 ) |
+| msc10848 | m1 | 6185646 | 3423 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=2658441 worst_rel_vs_global=1.900e-16) | 判定: FAIL(L1 集合错行: 0   (零抵消软判 benign: 0) L2 乱序行:   0 L3 数值错行: 9   全局最大相对误差: 5.785e-02 ) |
+| msc10848 | m2 | 6185646 | 3423 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=2702206 worst_rel_vs_global=1.900e-16) | 判定: FAIL(L1 集合错行: 0   (零抵消软判 benign: 0) L2 乱序行:   0 L3 数值错行: 9   全局最大相对误差: 5.785e-02 ) |
+| bcsstk30 | m1 | 8946070 | 21375 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00) | 判定: PASS(L1 集合错行: 0   (零抵消软判 benign: 0) L2 乱序行:   0 L3 数值错行: 0   全局最大相对误差: 0.000e+00 ) |
+| bcsstk30 | m2 | 8946070 | 21375 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00) | 判定: PASS(L1 集合错行: 0   (零抵消软判 benign: 0) L2 乱序行:   0 L3 数值错行: 0   全局最大相对误差: 0.000e+00 ) |

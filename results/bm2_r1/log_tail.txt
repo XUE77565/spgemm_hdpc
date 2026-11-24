@@ -1,61 +1,3 @@
-rc=0
-bin4 128T bitmap(3584w)            B16=0/V=1  rows=1200 ok=769 ovf=60 skip=371 bad=0
-bin4 128T bitmap(3584w)            B16=1/V=1  rows=1200 ok=769 ovf=60 skip=371 bad=0
-bin4 128T bitmap(3584w)            B16=0/V=2  rows=1200 ok=1001 ovf=73 skip=126 bad=0
-bin4 128T bitmap(3584w)            B16=1/V=2  rows=1200 ok=1001 ovf=73 skip=126 bad=0
-bin4 128T fused-leg(2688w)         B16=0/V=1  rows=1200 ok=509 ovf=42 skip=649 bad=0
-bin4 128T fused-leg(2688w)         B16=1/V=1  rows=1200 ok=509 ovf=42 skip=649 bad=0
-bin4 128T fused-leg(2688w)         B16=0/V=2  rows=1200 ok=1055 ovf=68 skip=77 bad=0
-bin4 128T fused-leg(2688w)         B16=1/V=2  rows=1200 ok=1055 ovf=68 skip=77 bad=0
-bin5 256T bitmap(8192w)            B16=0/V=1  rows=1200 ok=730 ovf=50 skip=420 bad=0
-bin5 256T bitmap(8192w)            B16=1/V=1  rows=1200 ok=730 ovf=50 skip=420 bad=0
-bin5 256T bitmap(8192w)            B16=0/V=2  rows=1200 ok=884 ovf=55 skip=261 bad=0
-bin5 256T bitmap(8192w)            B16=1/V=2  rows=1200 ok=884 ovf=55 skip=261 bad=0
-bin5 256T fused-leg(7296w)         B16=0/V=1  rows=1200 ok=642 ovf=60 skip=498 bad=0
-bin5 256T fused-leg(7296w)         B16=1/V=1  rows=1200 ok=642 ovf=60 skip=498 bad=0
-bin5 256T fused-leg(7296w)         B16=0/V=2  rows=1200 ok=951 ovf=78 skip=171 bad=0
-bin5 256T fused-leg(7296w)         B16=1/V=2  rows=1200 ok=951 ovf=78 skip=171 bad=0
-bin6 512T bitmap(10206w)           B16=0/V=1  rows=1200 ok=681 ovf=45 skip=474 bad=0
-bin6 512T bitmap(10206w)           B16=1/V=1  rows=1200 ok=681 ovf=45 skip=474 bad=0
-bin6 512T bitmap(10206w)           B16=0/V=2  rows=1200 ok=913 ovf=58 skip=229 bad=0
-bin6 512T bitmap(10206w)           B16=1/V=2  rows=1200 ok=913 ovf=58 skip=229 bad=0
-bin7 512T bitmap(14336w)           B16=0/V=1  rows=1200 ok=911 ovf=60 skip=229 bad=0
-bin7 512T bitmap(14336w)           B16=1/V=1  rows=1200 ok=911 ovf=60 skip=229 bad=0
-bin7 512T bitmap(14336w)           B16=0/V=2  rows=1200 ok=1039 ovf=65 skip=96 bad=0
-bin7 512T bitmap(14336w)           B16=1/V=2  rows=1200 ok=1039 ovf=65 skip=96 bad=0
-bin7 512T legacy(12288w)           B16=0/V=1  rows=1200 ok=840 ovf=53 skip=307 bad=0
-bin7 512T legacy(12288w)           B16=1/V=1  rows=1200 ok=840 ovf=53 skip=307 bad=0
-bin7 512T legacy(12288w)           B16=0/V=2  rows=1200 ok=929 ovf=59 skip=212 bad=0
-bin7 512T legacy(12288w)           B16=1/V=2  rows=1200 ok=929 ovf=59 skip=212 bad=0
-bin8 1024T bitmap(28672w)          B16=0/V=1  rows=1200 ok=623 ovf=38 skip=539 bad=0
-bin8 1024T bitmap(28672w)          B16=1/V=1  rows=1200 ok=623 ovf=38 skip=539 bad=0
-bin8 1024T bitmap(28672w)          B16=0/V=2  rows=1200 ok=911 ovf=51 skip=238 bad=0
-bin8 1024T bitmap(28672w)          B16=1/V=2  rows=1200 ok=911 ovf=51 skip=238 bad=0
-bin9 1024T bitmap(56952w)          B16=0/V=1  rows=1200 ok=912 ovf=49 skip=239 bad=0
-bin9 1024T bitmap(56952w)          B16=1/V=1  rows=1200 ok=912 ovf=49 skip=239 bad=0
-bin9 1024T bitmap(56952w)          B16=0/V=2  rows=1200 ok=1022 ovf=50 skip=128 bad=0
-bin9 1024T bitmap(56952w)          B16=1/V=2  rows=1200 ok=1022 ovf=50 skip=128 bad=0
-ALL-PASS: trials/cfg=25 seed=2026 bad=0
-rc=0
-- 种子 42×40 / 种子 2026×25: ALL-PASS: trials/cfg=40 seed=42 bad=0;ALL-PASS: trials/cfg=25 seed=2026 bad=0;
-- 行数合计: rows=112320 ok=77806 ovf=4942 skip=29572 bad=0
-- S1: green
-
-################ S2 构建 spgemm_bm2 / spgemm_bm2w ################
-2026-11-24T16:53:10Z
-
-## S2 构建
-240:TU-90 模板实例: 26 个;TU-61: 75 个
-241:✓ 实例集不相交(探针P2 风险解除)
-243:大表 tagged 发射实例: 12;opt-in 覆盖: 12
-244:✓ opt-in 全覆盖
-- make TARGET=spgemm_bm2: rc=0,用时 59s
-- 审计: ✓ 实例集不相交(探针P2 风险解除);✓ opt-in 全覆盖;
-- WRITE_MTX 件 spgemm_bm2w: rc=0,用时 3s(只重编 main.cu)
-- S2: green
-
-################ S3 冒烟(小阵三臂 nnz + 普查) ################
-2026-11-24T16:54:12Z
 
 ## S3 冒烟
       bcsstk17 off        r0 co=0.769 acc=0.394 cs=0.136 retry=0.000 nnz=1406936
@@ -198,3 +140,61 @@ L3 数值错行: 88620   全局最大相对误差: 6.554e+04
   例: (7, 'L3-数值', 'col6: got 4.398967e-13 want 4.398967e-13 rel=9.24e-08')
 判定: FAIL
 | s3dkq4m2 | m1 | 13282553 | 88410 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=4484437 worst_rel_vs_global=4.853e-16) | 判定: FAIL(L1 集合错行: 0   (零抵消软判 benign: 267) L2 乱序行:   0 L3 数值错行: 88620   全局最大相对误差: 6.554e+04 ) |
+/home/xueyizhou/exp-runs/bm2_r1/vl/s3dkq4m2: entries_checked col_mismatch=0 unordered=0 text_diff=5247095 worst_rel_vs_global=6.471e-16
+=> PASS
+L2 乱序行:   0
+L3 数值错行: 88663   全局最大相对误差: 1.311e+05
+  例: (3, 'L3-数值', 'col4: got 4.199245e-14 want 4.199241e-14 rel=8.88e-07')
+  例: (4, 'L3-数值', 'col3: got 4.199245e-14 want 4.199241e-14 rel=8.88e-07')
+  例: (5, 'L3-数值', 'col308: got 3.555336e-17 want 3.555357e-17 rel=5.96e-06')
+  例: (6, 'L3-数值', 'col7: got 4.398967e-13 want 4.398967e-13 rel=9.24e-08')
+  例: (7, 'L3-数值', 'col6: got 4.398967e-13 want 4.398967e-13 rel=9.24e-08')
+判定: FAIL
+| s3dkq4m2 | m2 | 13282553 | 88410 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=5247095 worst_rel_vs_global=6.471e-16) | 判定: FAIL(L1 集合错行: 0   (零抵消软判 benign: 267) L2 乱序行:   0 L3 数值错行: 88663   全局最大相对误差: 1.311e+05 ) |
+---- 值级 msc10848 (data/ocean/square/msc10848.mtx)
+/home/xueyizhou/exp-runs/bm2_r1/vl/msc10848: entries_checked col_mismatch=0 unordered=0 text_diff=2658441 worst_rel_vs_global=1.900e-16
+=> PASS
+L2 乱序行:   0
+L3 数值错行: 9   全局最大相对误差: 5.785e-02
+  例: (1887, 'L3-数值', 'col2453: got -1.602769e-04 want -1.679063e-04 rel=4.54e-02')
+  例: (1888, 'L3-数值', 'col2454: got 7.534027e-05 want 7.438660e-05 rel=1.28e-02')
+  例: (2451, 'L3-数值', 'col1888: got 2.980232e-05 want 3.051758e-05 rel=2.34e-02')
+  例: (2452, 'L3-数值', 'col1887: got 3.051758e-05 want 2.884865e-05 rel=5.79e-02')
+  例: (2453, 'L3-数值', 'col1887: got -1.678467e-04 want -1.679063e-04 rel=3.55e-04')
+判定: FAIL
+| msc10848 | m1 | 6185646 | 3423 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=2658441 worst_rel_vs_global=1.900e-16) | 判定: FAIL(L1 集合错行: 0   (零抵消软判 benign: 0) L2 乱序行:   0 L3 数值错行: 9   全局最大相对误差: 5.785e-02 ) |
+/home/xueyizhou/exp-runs/bm2_r1/vl/msc10848: entries_checked col_mismatch=0 unordered=0 text_diff=2702206 worst_rel_vs_global=1.900e-16
+=> PASS
+L2 乱序行:   0
+L3 数值错行: 9   全局最大相对误差: 5.785e-02
+  例: (1888, 'L3-数值', 'col2454: got 7.534027e-05 want 7.438660e-05 rel=1.28e-02')
+  例: (2451, 'L3-数值', 'col1888: got 2.980232e-05 want 3.051758e-05 rel=2.34e-02')
+  例: (2452, 'L3-数值', 'col1887: got 3.051758e-05 want 2.884865e-05 rel=5.79e-02')
+  例: (2453, 'L3-数值', 'col1887: got -1.678467e-04 want -1.679063e-04 rel=3.55e-04')
+  例: (2454, 'L3-数值', 'col1888: got 7.486343e-05 want 7.438660e-05 rel=6.41e-03')
+判定: FAIL
+| msc10848 | m2 | 6185646 | 3423 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=2702206 worst_rel_vs_global=1.900e-16) | 判定: FAIL(L1 集合错行: 0   (零抵消软判 benign: 0) L2 乱序行:   0 L3 数值错行: 9   全局最大相对误差: 5.785e-02 ) |
+---- 值级 bcsstk30 (data/ocean/square/bcsstk30.mtx)
+/home/xueyizhou/exp-runs/bm2_r1/vl/bcsstk30: entries_checked col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00
+=> PASS
+             
+  m = mmread(path).tocsr().astype(np.float64)
+== /home/xueyizhou/exp-runs/bm2_r1/vl/bcsstk30_on.mtx
+nnz: truth=8946070 dump=8946070
+L1 集合错行: 0   (零抵消软判 benign: 0)
+L2 乱序行:   0
+L3 数值错行: 0   全局最大相对误差: 0.000e+00
+判定: PASS
+| bcsstk30 | m1 | 8946070 | 21375 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00) | 判定: PASS(L1 集合错行: 0   (零抵消软判 benign: 0) L2 乱序行:   0 L3 数值错行: 0   全局最大相对误差: 0.000e+00 ) |
+/home/xueyizhou/exp-runs/bm2_r1/vl/bcsstk30: entries_checked col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00
+=> PASS
+             
+  m = mmread(path).tocsr().astype(np.float64)
+== /home/xueyizhou/exp-runs/bm2_r1/vl/bcsstk30_on.mtx
+nnz: truth=8946070 dump=8946070
+L1 集合错行: 0   (零抵消软判 benign: 0)
+L2 乱序行:   0
+L3 数值错行: 0   全局最大相对误差: 0.000e+00
+判定: PASS
+| bcsstk30 | m2 | 8946070 | 21375 / 0 | PASS(col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00) | 判定: PASS(L1 集合错行: 0   (零抵消软判 benign: 0) L2 乱序行:   0 L3 数值错行: 0   全局最大相对误差: 0.000e+00 ) |
+---- 值级 c-64 (data/ocean/square/c-64.mtx)
