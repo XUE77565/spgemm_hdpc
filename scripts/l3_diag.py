@@ -3,6 +3,10 @@
 
 用法:
   python3 scripts/l3_diag.py <A.mtx> <臂名=dump.mtx> [<臂名=dump.mtx> ...] [--tol 1e-9] [--list 40] [--csv out.csv]
+                             [--full-csv all.csv.gz] [--rows-csv rows.csv.gz]
+  --csv       并排清单里列出的那几条(≤ --list)
+  --full-csv  任一臂官方口径判错的**全部**条目(审计用;.gz 结尾则压缩)。条目可达百万级,文件大,留在作业目录
+  --rows-csv  按行聚合的全量摘要:每个官方判错的行、每臂一组(错条目数、最大 rel、最大 nerr、最大 |差|),体积小,可进 OUT_DIR
 
 对每个转储(同一 A 的 C=A·A,MatrixMarket coordinate)与 scipy 真值 T=A@A 逐条目比,给两种口径:
   官方口径  rel  = |got−want| / |want|            verify_sorted_truth.py 的 L3(rel>tol 记错;真值里没有的条目不判)
@@ -62,6 +66,7 @@ def lookup(keys_sorted, data, q):
 def main():
     args = sys.argv[1:]
     tol, nlist, csv_path, pos = 1e-9, 40, None, []
+    full_path, rows_path = None, None
     k = 0
     while k < len(args):
         if args[k] == "--tol":
@@ -70,6 +75,10 @@ def main():
             nlist = int(args[k + 1]); k += 2
         elif args[k] == "--csv":
             csv_path = args[k + 1]; k += 2
+        elif args[k] == "--full-csv":
+            full_path = args[k + 1]; k += 2
+        elif args[k] == "--rows-csv":
+            rows_path = args[k + 1]; k += 2
         else:
             pos.append(args[k]); k += 1
     if len(pos) < 2:
@@ -168,6 +177,48 @@ def main():
                 hdr += [name + "_got", name + "_absdiff", name + "_rel", name + "_nerr"]
             w.writerow(hdr)
             w.writerows(lines)
+    if full_path or rows_path:
+        import gzip
+
+        def op(path):
+            return gzip.open(path, "wt", newline="") if path.endswith(".gz") else open(path, "w", newline="")
+
+        names = [c[0] for c in cols]
+        if full_path:                                      # 全量条目级清单(审计用)
+            with op(full_path) as f:
+                f.write("row,col,want,abs_sum" + "".join(",%s_got,%s_absdiff,%s_rel,%s_nerr" % (n, n, n, n) for n in names) + "\n")
+                rows_u = ukeys // ncol
+                cols_u = ukeys % ncol
+                CH = 200000
+                for a0 in range(0, ukeys.size, CH):
+                    a1 = min(a0 + CH, ukeys.size)
+                    buf = []
+                    for x in range(a0, a1):
+                        ln = "%d,%d,%.17g,%.6e" % (rows_u[x], cols_u[x], want_u[x], scale_u[x])
+                        for name, got, d, rl, ne, hit in cols:
+                            ln += ",%.17g,%.3e,%.3e,%.3e" % (got[x], d[x], rl[x], ne[x])
+                        buf.append(ln)
+                    f.write("\n".join(buf) + "\n")
+            print("全量条目清单: %s(%d 条)" % (full_path, ukeys.size))
+        if rows_path:                                      # 按行聚合(每个判错行一行)
+            rows_u = ukeys // ncol
+            urow, inv = np.unique(rows_u, return_inverse=True)
+            agg = []
+            for name, got, d, rl, ne, hit in cols:
+                isbad = hit & (rl > tol)
+                cnt = np.bincount(inv, weights=isbad.astype(np.float64), minlength=urow.size).astype(np.int64)
+                mrel = np.zeros(urow.size); np.maximum.at(mrel, inv, np.where(isbad, rl, 0.0))
+                mne = np.zeros(urow.size); np.maximum.at(mne, inv, np.where(isbad, ne, 0.0))
+                mdf = np.zeros(urow.size); np.maximum.at(mdf, inv, np.where(isbad, d, 0.0))
+                agg.append((cnt, mrel, mne, mdf))
+            with op(rows_path) as f:
+                f.write("row" + "".join(",%s_bad_entries,%s_max_rel,%s_max_nerr,%s_max_absdiff" % (n, n, n, n) for n in names) + "\n")
+                for x in range(urow.size):
+                    ln = "%d" % urow[x]
+                    for cnt, mrel, mne, mdf in agg:
+                        ln += ",%d,%.3e,%.3e,%.3e" % (cnt[x], mrel[x], mne[x], mdf[x])
+                    f.write(ln + "\n")
+            print("按行聚合清单: %s(%d 行)" % (rows_path, urow.size))
     return 0
 
 
