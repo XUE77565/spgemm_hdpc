@@ -48,3 +48,10 @@
 
 | 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) | 官方口径错行(仅参考) | nerr 最大 | 本作业判 |
 |---|---|---|---|---|---|---|---|
+| TSOPF_RS_b678_c2 | off | 40139105 | 0 / 0 | - | 0 | 4.399041e-16 | 对照 |
+| TSOPF_RS_b678_c2 | m1 | 40139105 | 17002 / 0 | PASS col_mismatch=0 unordered=0 text_diff=779350 worst_rel_vs_global=1.987e-18 | 0 | 4.399041e-16 | 绿 |
+| TSOPF_RS_b678_c2 | m2 | 40139105 | 17002 / 0 | PASS col_mismatch=0 unordered=0 text_diff=759905 worst_rel_vs_global=1.987e-18 | 0 | 4.399041e-16 | 绿 |
+| web-Google | off | 29710164 | 0 / 0 | - | 0 | 0.000000e+00 | 对照 |
+| web-Google | m1 | 29710164 | 0 / 46058 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 | 0 | 0.000000e+00 | 绿 |
+| web-Google | m2 | 29710164 | 0 / 46058 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 | 0 | 0.000000e+00 | 绿 |
+| nd3k | off | 18491738 | 0 / 0 | - | 2 | 1.099738e-15 | 对照 |
