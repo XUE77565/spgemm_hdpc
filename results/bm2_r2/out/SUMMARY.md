@@ -66,3 +66,15 @@
 
 ## S5 三臂电池(同一二进制 spgemm_bm2;off=HH_BM2 关,m1=值区 SMEM,m2=值直写全局;5 轮交错)
 - 卡状态(S5 前): 0, 14 MiB, 0 %;1, 14 MiB, 0 %; 计算进程数: 0
+- ab_arms rc=0;逐阵表(含两遍式 flop 占比/行占比、accumulate 相位比)见 s5_battery.txt,逐发 s5_battery.csv,逐 bin 普查 s5_battery_stat.csv
+    ===== 判读:m1 / off(逐阵中位比;测量分级)=====
+    GM(m1/off) = 1.0110 | 非微级最差 = 1.1872 | nnz 异常/实验臂缺数据阵 = 0 | 微级 4 阵 | 有效 26 阵
+    裁定: 红
+    ===== 判读:m2 / off(逐阵中位比;测量分级)=====
+    GM(m2/off) = 1.0130 | 非微级最差 = 1.2541 | nnz 异常/实验臂缺数据阵 = 0 | 微级 4 阵 | 有效 26 阵
+    裁定: 红
+- 卡状态(S5 后): 0, 14 MiB, 1 %;1, 14 MiB, 0 %; 计算进程数: 0
+
+## S6 行门判别(dup 轴 HH_BM2_DUP=flop×100/est 下限;密度轴 HH_BM2_SPANX=span/est 上限;只用 data/train_disp)
+- data/train_disp: 共 213 个 .mtx;8MB-800MB 且不与测试账同名的取到 7 个
+- 用阵: hcircuit g7jac120sc bcircuit af23560 g7jac100 graham1 mark3jac140sc 
