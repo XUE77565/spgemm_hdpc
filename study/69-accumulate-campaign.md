@@ -371,3 +371,14 @@ Bump 理论 acc 72.5→~18ms(4×)。
 2. 想法三(c61 标定,一天);
 3. 想法一 C(人口自适应 alpha,路由层,竞争力门);
 4. 想法四(warp 特化,最后)。
+
+## 二十四、想法二生产实施 v1(11-24,进行中)
+
+已落地(commit 待验证):
+- 模板:hash_spa_kernel 加 BMODE=0(默认);1=位图两遍式
+- Pass1:乘积环内 atomicOr(&tab_bmp[...])(替换 CAS 探测段)
+- 前缀+计数:MODE==1 块前插入 BMODE 分支(popcount+归约)
+- span_lo 用 __device__ 全局(g_spa_spanlo_d,同 g_fus_unsort_d 模式)
+- 构建:spgemm_bm 通过(审计双绿)
+- 当前状态:仅前缀计数(值未提取)——需加发射侧(装载 g_spa_spanlo_d,
+  指定 BMODE=1 的 bin)+ Pass2 累积提取 + 值级验证
