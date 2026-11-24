@@ -64,3 +64,12 @@
 
 | 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
 |---|---|---|---|---|
+| ldoor | m1 | 145422935 | 103481 / 846041 | PASS col_mismatch=0 unordered=0 text_diff=50160947 worst_rel_vs_global=3.141e-16 |
+| ldoor | m2 | 145422935 | 116025 / 833497 | PASS col_mismatch=0 unordered=0 text_diff=50090231 worst_rel_vs_global=4.188e-16 |
+
+- 本轮值级里走两遍式的行数合计(m1+m2): 673770
+- S4(a+b): green
+
+## S5 行门标定(只用 data/train_disp;逐行配对周期:同一行在哈希路径与两遍式下的块时长)
+- 卡状态(S5 前): 0, 14 MiB, 0 %;1, 14 MiB, 0 %; 计算进程数: 0
+- 训练池候选 49 阵(1MB-800MB,非测试账同名,不含 af23560)
