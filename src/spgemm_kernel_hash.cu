@@ -4849,6 +4849,64 @@ __host__ __device__ constexpr int bm2_budget_words(const int bi, const int smx)
 {
     return smx > 0 ? smx : hh_smem_words(bm2_ht_for_bin(bi), bm2_bmw_for_bin(bi), 0, 0);
 }
+// ===== 门普查单发射版(study/69 §三十一;opt-in:HH_CENSUS=1,默认 0 = 原样逐 bin 发射)=====
+// 出处:prof_k1 的 nsys 逐核账——hh_gate_census_off_kernel 在大阵上占设备侧 Σkernel 的 4-7%(cage15 7.0ms/run)。
+// 原核每行 1-2 次 atomicAdd 直打同一个 bin 的计数地址、无 warp 归约,且 bin4..9 各发射一次、每次铺满 A_rows 个线程。
+// 这里:一次发射盖 bin4..9(它们在 d_sort 里连续;线程 t ↔ 位置 bin_off[4]+t),warp 内归约后每 warp 至多两次原子加。
+// 结果与原核逐位相同(都是 64 位整数和):out[bi*2+1] = 该 bin 全部行的 Σflop;out[bi*2] = 其中列跨度超过
+// 该 bin 位图列域(hh_bm_words_for_bin(bi)*32;bm2_bmw_for_bin 是它的设备侧同图)的行的 Σflop。
+struct HhCensusCfg {
+    int mode;   // 0 = 原样(hh_gate_census_off_kernel × 6);1 = 单发射 + warp 归约
+    int stat;   // 1 = binning 同步点之后把 bin4..9 的普查结果打到 stderr([census-stat] 行;两种模式逐行比对用)
+};
+static inline const HhCensusCfg &hh_census_cfg()
+{
+    static HhCensusCfg c;
+    static bool init = false;
+    if (!init) {
+        const char *e = getenv("HH_CENSUS");
+        c.mode = (e && *e && atoi(e) > 0) ? 1 : 0;
+        e = getenv("HH_CENSUS_STAT");
+        c.stat = (e && *e && atoi(e) > 0) ? 1 : 0;
+        init = true;
+    }
+    return c;
+}
+static __global__ void hh_gate_census1_kernel(const int *d_sort, const int *bin_off,
+                                              const int *d_span_len, const int *d_flop, long long *out /* [2*N_BINS],已清零 */)
+{
+    const int t = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned lane = threadIdx.x & 31u;
+    const int p = bin_off[4] + t;
+    int bi = -1;
+    long long f = 0, g = 0;
+    if (p < bin_off[10]) {
+        bi = 4;
+        while (bi < 9 && p >= bin_off[bi + 1]) bi++;
+        const int i = d_sort[p];
+        f = (long long)d_flop[i];
+        if ((unsigned)d_span_len[i] > (unsigned)(bm2_bmw_for_bin(bi) * 32)) g = f;
+    }
+    const unsigned mv = __ballot_sync(0xffffffffu, bi >= 0);
+    if (mv == 0u) return;                                   // 整个 warp 都在 bin4..9 之外(全 warp 一致)
+    const int lead = __ffs((int)mv) - 1;
+    const int bl = __shfl_sync(0xffffffffu, bi, lead);
+    const unsigned same = __ballot_sync(0xffffffffu, bi == bl);
+    if (same == mv) {                                       // 常态:warp 内有效行同属一个 bin → 归约到 lane 0
+        for (int off = 16; off; off >>= 1) {
+            f += __shfl_down_sync(0xffffffffu, f, off);
+            g += __shfl_down_sync(0xffffffffu, g, off);
+        }
+        if (lane == 0u) {
+            atomicAdd((unsigned long long *)&out[bl * 2 + 1], (unsigned long long)f);
+            if (g) atomicAdd((unsigned long long *)&out[bl * 2], (unsigned long long)g);
+        }
+    } else if (bi >= 0) {                                   // bin 边界上的 warp(每次发射至多 5 个):逐 lane 原子
+        atomicAdd((unsigned long long *)&out[bi * 2 + 1], (unsigned long long)f);
+        if (g) atomicAdd((unsigned long long *)&out[bi * 2], (unsigned long long)g);
+    }
+}
+
 #define BM2_NOUT 8   // 每 bin 的计数槽:0 行数 1 Σflop 2 合格行数 3 合格Σflop 4 合格行 SMEM 需求上界(int 字)
 // 行表划分核:一次发射覆盖 bin4..9(它们在 d_sort 里连续)。线程 t ↔ 位置 bin_off[4]+t。
 // 每个 HH bin 段内:合格行从段首往后填、其余行从段尾往前填(各一个原子游标;warp 内同 bin 时一次预留、
@@ -5909,6 +5967,9 @@ static void hash_product(
         {
             long long *d_gfall = decltype(d_gfall)(dev_alloc(2 * N_BINS * sizeof(long long)));
             CHECK_CUDA(cudaMemsetAsync(d_gfall, 0, 2 * N_BINS * sizeof(long long)));
+            if (hh_census_cfg().mode)   // HH_CENSUS=1:单发射 + warp 归约(结果逐位相同);默认 0 走下面的原样逐 bin 发射
+                hh_gate_census1_kernel<<<(A_rows + 255) / 256, 256>>>(d_sort, d_offb, d_span_len, d_flop, d_gfall);
+            else
             for (int cbi = 4; cbi <= 9 && cbi < N_BINS - 1; cbi++)
                 hh_gate_census_off_kernel<<<(A_rows + 255) / 256, 256>>>(
                     d_sort, d_offb, cbi, A_rows, d_span_len, d_flop,
@@ -5952,6 +6013,9 @@ static void hash_product(
         if (pfuse)   // PIPEFUSE:count_flop 的 device 规约在此取回(消一个独立 host 同步点)
             CHECK_CUDA(cudaMemcpyAsync(&total_flop, d_tflop, sizeof(long long), cudaMemcpyDeviceToHost));
         CHECK_CUDA(cudaStreamSynchronize(0));
+        if (hh_census_cfg().stat)   // HH_CENSUS_STAT=1:门普查结果落 stderr(两种普查模式逐行比对用;默认不打)
+            for (int b = 4; b <= 9; b++)
+                fprintf(stderr, "[census-stat] bin=%d rows=%d gated=%lld total=%lld\n", b, h_cnt[b], hh_gfall_host[b * 2], hh_gfall_host[b * 2 + 1]);
         if (bm2_want && bm2_cfg().lazy) {   // 想法二 v3.1:按需划分(h_cnt / h_off / 门普查结果此刻已在宿主)
             int bm2_mask = 0;
             for (int b = 4; b <= 9; b++) {
