@@ -4807,6 +4807,8 @@ struct Bm2Cfg {
     int binmin;      // bin 内合格 Σflop 占比(%)≥ 本值才启用
     int p1;          // Pass1 列来源:0=B_ci / 1=B16 列字段
     int smx;         // 两遍式行的 SMEM 预算(int 字)覆盖;0=沿用该 bin 的 hash_heavy 预算(表区+位图尾区)
+    int nnzmax;      // 矩阵级门:A 的 nnz ≤ 本值才启用(0=不设)。出处:两遍式多读一趟 B,B 装不进 L2 的大阵上吃亏
+                     // (dialog/qa-004 的矩阵级 L2 轴;属 L1 分发层,门值待判别实验/粗标定定)
     int stat;        // 1=每 bin 打一行 [bm2-stat]
 };
 static inline const Bm2Cfg &bm2_cfg()
@@ -4824,6 +4826,7 @@ static inline const Bm2Cfg &bm2_cfg()
         c.binmin = geti("HH_BM2_BINMIN", 0);
         c.p1 = geti("HH_BM2_P1", 0) > 0 ? 1 : 0;
         c.smx = geti("HH_BM2_SMX", 0);
+        c.nnzmax = geti("HH_BM2_NNZMAX", 0);
         c.stat = geti("HH_BM2_STAT", 0) > 0 ? 1 : 0;
         init = true;
     }
@@ -5915,7 +5918,7 @@ static void hash_product(
         // 想法二 v3(study/69 §二十八):HH bin 行表划分(合格行靠前)+ 每 bin 合格计数,与上面的门普查同批发射、
         // 同一 D2H 批(零新增同步)。缓冲是进程级静态(预热轮分配一次,计时轮零分配)。HH_BM2 未开时整段不执行。
         bm2_rows2_host = nullptr;
-        if (bm2_cfg().mode && !att) {
+        if (bm2_cfg().mode && !att && (bm2_cfg().nnzmax <= 0 || A_nnz <= bm2_cfg().nnzmax)) {
             const Bm2Cfg &bc = bm2_cfg();
             static int *s_sort2 = nullptr; static size_t s_sort2_cap = 0;
             static char *s_ctr = nullptr;
