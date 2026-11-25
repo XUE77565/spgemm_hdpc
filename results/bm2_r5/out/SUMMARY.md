@@ -36,3 +36,14 @@
 | af23560 | m1 | 2432504 | 19026 / 0 | PASS col_mismatch=0 unordered=0 text_diff=226745 worst_rel_vs_global=2.342e-16 | 0 / 0 / 0 | 0(=) | 4.963373e-16 | 绿 |
 | af23560 | m2 | 2432504 | 19026 / 0 | PASS col_mismatch=0 unordered=0 text_diff=223476 worst_rel_vs_global=4.684e-16 | 0 / 0 / 0 | 0(=) | 4.432738e-16 | 绿 |
 | af23560 | m2p | 2432504 | 19026 / 0 | PASS col_mismatch=0 unordered=0 text_diff=224472 worst_rel_vs_global=4.684e-16 | 0 / 0 / 0 | 0(=) | 5.319859e-16 | 绿 |
+| cfd2 | off | 13418644 | 0 / 0 | - | 0 / 0 / 0 | 0(=) | 8.299201e-16 | 对照 |
+| cfd2 | m1 | 13418644 | 90070 / 0 | PASS col_mismatch=0 unordered=0 text_diff=1788949 worst_rel_vs_global=4.353e-16 | 0 / 0 / 0 | 0(=) | 7.772588e-16 | 绿 |
+| cfd2 | m2 | 13418644 | 90070 / 0 | PASS col_mismatch=0 unordered=0 text_diff=1793499 worst_rel_vs_global=4.353e-16 | 0 / 0 / 0 | 0(=) | 8.104660e-16 | 绿 |
+| cfd2 | m2p | 13418644 | 90070 / 0 | PASS col_mismatch=0 unordered=0 text_diff=1790347 worst_rel_vs_global=4.353e-16 | 0 / 0 / 0 | 0(=) | 8.104660e-16 | 绿 |
+| msc10848 | off | 6185646 | 0 / 0 | - | 0 / 0 / 8 | 8(=) | 1.142301e-15 | 对照 |
+| msc10848 | m1 | 6185646 | 3423 / 0 | PASS col_mismatch=0 unordered=0 text_diff=2665903 worst_rel_vs_global=1.900e-16 | 0 / 0 / 8 | 8(=) | 1.291460e-15 | 绿 |
+| msc10848 | m2 | 6185646 | 3423 / 0 | PASS col_mismatch=0 unordered=0 text_diff=2699660 worst_rel_vs_global=3.799e-16 | 0 / 0 / 8 | 8(=) | 1.260667e-15 | 绿 |
+| msc10848 | m2p | 6185646 | 3423 / 0 | PASS col_mismatch=0 unordered=0 text_diff=2687613 worst_rel_vs_global=1.900e-16 | 0 / 0 / 9 | 9(=) | 1.252459e-15 | 绿 |
+| s3dkq4m2 | off | 13282553 | 0 / 0 | - | 0 / 0 / 88427 | 88427(=) | 6.528503e-16 | 对照 |
+| s3dkq4m2 | m1 | 13282553 | 88410 / 0 | PASS col_mismatch=0 unordered=0 text_diff=4211252 worst_rel_vs_global=4.853e-16 | 0 / 0 / 88308 | 88308(=) | 6.640253e-16 | 绿 |
+| s3dkq4m2 | m2 | 13282553 | 88410 / 0 | PASS col_mismatch=0 unordered=0 text_diff=5204041 worst_rel_vs_global=4.853e-16 | 0 / 0 / 88570 | 88570(=) | 8.164730e-16 | 绿 |
