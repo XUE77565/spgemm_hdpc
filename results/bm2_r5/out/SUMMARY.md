@@ -3,3 +3,20 @@
 ## S0 环境
 - 主机: H100-187  开始: 2026-11-25T03:15:07Z  快照: /home/xueyizhou/exp-runs/bm2_r5/code
 - nvcc(PATH): /usr/bin/nvcc / Build cuda_12.0.r12.0/compiler.32267302_0
+- python3: Python 3.12.3 / numpy 2.3.4 scipy 1.18.1
+- 磁盘: /dev/sdb1        15T  8.4T  5.4T  61% /home
+- **用卡: GPU 0**
+- 开跑时两卡: 0, 14 MiB, 0 %;1, 471 MiB, 0 %;
+
+## S1 微复现器
+- src/hh_bm2.cuh 已变(2fc25346de6deabc2eda6d49739ba0627a976969896b861e3798517bab59339b),重跑 hh_repro5
+- ALL-PASS: trials/cfg=40 seed=42 bad=0;ALL-PASS: trials/cfg=25 seed=2026 bad=0;
+- 行数合计: rows=168480 ok=116709 ovf=7413 skip=44358 bad=0(9 档几何 × B16/值区模式/Pass1 来源 6 种组合)
+- S1: green
+
+## S2 构建
+- make TARGET=spgemm_bm2: rc=0,用时 146s;审计: TU-90 模板实例: 26 个;TU-61: 51 个;✓ 实例集不相交(探针P2 风险解除);✓ opt-in 全覆盖;
+- WRITE_MTX 件 spgemm_bm2w: rc=0(只重编 main.cu)
+- S2: green
+
+## S3 冒烟
