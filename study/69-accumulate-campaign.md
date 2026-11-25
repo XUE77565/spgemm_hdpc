@@ -588,3 +588,36 @@ A 机的静态检查改成整份文件、两个翻译单元各过一遍(桩头�
 - 墙钟电池带负载门(B 端判据:load1 < 6 连续两次、无外来 >50% CPU 进程)与 A/A 对照臂(scripts/aa_check.py:
   |GM−1| ≤ 1% 且非微级阵在 ±5% 内才算干净);段内每分钟采 load,事后复核。
 - 作业 `prof_k1`:K2 nsys(22 阵 × 4 臂 × 2 轮,兼作 BRIEF §五 P3 的第一版逐核账)、K3 ncu(5 阵)、T1 电池(off/aa/m2/m2p)、T2 无侵入。
+
+## 三十、prof_k1:设备侧读数定了核一级的结论;v3.1 按需划分;门普查核是第一把 profiling 找到的刀(11-25,外部模型)
+
+**prof_k1 的结果**
+- K2(nsys 2024.6.2,`cuda_gpu_kern_sum`,22 阵 × 4 臂 × 2 轮,176 发 0 失败,轮间离散多数 ≤0.6%):Σkernel 设备侧时长对 off 之比——
+  m2 GM **0.9697**(最差 s3dkq4m2 1.016;有两遍式发射的 11 阵 GM 0.9385);m2p 0.9733(最差 s3dkq4m2 1.055);
+  m2L 1.0039(Bump 1.464、Hook 1.269)。逐阵 m2:cfd2 0.833、af23560 0.830、bcsstk30 0.901、TSOPF 0.914、bcsstk17 0.926、
+  msc10848 0.949、FEM_3D_thermal2 0.971;零覆盖阵 1.000–1.006。与 r5 电池的逐阵读数方向、量级一致。
+  **结论:位图形态的两遍式在核一级是赢的;legacy 形态输;m2p 不作默认。**这组数不含主机侧开销。
+- K3(ncu)试点失败:`Failed to prepare kernel for profiling`(非权限)。下一作业逐个试 application 重放 / 关内存池 / 正则去掉划分核。
+- T 段没跑:等满 10 小时,B 端的安静判据(load1 < 6 连续两次、无外来 >50% CPU 进程)一次都没满足(load1 8–12,外来进程 3–5 个)。
+  → 向 B 端提议(dialog/qa-007):计时有效性改由 A/A 对照臂直接认证,负载门降为"先等 30 分钟,等不到照跑"。
+
+**P3 第一版账(22 阵、基线臂、设备侧)**:hash_heavy_kernel 37.2%、dense_largest_numeric 13.1%、hash_dense_window 8.4%、
+hash_compact_copy_warp 7.7%、csort_counting 7.7%、hash_spa 6.5%、mh_merge 5.1%、hh_gate_census_off_kernel 3.0%。被发射过的实例 60 个。
+
+**第一把刀:门普查核的原子争用**。hh_gate_census_off_kernel(Gv4.2)在大阵上占设备侧 Σkernel 的 4–7%:cage15 7.0ms/run(5.8%)、
+nlpkkt80 1.65ms(6.8%)、ldoor 1.46ms(5.2%)、Bump 4.26ms(4.2%)、Hook 1.92ms(3.8%)。读源码:每行一到两次 atomicAdd 打在同一个
+bin 的计数地址上,无 warp 归约;bin4–9 各发射一次、每次铺满 A_rows 线程。方案:单次发射 + warp 内归约(结果是整数和,逐位相同),
+并可与两遍式的行表划分并成一个核。待做(opt-in 先行)。
+
+**v3.1(commit e898272):按需划分**
+- 问题:v3 只要开了 HH_BM2,每个阵每次 run 都多一次划分核发射 + 清零 + 回传(设备侧 3–15µs,大阵到 0.3ms;加上主机侧发射开销)。
+  全 428 里小阵多,这笔固定成本会吃掉影子的 GM。
+- 做法:`HH_BM2_LAZY=1`(默认)——等 binning 的既有同步点之后,宿主已知各 bin 行数与门普查结果,只在"掩码内的 HH bin 确有行且
+  形态允许"时才发射划分核(网格只盖 HH 行段),随后一次同步取回计数。其余阵零新增发射、零新增同步。`HH_BM2_LAZY=0` = v3 原样。
+- `HH_BM2_BINS` 默认 0x3f0 → 0x3b0(bin6 默认不走 hash_heavy)。相对基线仍是纯增(284 行)。
+
+**bin9**:普查事实——电池 24 阵与训练池 43 阵里 HH 行只落在 bin4/5/7/8。按 B 端建议:web-Google 用强制形态 `m2X`
+(HH_BM2_L1=1 + HH_BM2_SMX=57856,生产默认到不了)做差分门并带封条注;另在 PARSEC 族等候选阵里探查真正的 bin9 行。
+
+**作业 `bm2_t1`**:S2 构建 → S3 冒烟(按需 / 同批 / 强制宽跨度三组各自判)→ S4 值级(v3.1 回归 + pre2 + web-Google 封条 + bin9 探查)
+→ K3 ncu → T1 电池 off/aa/m2/m2p × 7 轮(A/A 认证)→ T1b 小阵固定成本探针(m2 对 m2e)→ T2 无侵入。
