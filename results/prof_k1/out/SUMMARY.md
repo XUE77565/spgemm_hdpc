@@ -1,0 +1,8 @@
+# prof_k1 汇总(设备侧 profiling:nsys 逐 kernel + ncu;带负载门的 v3 电池与无侵入重测)
+
+## S0 环境
+- 主机: H100-187  开始: 2026-11-25T07:42:23Z  快照: /home/xueyizhou/exp-runs/prof_k1/code  nproc=32
+- nvcc(PATH): /usr/bin/nvcc / Build cuda_12.0.r12.0/compiler.32267302_0
+- python3: Python 3.12.3
+- 磁盘: /dev/sdb1        15T  8.4T  5.4T  61% /home
+- **用卡: GPU 0**
