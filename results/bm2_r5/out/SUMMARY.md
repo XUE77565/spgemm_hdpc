@@ -20,3 +20,19 @@
 - S2: green
 
 ## S3 冒烟
+- 小阵 off/m1/m2/m2p/m2L/m2g(m2g 带门,只为走一遍门的代码路径)各 1 发:nnz 与失败检查 → green;走两遍式的行数合计 = 356504
+
+## S4a 值级·对照组:off / m1 / m2 / m2p 各自对 scipy 真值
+
+判法(dialog/qa-001 双方对齐的作业内口径):差分门 PASS ∧ 官方 L1=L2=0 ∧ 该臂 nerr 最大值 ≤ 1e-10(nerr=|got−want|/Σ|乘积|);官方 L3 错行数照列,并与 l3_diag 用同一判式重算的行数对账(不等=两套口径脱钩=红)。
+
+| 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) | 官方 L1 / L2 / L3 错行 | l3_diag 重算错行 | nerr 最大 | 本作业判 |
+|---|---|---|---|---|---|---|---|---|
+| bcsstk17 | off | 1406936 | 0 / 0 | - | 0 / 0 / 2951 | 2951(=) | 6.608492e-16 | 对照 |
+| bcsstk17 | m1 | 1406936 | 9201 / 0 | PASS col_mismatch=0 unordered=0 text_diff=472308 worst_rel_vs_global=1.824e-16 | 0 / 0 / 2964 | 2964(=) | 7.156079e-16 | 绿 |
+| bcsstk17 | m2 | 1406936 | 9201 / 0 | PASS col_mismatch=0 unordered=0 text_diff=503605 worst_rel_vs_global=1.824e-16 | 0 / 0 / 2976 | 2976(=) | 6.530673e-16 | 绿 |
+| bcsstk17 | m2p | 1406936 | 9201 / 0 | PASS col_mismatch=0 unordered=0 text_diff=503988 worst_rel_vs_global=1.824e-16 | 0 / 0 / 2975 | 2975(=) | 7.960852e-16 | 绿 |
+| af23560 | off | 2432504 | 0 / 0 | - | 0 / 0 / 0 | 0(=) | 4.402007e-16 | 对照 |
+| af23560 | m1 | 2432504 | 19026 / 0 | PASS col_mismatch=0 unordered=0 text_diff=226745 worst_rel_vs_global=2.342e-16 | 0 / 0 / 0 | 0(=) | 4.963373e-16 | 绿 |
+| af23560 | m2 | 2432504 | 19026 / 0 | PASS col_mismatch=0 unordered=0 text_diff=223476 worst_rel_vs_global=4.684e-16 | 0 / 0 / 0 | 0(=) | 4.432738e-16 | 绿 |
+| af23560 | m2p | 2432504 | 19026 / 0 | PASS col_mismatch=0 unordered=0 text_diff=224472 worst_rel_vs_global=4.684e-16 | 0 / 0 / 0 | 0(=) | 5.319859e-16 | 绿 |
