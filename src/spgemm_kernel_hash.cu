@@ -4694,7 +4694,7 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
 }
 
 // ═════ 想法二 v3(study/69 §二十八):位图标记-累积两遍式独立核 ═════
-// 一行一块;行例程 = src/hh_bm2.cuh 的 hh_bm2_row(与 tools/hh_repro5.cu 共用)。只在 TU-61 实例化(bm2_launch)。
+// 一行一块;行例程 = src/hh_bm2.cuh 的 hh_bm2_row(与 tools/hh_repro5.cu 共用)。只在 TU-61 实例化(hash_accum_c61 里的 BM2_LAUNCH)。
 // 行表 = 划分核分出来的合格行;动态 SMEM = 本次发射按合格行需求上界给的 totw 个 int 字。
 // 输出契约同 Gv4 位图行:行内列升序直写 tmp、row_nnz=n;n>cap 不写输出、注册 ovf 交 retry。
 template<int LOG_NTHR, int B16ON, int VMODE, int P1SRC>
@@ -4913,7 +4913,7 @@ static __global__ void hh_bm2_part_kernel(const int *d_sort, const int *bin_off,
             if (mt) {
                 atomicAdd(&o[2], (unsigned long long)__popc(mt));
                 atomicAdd(&o[3], (unsigned long long)s_tf);
-                atomicMax((long long *)&o[4], (long long)s_need);
+                atomicMax((int *)&o[4], s_need);   // 槽的低 32 位(小端;高 32 位保持清零值,需求恒 ≥0)。只用 int 版 atomicMax
             }
         }
     } else if (bi >= 0) {                                   // bin 边界上的 warp(每次发射至多 5 个):逐 lane 原子
@@ -4925,7 +4925,7 @@ static __global__ void hh_bm2_part_kernel(const int *d_sort, const int *bin_off,
         if (take) {
             atomicAdd(&o[2], 1ull);
             atomicAdd(&o[3], (unsigned long long)fl);
-            atomicMax((long long *)&o[4], (long long)need);
+            atomicMax((int *)&o[4], need);
         }
     }
 }
@@ -4933,7 +4933,6 @@ static __global__ void hh_bm2_part_kernel(const int *d_sort, const int *bin_off,
 static long long bm2c_host[BM2_NOUT * N_BINS] = {0};
 static int *bm2_rows2_host = nullptr;
 
-struct HashAccumCtx {
 struct HashAccumCtx {
     const int *dA_rp; const int *dA_ci; const double *dA_val;
     const int *dB_rp; const int *dB_ci; const double *dB_val;
@@ -4960,27 +4959,6 @@ void hash_accum_c61(HashAccumCtx &c, int bi);   // TU-61(spgemm_kernel_hash_c61.
 // TU-61 大表/托付形态发射器:generic-else 内部原文移入(仅删 bi2/3 分支保实例集不相交)
 // Gv4.2:门普查内核/判据已上提至 TU 共享区(struct HashAccumCtx 前)——发射批在
 // hash_product 的 scatter 后既有 D2H 批,零新增同步;结果经 ctx.h_gfall 传入。
-
-// 想法二 v3:两遍式独立核的发射(运行时的 B16 有无/值区模式/Pass1 来源经 if/else 落到模板实参)
-template<int LNT>
-static void bm2_launch(HashAccumCtx &c, const int *rows, const int nb, const int vm, const int p1, const int totw)
-{
-    const size_t bsm = (size_t)totw * sizeof(int);
-#define BM2_GO(B16_, VM_, P1_) do { \
-    CHECK_CUDA(cudaFuncSetAttribute((const void *)hash_bm2_kernel<LNT, B16_, VM_, P1_>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bsm)); \
-    hash_bm2_kernel<LNT, B16_, VM_, P1_><<<nb, (1 << LNT), bsm, c.cur_s>>>( \
-        c.dA_rp, c.dA_ci, c.dA_val, c.dB_rp, c.dB_ci, c.dB_val, (B16_) ? c.dB16 : nullptr, rows, c.d_off, \
-        c.d_tmp_key, c.d_tmp_val, c.d_row_nnz, c.d_overflow, c.d_ovf_rows, c.d_ovf_cnt, c.d_row_ovf, \
-        c.d_flop, c.d_maxbl, c.d_rt, c.d_span_lo, c.d_span_len, totw); } while (0)
-    if (c.dB16) {
-        if (vm == 2) { if (p1) BM2_GO(1, 2, 1); else BM2_GO(1, 2, 0); }
-        else         { if (p1) BM2_GO(1, 1, 1); else BM2_GO(1, 1, 0); }
-    } else {
-        if (vm == 2) BM2_GO(0, 2, 0); else BM2_GO(0, 1, 0);
-    }
-#undef BM2_GO
-    CHECK_CUDA(cudaGetLastError());
-}
 
 void hash_accum_c61(HashAccumCtx &c, int bi) {
     // v1.4:无序标志指针每 run 装载(arena 地址随 run 变;加载本 TU 的符号副本)
@@ -5236,10 +5214,29 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                                     bm2_on ? b_ar - b_tr : b_ar, bm2_on ? b_af - b_tf : b_af, b_tr, b_tf, bw);
                         if (bm2_on) {
                             const int bm2_n = (int)b_tr;
-                            if (bi == 4)                 bm2_launch<7>(c, c.rows2, bm2_n, bc.mode, bc.p1, bw);
-                            else if (bi == 5)            bm2_launch<8>(c, c.rows2, bm2_n, bc.mode, bc.p1, bw);
-                            else if (bi == 6 || bi == 7) bm2_launch<9>(c, c.rows2, bm2_n, bc.mode, bc.p1, bw);
-                            else                         bm2_launch<10>(c, c.rows2, bm2_n, bc.mode, bc.p1, bw);
+                            const size_t bm2_sm = (size_t)bw * sizeof(int);
+                            // 发射宏与下面的 HH_LAUNCH2 同形(字面量模板实参、opt-in 紧跟发射);运行时的 B16 有无 /
+                            // 值区模式 / Pass1 来源经 if/else 落到模板实参。块宽 = 该 bin 的 hash_heavy 块宽。
+#define BM2_GO(LNT_, B16_, B16P_, VM_, P1_) do { \
+    CHECK_CUDA(cudaFuncSetAttribute(hash_bm2_kernel<(LNT_), (B16_), (VM_), (P1_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bm2_sm)); \
+    hash_bm2_kernel<(LNT_), (B16_), (VM_), (P1_)><<<bm2_n, (1 << (LNT_)), bm2_sm, cur_s>>>( \
+        dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, B16P_, c.rows2, d_off, \
+        d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
+        d_flop, d_maxbl, d_rt, d_span_lo, d_span_len, bw); } while (0)
+#define BM2_LAUNCH(LNT_) do { \
+    if (dB16) { \
+        if (bc.mode == 2) { if (bc.p1) BM2_GO((LNT_), 1, dB16, 2, 1); else BM2_GO((LNT_), 1, dB16, 2, 0); } \
+        else              { if (bc.p1) BM2_GO((LNT_), 1, dB16, 1, 1); else BM2_GO((LNT_), 1, dB16, 1, 0); } \
+    } else { \
+        if (bc.mode == 2) BM2_GO((LNT_), 0, nullptr, 2, 0); else BM2_GO((LNT_), 0, nullptr, 1, 0); \
+    } } while (0)
+                            if (bi == 4)                 BM2_LAUNCH(7);
+                            else if (bi == 5)            BM2_LAUNCH(8);
+                            else if (bi == 6 || bi == 7) BM2_LAUNCH(9);
+                            else                         BM2_LAUNCH(10);
+#undef BM2_LAUNCH
+#undef BM2_GO
+                            CHECK_CUDA(cudaGetLastError());
                             rows_ptr = c.rows2 + bm2_n;                                // 其余行:原实例吃 rows2 的后段
                             n -= bm2_n;
                         }
