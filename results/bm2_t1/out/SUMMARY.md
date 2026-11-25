@@ -45,3 +45,21 @@
 
 | 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
 |---|---|---|---|---|
+| pre2 | m2L | 323445872 | 121999 / 23205 | PASS col_mismatch=0 unordered=0 text_diff=279977 worst_rel_vs_global=1.092e-27 |
+
+- S4a+S4b(主线): green;走两遍式的行数合计 327387
+
+### S4c 宽跨度封条:web-Google(m2X)
+
+**封条注**:m2X = HH_BM2=2 + HH_BM2_L1=1 + HH_BM2_SMX=57856,是生产默认到不了的形态(legacy 形态默认不开;SMEM 预算默认不放大)。
+这里只验它的值对不对,防以后门变化把没验过的形态放出来;不计时,不代表建议启用。
+
+| 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
+|---|---|---|---|---|
+| web-Google | m2X | 29710164 | 36737 / 9321 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 |
+
+### S4d bin9 探查(dialog/qa-004:电池与训练池里 bin9 没有 HH 行;在 PARSEC 族等候选阵里找)
+
+| 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
+|---|---|---|---|---|
+| GaAsH6 | m2 | 37611445 | 25720 / 0 | PASS col_mismatch=0 unordered=0 text_diff=3904276 worst_rel_vs_global=7.850e-16 |
