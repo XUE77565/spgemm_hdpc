@@ -19,3 +19,29 @@
 
 ## S3 冒烟(各臂 1 发:nnz 与失败检查;单发的时间比不作读数)
 - G1 默认(按需划分)off/m1/m2/m2p/m2L,6 阵 → green;走两遍式的行数合计 = 316999
+- G2 同批划分(HH_BM2_LAZY=0,bm2_r5 的形态)off/m2e/m2pe,4 阵 → green;走两遍式的行数合计 = 97690
+- G3 强制宽跨度(m2X:legacy 形态也收 + SMEM 预算 57856 字;**生产默认到不了的形态**,只为值级封条)off/m2X,4 阵 → green;走两遍式的行数合计 = 208144
+- 主线臂 = 按需划分(默认 env)
+
+## S4 值级(v3.1 回归 + 宽跨度封条 + bin9 探查)
+
+### S4a v3.1 回归:off / m1 / m2(默认 env=按需划分)差分门 + 对 scipy 真值的归一误差
+
+判法:差分门 PASS ∧ nnz 同 off ∧(l3_diag 有输出时)该臂 nerr 最大值 ≤ 1e-10。行例程本身的官方三判已在 bm2_r5 的 S4a 做过(20 组全绿)。
+
+| 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) | 官方口径错行(仅参考) | nerr 最大 | 本作业判 |
+|---|---|---|---|---|---|---|---|
+| bcsstk17 | off | 1406936 | 0 / 0 | - | 2969 | 7.081592e-16 | 对照 |
+| bcsstk17 | m1 | 1406936 | 9201 / 0 | PASS col_mismatch=0 unordered=0 text_diff=475822 worst_rel_vs_global=1.824e-16 | 2968 | 7.690489e-16 | 绿 |
+| bcsstk17 | m2 | 1406936 | 9201 / 0 | PASS col_mismatch=0 unordered=0 text_diff=503735 worst_rel_vs_global=1.824e-16 | 2961 | 7.582301e-16 | 绿 |
+| cfd2 | off | 13418644 | 0 / 0 | - | 0 | 7.736264e-16 | 对照 |
+| cfd2 | m1 | 13418644 | 90070 / 0 | PASS col_mismatch=0 unordered=0 text_diff=1790262 worst_rel_vs_global=4.353e-16 | 0 | 8.599947e-16 | 绿 |
+| cfd2 | m2 | 13418644 | 90070 / 0 | PASS col_mismatch=0 unordered=0 text_diff=1799345 worst_rel_vs_global=4.353e-16 | 0 | 7.736264e-16 | 绿 |
+| msc10848 | off | 6185646 | 0 / 0 | - | 10 | 1.300396e-15 | 对照 |
+| msc10848 | m1 | 6185646 | 3423 / 0 | PASS col_mismatch=0 unordered=0 text_diff=2649049 worst_rel_vs_global=3.799e-16 | 9 | 1.300396e-15 | 绿 |
+| msc10848 | m2 | 6185646 | 3423 / 0 | PASS col_mismatch=0 unordered=0 text_diff=2704460 worst_rel_vs_global=1.900e-16 | 8 | 1.408762e-15 | 绿 |
+
+### S4b legacy 形态的划分掩码路径:pre2(m2L)
+
+| 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
+|---|---|---|---|---|

@@ -1,0 +1,24 @@
+# ab_arms: bin=./spgemm_t1 gpu=0 rounds=1
+#   arm off        (无额外 env)
+#   arm m2X        HH_BM2=2 HH_BM2_L1=1 HH_BM2_SMX=57856
+      bcsstk17 m2X        STAT taken_rows=9201 skip_rows=0 taken_flop=18712858 skip_flop=0 total_flop=19350466 a_rows=10974 nnz=1406936
+      bcsstk17 off        r0 co=0.764 acc=0.390 cs=0.136 retry=0.000 nnz=1406936
+      bcsstk17 m2X        r0 co=0.847 acc=0.383 cs=0.144 retry=0.000 nnz=1406936
+    web-Google m2X        STAT taken_rows=36737 skip_rows=9321 taken_flop=11218142 skip_flop=3400794 total_flop=60687836 a_rows=916428 nnz=29710164
+    web-Google off        r0 co=8.121 acc=3.007 cs=2.040 retry=1.074 nnz=29710164
+    web-Google m2X        r0 co=26.328 acc=21.893 cs=1.975 retry=0.668 nnz=29710164
+         TSOPF m2X        STAT taken_rows=17002 skip_rows=0 taken_flop=51148008 skip_flop=0 total_flop=69226453 a_rows=35696 nnz=40139105
+         TSOPF off        r0 co=6.743 acc=4.929 cs=1.068 retry=0.000 nnz=40139105
+         TSOPF m2X        r0 co=5.997 acc=4.290 cs=1.046 retry=0.000 nnz=40139105
+          pre2 m2X        STAT taken_rows=145204 skip_rows=0 taken_flop=111386988 skip_flop=0 total_flop=417565877 a_rows=659033 nnz=323445872
+          pre2 off        r0 co=26.211 acc=14.399 cs=8.204 retry=1.753 nnz=323445872
+          pre2 m2X        r0 co=30.422 acc=18.432 cs=8.341 retry=1.789 nnz=323445872
+
+===== 判读:m2X / off(逐阵中位比;测量分级)=====
+           mat     off_ms     m2X_ms    ratio      级    acc_off   acc_m2X     acc比    flop占比       行占比  备注
+      bcsstk17      0.764      0.847   1.1086      微      0.390     0.383   0.9821     96.7%     83.8%  微级不作单阵裁决
+    web-Google      8.121     26.328   3.2420      中      3.007    21.893   7.2807     18.5%      4.0%  回归>10%
+         TSOPF      6.743      5.997   0.8894      中      4.929     4.290   0.8704     73.9%     47.6%  Δ>5%
+          pre2     26.211     30.422   1.1607      稳     14.399    18.432   1.2801     26.7%     22.0%  回归>10%
+GM(m2X/off) = 1.3879 | 非微级最差 = 3.2420 | nnz 异常/实验臂缺数据阵 = 0 | 微级 1 阵 | 有效 4 阵
+裁定: 红

@@ -15,3 +15,28 @@
             F2 m2e        STAT taken_rows=19026 skip_rows=0 taken_flop=8353025 skip_flop=0 total_flop=9996480 a_rows=23560 nnz=2432504
             F2 m2pe       STAT taken_rows=19026 skip_rows=0 taken_flop=8353025 skip_flop=0 total_flop=9996480 a_rows=23560 nnz=2432504
             F2 off        r0 co=0.761 acc=0.348 cs=0.099 retry=0.000 nnz=2432504
+            F2 m2e        r0 co=0.610 acc=0.243 cs=0.090 retry=0.000 nnz=2432504
+            F2 m2pe       r0 co=0.788 acc=0.287 cs=0.106 retry=0.000 nnz=2432504
+          c-64 m2e        STAT taken_rows=3616 skip_rows=0 taken_flop=9679869 skip_flop=0 total_flop=1212176699 a_rows=51035 nnz=155006041
+          c-64 m2pe       STAT taken_rows=3616 skip_rows=0 taken_flop=9679869 skip_flop=0 total_flop=1212176699 a_rows=51035 nnz=155006041
+          c-64 off        r0 co=19.589 acc=0.692 cs=0.563 retry=0.216 nnz=155006041
+          c-64 m2e        r0 co=19.280 acc=0.576 cs=0.575 retry=0.187 nnz=155006041
+          c-64 m2pe       r0 co=19.300 acc=0.586 cs=0.561 retry=0.192 nnz=155006041
+
+===== 判读:m2e / off(逐阵中位比;测量分级)=====
+           mat     off_ms     m2e_ms    ratio      级    acc_off   acc_m2e     acc比    flop占比       行占比  备注
+      bcsstk17      0.836      0.738   0.8828      微      0.409     0.354   0.8655     96.7%     83.8%  微级不作单阵裁决
+         TSOPF      6.501      6.063   0.9326      中      4.824     4.307   0.8928     73.9%     47.6%  Δ>5%
+            F2      0.761      0.610   0.8016      微      0.348     0.243   0.6983     83.6%     80.8%  微级不作单阵裁决
+          c-64     19.589     19.280   0.9842      稳      0.692     0.576   0.8324      0.8%      7.1%  
+GM(m2e/off) = 0.8977 | 非微级最差 = 0.9842 | nnz 异常/实验臂缺数据阵 = 0 | 微级 2 阵 | 有效 4 阵
+裁定: 绿(GM≤1.02 且无非微级阵>1.10 且 nnz 全同)
+
+===== 判读:m2pe / off(逐阵中位比;测量分级)=====
+           mat     off_ms    m2pe_ms    ratio      级    acc_off  acc_m2pe     acc比    flop占比       行占比  备注
+      bcsstk17      0.836      0.749   0.8959      微      0.409     0.358   0.8753     96.7%     83.8%  微级不作单阵裁决
+         TSOPF      6.501      5.744   0.8836      中      4.824     4.044   0.8383     73.9%     47.6%  Δ>5%
+            F2      0.761      0.788   1.0355      微      0.348     0.287   0.8247     83.6%     80.8%  微级不作单阵裁决
+          c-64     19.589     19.300   0.9852      稳      0.692     0.586   0.8468      0.8%      7.1%  
+GM(m2pe/off) = 0.9480 | 非微级最差 = 0.9852 | nnz 异常/实验臂缺数据阵 = 0 | 微级 2 阵 | 有效 4 阵
+裁定: 绿(GM≤1.02 且无非微级阵>1.10 且 nnz 全同)
