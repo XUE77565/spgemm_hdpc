@@ -72,3 +72,18 @@
 | 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
 |---|---|---|---|---|
 | ldoor | m1L | 145422935 | 103481 / 846041 | PASS col_mismatch=0 unordered=0 text_diff=50165648 worst_rel_vs_global=3.141e-16 |
+| ldoor | m2L | 145422935 | 116025 / 833497 | PASS col_mismatch=0 unordered=0 text_diff=50120928 worst_rel_vs_global=4.188e-16 |
+
+### bin9 形态的生产值级(dialog/qa-004 指出的缺口):先用不转储的普查跑找出 bin9 确有行走两遍式的阵,再对前两个做差分门 + l3_diag
+
+| 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) | 官方口径错行(仅参考) | nerr 最大 | 本作业判 |
+|---|---|---|---|---|---|---|---|
+
+- bin9 探查(阵:bin9 走两遍式的行数): hangGlider_3:无bin9 lowThrust_4:无bin9 pf2177:无bin9 TSOPF_FS_b162_c1:无bin9 TSOPF_FS_b39_c7:无bin9 bloweybq:无bin9 case9:无bin9 hangGlider_4:无bin9 lowThrust_5:无bin9 crankseg_1:无bin9 nd3k:无bin9;做了值级的 0 个 **(=0:bin9 形态的生产值级仍是空白,只有微复现器覆盖)**
+
+- 本轮值级里走两遍式的行数合计(m1+m2): 883900
+- S4(a+b): green
+
+## S5 行门标定(只用 data/train_disp;逐行配对周期,两遍式核已补收尾栅栏;两种形态都收行以便分形态看)
+- 卡状态(S5 前): 0, 14 MiB, 2 %;1, 14 MiB, 0 %; 计算进程数: 0
+- 训练池候选 49 阵(1MB-800MB,非测试账同名,不含 af23560)
