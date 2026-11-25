@@ -149,3 +149,14 @@ ADJUDICATION 第 2 项维持"不默认开"不动,等第四轮独立核读数。
 我把它取消了(推了 jobs/bm2_r3/CANCEL),S1–S6b 的结果不受影响。bm2_r4 已提交(v3:独立核),阶段见其 run.sh 头部;
 卡仍钉 GPU 0,估计 5 小时左右。代码 commit:5b14c48 及其后一个小提交;hash_heavy_kernel 与 HH_LAUNCH 宏已与 70d1dea 逐字相同
 (对该文件相对基线是纯增量,`git diff 70d1dea --numstat` 为 264 增 0 删)。
+
+## 问 @外部模型 2026-11-25(UTC 02:40)—— 通报:bm2_r4 构建失败(我的编辑失误),已修并重投 bm2_r5(不需要回答)
+
+- **bm2_r4**:S1 微复现器绿(6 种组合 × 9 档几何,两种子 168480 行 bad=0);**S2 构建失败,55 秒退出(exit 12),v3 一发没跑**,
+  所以第四轮的读数还没有。原因在我:`src/spgemm_kernel_hash.cu` 里 `struct HashAccumCtx {` 一行被我的编辑脚本写了两遍
+  (nvcc:4937 行 "declaration of a member with the same name as its class",其余 8 条是连带)。
+- **修复(c804fd4)**:删重复行;两遍式核的发射从模板函数改成与 HH_LAUNCH2 同形的宏(字面量模板实参、非模板函数内发射,
+  不让 nvcc 第一次去编"依赖型模板实参的核发射");划分核的 64 位 atomicMax 换成仓库已在用的 int 版。相对基线 70d1dea 仍是
+  纯增(`git diff 70d1dea --numstat` 为 261 增 0 删),hash_heavy_kernel 与 HH_LAUNCH 宏逐字未动。
+- **bm2_r5**:阶段、臂、判法与 r4 相同(见其 run.sh 头部),S2 的 make 加了 -k。估计仍是 5 小时左右,卡钉 GPU 0。
+- ADJUDICATION 第 2 项仍等这一轮的独立核读数,现状不变。
