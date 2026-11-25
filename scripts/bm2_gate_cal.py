@@ -3,7 +3,7 @@
 
 输入(--dir 目录下,每个训练阵三组文件;由作业用同一二进制、HASH_ROWTIME 落盘得到):
   <阵>.off.rt   HH_BM2 关:每行 "r a_len flop est span ovf 周期 c_nnz bkid"(src/spgemm_kernel_hash.cu 管线公共尾)
-  <阵>.m1.rt    HH_BM2=1 且不设行门(凡 SMEM 装得下的 HH 行都走两遍式);走了两遍式的行,周期的最高位(2^63)被置 1
+  <阵>.m1.rt    HH_BM2=1、HH_BM2_L1=1 且不设行门(两种形态里凡 SMEM 装得下的 HH 行都走两遍式);走了两遍式的行,周期的最高位(2^63)被置 1
   <阵>.m2.rt    HH_BM2=2 同上
   <阵>.m1.log / <阵>.m2.log   对应运行的 stderr(取 [bm2-stat] 行里每个 bin 的 leg:0=位图形态 1=legacy 形态)
 
@@ -15,7 +15,7 @@ cw=⌈span/32⌉。位图形态(leg=0)与 legacy 形态(leg=1)分开选,因为�
 
 输出(--out 前缀):
   <前缀>.txt        每个 (leg, 模式) 的网格前几名、"全收"与"最优门"的 R、逐阵表、非合格行的实例税读数
-  <前缀>.env        机读:AUTO_OK=0/1 与 AUTO_ENV=K=V,K=V…(给 ab_arms 的臂用)
+  <前缀>.env        机读:AUTO_OK=0/1、AUTO_MODE、AUTO_R(位图形态最优门的平均 R)、AUTO_ENV=K=V,K=V…(给 ab_arms 的臂用)
   <前缀>_cells.csv  (leg, bin, 模式, flop/HT 半倍频程桶, cw/HT 半倍频程桶) 的行数、Σth、Σtk——离线复核门形态用
 只用训练池;428 主账 / flex142 / external_72 不得作为本脚本的输入(纪律 7)。
 """
@@ -193,25 +193,28 @@ def main():
                 continue
             say("                 %-22s %9d %9d %9.4f %9.4f%s" % (used[mi], nrow[mi], int((v & (D["mat"] == mi)).sum()),
                                                                  r_all[mi], r_gate[mi], "" if okm[mi] else "  (行数不足,不计入目标)"))
-        # 实例税:没走两遍式的 HH 行,在 BM2 实例里的周期 ÷ 在原实例里的周期
+        # 噪声对照:没走两遍式的 HH 行在两次运行里走的是同一个原实例,周期比应 ≈1(v2 时代这是"实例税"读数)
         for k in (1, 2):
             nt = D["nt%d" % k]
             w = sel_leg & ~np.isnan(nt)
             if w.sum() >= 100:
-                say("  实例税读数(模式 %d,未走两遍式的 %d 行):Σ周期(BM2 实例) / Σ周期(原实例) = %.4f"
+                say("  实例税读数(模式 %d,未走两遍式的 %d 行;v3 起两边同为原实例,应≈1):Σ周期(开) / Σ周期(关) = %.4f"
                     % (k, int(w.sum()), float(nt[w].sum() / D["th"][w].sum())))
 
-    # 机读 env
-    k0, fx0, cx0, _ = best[0]
-    k1, fx1, cx1, _ = best[1]
+    # 机读 env(v3:一个值区模式 + 一组行门;auto 臂只按位图形态的标定结果开,legacy 形态的读数仅供参考、
+    # 要开须显式 HH_BM2_L1=1——训练池里 legacy 形态的行太少,不足以标定)
+    k0, fx0, cx0, r0 = best[0]
+    k1, fx1, cx1, r1 = best[1]
     with open(a.out + ".env", "w") as f:
-        if k0 == 0 and k1 == 0:
+        if k0 == 0:
             f.write("AUTO_OK=0\n")
-            say("\n# 两种形态都没有 ≥%.1f%% 的平均收益:不产生 auto 臂" % (100 * a.min_gain))
+            say("\n# 位图形态没有 ≥%.1f%% 的平均收益:不产生 auto 臂" % (100 * a.min_gain))
         else:
-            env = "HH_BM2=%d,HH_BM2_L1=%d,HH_BM2_FX=%d,HH_BM2_CX=%d,HH_BM2_FX1=%d,HH_BM2_CX1=%d" % (k0, k1, fx0, cx0, fx1, cx1)
-            f.write("AUTO_OK=1\nAUTO_ENV=%s\n" % env)
-            say("\n# auto 臂: " + env)
+            env = "HH_BM2=%d,HH_BM2_FX=%d,HH_BM2_CX=%d" % (k0, fx0, cx0)
+            f.write("AUTO_OK=1\nAUTO_MODE=%d\nAUTO_R=%.6f\nAUTO_ENV=%s\n" % (k0, r0, env))
+            say("\n# auto 臂(位图形态): %s  平均 R=%.4f" % (env, r0))
+        if k1:
+            say("# legacy 形态(仅供参考): 最优 模式 %d FX=%s CX=%s 平均 R=%.4f" % (k1, fx1 or "∞", cx1 or "∞", r1))
 
     # 桶表(半倍频程):离线复核门形态
     with open(a.out + "_cells.csv", "w") as f:

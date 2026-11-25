@@ -4,7 +4,7 @@
 // 构建: nvcc -O3 -arch=sm_90 -std=c++14 -Isrc tools/hh_repro5.cu -o hh_repro5
 // 用法: ./hh_repro5 [trials_per_cfg=40] [seed=42]
 // 覆盖:块宽 128/256/512/1024 × 生产各 bin 的 SMEM 字预算(位图形态与 fused-legacy 形态)× B16 开/关
-//       × 值区模式 1(SMEM)/2(全局直写);行人口含 dup 1-60×、聚簇列、空 B 行、span 贴 32 边界、
+//       × 值区模式 1(SMEM)/2(全局直写)× Pass1 列来源(B_ci / B16 列字段);行人口含 dup 1-60×、聚簇列、空 B 行、span 贴 32 边界、
 //       est 低估(n>cap,应注册 ovf 且不写输出)、SMEM 装不下(应原样跳过)。
 // 判据(逐行):row_nnz==n;键恰为真值升序;值相对误差≤1e-9(按该列 Σ|乘积| 定标);[n,cap) 与
 //       非本行区域哨兵未动(抓越界写);ovf 行在 ovf_rows 里恰出现一次;跳过行零副作用。
@@ -25,7 +25,7 @@ static const unsigned long long KEY_SENT = 0xAAAAAAAAAAAAAAAAull;
 static const double VAL_SENT = -7.25e300;
 
 // 与生产 hash_heavy_kernel 的 BM2 分流块同式:跨度→词数、槽宽、SMEM 判定、调用实参次序
-template<int LNT, int B16ON, int VMODE>
+template<int LNT, int B16ON, int VMODE, int P1SRC>
 __global__ void repro5_kernel(
     const int *A_rp, const int *A_ci, const double *A_val,
     const int *B_rp, const int *B_ci, const double *B_val, const uint4 *B16,
@@ -43,7 +43,7 @@ __global__ void repro5_kernel(
     const long long fl2 = (long long)d_flop[i2];
     const bool ok2 = sl2 > 0 && hh_bm2_fits(cw2, cap2, totw, VMODE);
     if (!ok2) { if (threadIdx.x == 0) row_nnz[i2] = -2; return; }
-    hh_bm2_row<LNT, B16ON, VMODE>(
+    hh_bm2_row<LNT, B16ON, VMODE, P1SRC>(
         A_rp, A_ci, A_val, B_rp, B_ci, B_val, B16,
         i2, d_span_lo[i2], cw2, cap2, d_off[i2], fl2, d_maxbl[i2],
         tmp_key, tmp_val, row_nnz, overflow_flag, ovf_rows, ovf_cnt, row_ovf, smem_hh);
@@ -147,11 +147,11 @@ template<class T> static T *up(const std::vector<T> &h)
 
 struct Tally { long long rows = 0, ok = 0, ovf = 0, skip = 0, bad = 0; };
 
-template<int LNT, int B16ON, int VMODE>
+template<int LNT, int B16ON, int VMODE, int P1SRC>
 static void run_cfg(const Case &c, const int totw, Tally &tl, const char *cfg, const int trial)
 {
     const size_t smem = (size_t)totw * sizeof(int);
-    CK(cudaFuncSetAttribute((const void *)repro5_kernel<LNT, B16ON, VMODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));   // 同 launch_csort 的写法
+    CK(cudaFuncSetAttribute((const void *)repro5_kernel<LNT, B16ON, VMODE, P1SRC>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));   // 同 launch_csort 的写法
     const long long tot = c.off[c.R];
     std::vector<unsigned long long> hk((size_t)tot, KEY_SENT);
     std::vector<double> hv((size_t)tot, VAL_SENT);
@@ -166,7 +166,7 @@ static void run_cfg(const Case &c, const int totw, Tally &tl, const char *cfg, c
     int *d_flag = nullptr, *d_cnt = nullptr;
     CK(cudaMalloc(&d_flag, sizeof(int))); CK(cudaMalloc(&d_cnt, sizeof(int)));
     CK(cudaMemset(d_flag, 0, sizeof(int))); CK(cudaMemset(d_cnt, 0, sizeof(int)));
-    repro5_kernel<LNT, B16ON, VMODE><<<c.R, (1 << LNT), smem>>>(
+    repro5_kernel<LNT, B16ON, VMODE, P1SRC><<<c.R, (1 << LNT), smem>>>(
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, B16ON ? dB16 : nullptr,
         d_rows, d_off, d_key, d_val, d_nnz, d_flag, d_list, d_cnt, d_rovf,
         d_flop, d_maxbl, d_slo, d_sln, totw);
@@ -241,23 +241,25 @@ static long long run_geom(std::mt19937 &rng, const int totw, const int trials, c
 {
     // 跨度上限取 SMEM 可容的 ~1.25 倍:多数行装得下,少数走"装不下原样跳过"分支
     const int span_max = std::max(64, (int)(16LL * totw * 5 / 4));
-    Tally t10, t11, t20, t21;
-    char nm[96];
+    Tally tl[6];
+    // (B16ON, VMODE, P1SRC):B16 关时 P1SRC 只能是 0;B16 开时两种 Pass1 来源都跑
+    static const char *tn[6] = {"B16=0/V=1/P1=0", "B16=1/V=1/P1=0", "B16=1/V=1/P1=1", "B16=0/V=2/P1=0", "B16=1/V=2/P1=0", "B16=1/V=2/P1=1"};
+    char nm[112];
     for (int tr = 0; tr < trials; tr++) {
         Case c;
         gen_case(rng, span_max, totw, c);
-        snprintf(nm, sizeof(nm), "%s/B16=0/V=1", geom); run_cfg<LNT, 0, 1>(c, totw, t10, nm, tr);
-        snprintf(nm, sizeof(nm), "%s/B16=1/V=1", geom); run_cfg<LNT, 1, 1>(c, totw, t11, nm, tr);
-        snprintf(nm, sizeof(nm), "%s/B16=0/V=2", geom); run_cfg<LNT, 0, 2>(c, totw, t20, nm, tr);
-        snprintf(nm, sizeof(nm), "%s/B16=1/V=2", geom); run_cfg<LNT, 1, 2>(c, totw, t21, nm, tr);
+        snprintf(nm, sizeof(nm), "%s/%s", geom, tn[0]); run_cfg<LNT, 0, 1, 0>(c, totw, tl[0], nm, tr);
+        snprintf(nm, sizeof(nm), "%s/%s", geom, tn[1]); run_cfg<LNT, 1, 1, 0>(c, totw, tl[1], nm, tr);
+        snprintf(nm, sizeof(nm), "%s/%s", geom, tn[2]); run_cfg<LNT, 1, 1, 1>(c, totw, tl[2], nm, tr);
+        snprintf(nm, sizeof(nm), "%s/%s", geom, tn[3]); run_cfg<LNT, 0, 2, 0>(c, totw, tl[3], nm, tr);
+        snprintf(nm, sizeof(nm), "%s/%s", geom, tn[4]); run_cfg<LNT, 1, 2, 0>(c, totw, tl[4], nm, tr);
+        snprintf(nm, sizeof(nm), "%s/%s", geom, tn[5]); run_cfg<LNT, 1, 2, 1>(c, totw, tl[5], nm, tr);
     }
-    const Tally *ts[4] = {&t10, &t11, &t20, &t21};
-    static const char *tn[4] = {"B16=0/V=1", "B16=1/V=1", "B16=0/V=2", "B16=1/V=2"};
     long long bad = 0;
-    for (int x = 0; x < 4; x++) {
-        printf("%-34s %-10s rows=%lld ok=%lld ovf=%lld skip=%lld bad=%lld\n", geom, tn[x],
-               ts[x]->rows, ts[x]->ok, ts[x]->ovf, ts[x]->skip, ts[x]->bad);
-        bad += ts[x]->bad;
+    for (int x = 0; x < 6; x++) {
+        printf("%-34s %-15s rows=%lld ok=%lld ovf=%lld skip=%lld bad=%lld\n", geom, tn[x],
+               tl[x].rows, tl[x].ok, tl[x].ovf, tl[x].skip, tl[x].bad);
+        bad += tl[x].bad;
     }
     return bad;
 }

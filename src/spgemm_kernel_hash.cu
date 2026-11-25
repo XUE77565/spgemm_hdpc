@@ -1914,10 +1914,6 @@ static inline bool probe_rf_on() {
 __device__ int g_xbit_d = 0;
 __device__ int g_hh_sorted_d = 0;   // 刀Gv3(study/57 §五十):HH_SORTED → host 装载;hash_heavy 表内有序 rank 直写   // 刀E5(study/57 §三一):HASH_XBIT → host cudaMemcpyToSymbol;extract 每行一次分支,零热径成本
 __device__ int *g_fus_unsort_d = nullptr;   // v1.4(§十):混合行无序标志(内核写/compact gather;指针每 run 装载)
-// 想法二 v2(study/69 §二十七):hash_heavy BM2 实例的行标志数组(行门前置核 hh_bm2_gate_kernel 写;
-// bit0=位图形态下走两遍式,bit1=legacy 形态下走两遍式)。指针每 run 由 TU-61 的 hash_accum_c61 装载。
-// BM2=0 实例不读这个符号——整块编译期消除,原形态逐位不变。
-__device__ int *g_bm2_take_d = nullptr;
 
 // 刀E1/E2/G(study/57 §廿五/廿六/四十九):bin 被无序写内核接管(hash_heavy 或 VG)→ compact 侧 csort 载体
 static inline bool h69_route_on() {   // 刀①'(study/59):bin9 胖行→HH(16253)+有序直写+直拷(五阵 −27.9~−47.1% §刀①'定谳);默认 1;HASH_H69=0 逃生门
@@ -4452,7 +4448,7 @@ static void launch_csort(int n, const int *rows_ptr, const long long *d_off, con
 // ovf_rows→retry 机具(hash_spa 同款);rowtime[i]=探测环完成处(同彼 ROWCYCLES 窗,不含提取)。
 // SPEC99 env 门(默认关=零生产影响);bins7-8 接管,bin9+ 仍走原路径。
 // 刀2:B16ON 模板参(交织 B 装载,每乘积 1 次 uint4 vs 2 次分离读——hash_spa 同款,编译期消分支)
-template<int LOG_NTHR, int HT_P, int B16ON = 0, int OCH = 0, int BM_WORDS = 2048, int FUSED = 0, int BM2 = 0>   // BM2=想法二两遍式位图累积(study/69 §二十六;0=关,1=值区 SMEM,2=值直写全局); OCH=1:彼 id*11 哈希 A/B(刀10:错峰机理直测);BM_WORDS=Gv4 位图词数(study/68);FUSED=Gv5a 融合排序提取(study/69 刀一,HT_P≤2048 编译期门)
+template<int LOG_NTHR, int HT_P, int B16ON = 0, int OCH = 0, int BM_WORDS = 2048, int FUSED = 0>   // OCH=1:彼 id*11 哈希 A/B(刀10:错峰机理直测);BM_WORDS=Gv4 位图词数(study/68);FUSED=Gv5a 融合排序提取(study/69 刀一,HT_P≤2048 编译期门)
 __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heavy_kernel(
     const int *__restrict__ A_rp, const int *__restrict__ A_ci, const double *__restrict__ A_val,
     const int *__restrict__ B_rp, const int *__restrict__ B_ci, const double *__restrict__ B_val,
@@ -4469,31 +4465,6 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     extern __shared__ int smem_hh[];                        // [HT_P]=sh_col(int);对齐后 sh_val(double)
     const int tid = threadIdx.x;
     const unsigned long long rt0 = rowtime ? clock64() : 0;
-    // 想法二(study/69 §二十六/§二十七):位图标记-累积两遍式的行级分流。BM2 是编译期常量——BM2=0 实例
-    // 本块整体消除(与改动前逐位同形态);BM2≠0 实例里,被行门前置核标了位的行在清表之前就转入
-    // hh_bm2_row 并返回,其余行原样落入下方哈希路径(est 过滤/Gv4 跨度门/retry 语义全部不变)。
-    // v2:行门(SMEM 装得下 ∧ 竞争力门)由 hh_bm2_gate_kernel 在 binning 后一次算好,这里每线程只多读
-    // 一个标志;标了位的行再核一次 hh_bm2_fits(防宿主侧 bin→表长映射与本实例模板参不一致)。
-    // BM2 发射的动态 SMEM 恒为"表区+位图尾区"(hh_smem_words 的 LEG=0 形态,见 HH_LAUNCH2),与翻 bin 无关。
-    // 输出契约:行内列升序直写 tmp + row_nnz=n,与 Gv4 位图行相同——位图 bin 走 copy、fused bin 不置
-    // 无序标志走 copy、legacy bin 仍过载体(有序输入无害),三种 compact 形态都成立。
-    if (BM2) {
-        const int i2 = row_ids[blockIdx.x];
-        if ((g_bm2_take_d[i2] >> (force_legacy ? 1 : 0)) & 1) {
-            const int sl2 = d_span_len[i2];
-            const int cw2 = (int)(((unsigned)sl2 + 31u) >> 5);
-            const int cap2 = (int)(d_off[i2 + 1] - d_off[i2]);
-            if (est_hi <= 0 && sl2 > 0 && hh_bm2_fits(cw2, cap2, hh_smem_words(HT_P, BM_WORDS, FUSED, 0), BM2)) {
-                hh_bm2_row<LOG_NTHR, B16ON, BM2>(
-                    A_rp, A_ci, A_val, B_rp, B_ci, B_val, B16,
-                    i2, d_span_lo[i2], cw2, cap2, d_off[i2], (long long)d_flop[i2], d_maxbl[i2],
-                    tmp_key, tmp_val, row_nnz, overflow_flag, ovf_rows, ovf_cnt, row_ovf, smem_hh);
-                // 行计时最高位 = "本行走了两遍式"(HASH_ROWTIME 落盘后供行门标定配对;周期数远小于 2^63)
-                if (rowtime && tid == 0) rowtime[i2] = (unsigned long long)(clock64() - rt0) | (1ull << 63);
-                return;
-            }
-        }
-    }
     // 刀Gv3(study/57 §五十):hash_heavy 表内有序 rank 直写——env 经已有的 rt_pre_extract
     // 参数位传入不便,新增参数侵入大;改用 __device__ 全局符号 host 装载(同 g_xbit_d 模式)
     int *sh_col = smem_hh;
@@ -4722,6 +4693,47 @@ __global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_heav
     if (rowtime && tid == 0) rowtime[i] = clock64() - rt0;
 }
 
+// ═════ 想法二 v3(study/69 §二十八):位图标记-累积两遍式独立核 ═════
+// 一行一块;行例程 = src/hh_bm2.cuh 的 hh_bm2_row(与 tools/hh_repro5.cu 共用)。只在 TU-61 实例化(bm2_launch)。
+// 行表 = 划分核分出来的合格行;动态 SMEM = 本次发射按合格行需求上界给的 totw 个 int 字。
+// 输出契约同 Gv4 位图行:行内列升序直写 tmp、row_nnz=n;n>cap 不写输出、注册 ovf 交 retry。
+template<int LOG_NTHR, int B16ON, int VMODE, int P1SRC>
+__global__ __launch_bounds__((1 << LOG_NTHR), (2048 >> LOG_NTHR)) void hash_bm2_kernel(
+    const int *__restrict__ A_rp, const int *__restrict__ A_ci, const double *__restrict__ A_val,
+    const int *__restrict__ B_rp, const int *__restrict__ B_ci, const double *__restrict__ B_val,
+    const uint4 *__restrict__ B16,
+    const int *row_ids, const long long *d_off,
+    unsigned long long *tmp_key, double *tmp_val, int *row_nnz,
+    int *overflow_flag, int *ovf_rows, int *ovf_cnt, int *row_ovf,
+    const int *d_flop, const int *d_maxbl, unsigned long long *rowtime,
+    const int *d_span_lo, const int *d_span_len, const int totw)
+{
+    extern __shared__ __align__(8) int smem_b2[];
+    const int tid = threadIdx.x;
+    const unsigned long long rt0 = rowtime ? clock64() : 0;
+    const int i = row_ids[blockIdx.x];
+    const int sl = d_span_len[i];
+    const int cw = (int)(((unsigned)sl + 31u) >> 5);
+    const int cap = (int)(d_off[i + 1] - d_off[i]);
+    if (!(sl > 0 && hh_bm2_fits(cw, cap, totw, VMODE))) {
+        // 不该发生(划分核用同一判式,发射 SMEM ≥ 各合格行需求);万一发生,不碰输出,交 retry 机具保正确
+        if (tid == 0) {
+            row_nnz[i] = 0;
+            atomicExch(overflow_flag, 1);
+            if (!atomicExch(&row_ovf[i], 1)) { const int p2 = atomicAdd(ovf_cnt, 1); ovf_rows[p2] = i; }
+        }
+        return;
+    }
+    hh_bm2_row<LOG_NTHR, B16ON, VMODE, P1SRC>(
+        A_rp, A_ci, A_val, B_rp, B_ci, B_val, B16,
+        i, d_span_lo[i], cw, cap, d_off[i], (long long)d_flop[i], d_maxbl[i],
+        tmp_key, tmp_val, row_nnz, overflow_flag, ovf_rows, ovf_cnt, row_ovf, smem_b2);
+    if (rowtime) {   // 仪器态(HASH_ROWTIME):收尾栅栏后计时,与 hash_heavy 的完整核时间同口径;最高位=本行走了两遍式
+        __syncthreads();
+        if (tid == 0) rowtime[i] = (unsigned long long)(clock64() - rt0) | (1ull << 63);
+    }
+}
+
 // ===== P1 TU-61 出口(study/58 附录A.1 v2)=====
 // cutover 段将在此移入 bi≥4 accumulate 梯(HashAccumCtx + 名字别名,移动体文本不动)
 // + HH_SORTED loader(本 TU cubin 的 g_hh_sorted_d 副本,探针P3)+ TB_TAG 版 SPA_LAUNCH0。
@@ -4780,20 +4792,21 @@ static inline int hh_bm_words_for_bin(int bi)
     return (bi == 8) ? 4096 : (bi == 9) ? 8192 : 2048;
 }
 
-// ===== 想法二 v2(study/69 §二十七):行门前置 =====
-// 行门不再在 hash_heavy 核内逐线程现算,而是 binning 后由一个轻核对 HH bin 的每行算一次、写成标志;
-// 同一趟顺带出"本 bin 合格行数/Σflop",挂进既有 D2H 批回宿主(零新增同步,同 Gv4.2 普查的做法)。
-// 宿主据此按 bin 决定用不用 BM2 实例:合格份额不够的 bin 直接发射原实例,不合格行不付任何税。
-// 门的形态(全部是 env,默认 0=不设;门值出处见 study/69 与 dialog):
-//   flop×100 ≤ FX×HT(乘积数相对表长的上限:两遍式多一趟 B 读,乘积越多越亏)
-//   cw×100   ≤ CX×HT(位图词数相对表长的上限:清位图/前缀/键枚举是 O(cw) 的固定成本)
-// 位图形态(leg=0)与 legacy 形态(leg=1)各一组 (值区模式, FX, CX):两种形态下哈希路径的固定成本不同。
+// ===== 想法二 v3(study/69 §二十八):两遍式 = 独立核 + 行表划分 =====
+// r3 定谳:两遍式代码内联进 hash_heavy 实例会拖累同实例里的哈希行(强制发射 BM2 实例而不收行,acc +5-8%),
+// 且两遍式内环的码生成随宿主实例上下文漂移。v3 把两遍式拆成独立核 hash_bm2_kernel:binning 后一个轻核把
+// HH bin 的行表划成"合格行靠前 / 其余靠后"(d_sort2,与 d_sort 同布局),合格行交两遍式核,其余行仍由
+// **原样的 hash_heavy 实例**处理(hash_heavy_kernel 源码与基线逐字相同)。划分核顺带出每 bin 的合格行数、
+// Σflop 与合格行 SMEM 需求上界,挂既有 D2H 批回宿主(零新增同步)。
+// 门(全是 env,默认 0=不设):flop×100 ≤ FX×HT、cw×100 ≤ CX×HT(cw=⌈span/32⌉,HT=该 bin 表长)。
 struct Bm2Cfg {
-    int mode[2];     // [leg]:0 关 / 1 值区 SMEM / 2 值直写全局
-    int fx[2], cx[2];
+    int mode;        // 值区模式:0 关 / 1 值区 SMEM / 2 值直写全局
+    int leg1;        // 1=legacy 形态(翻 bin)的 bin 也用;默认 0(r2/r3:legacy 形态输)
+    int fx, cx;      // 行门
     int bins;        // bin 位掩码
-    int binmin;      // bin 内合格 Σflop 占比(%)≥ 本值才用 BM2 实例
-    int force;       // 1=合格行为 0 也用 BM2 实例(只为量"实例税")
+    int binmin;      // bin 内合格 Σflop 占比(%)≥ 本值才启用
+    int p1;          // Pass1 列来源:0=B_ci / 1=B16 列字段
+    int smx;         // 两遍式行的 SMEM 预算(int 字)覆盖;0=沿用该 bin 的 hash_heavy 预算(表区+位图尾区)
     int stat;        // 1=每 bin 打一行 [bm2-stat]
 };
 static inline const Bm2Cfg &bm2_cfg()
@@ -4802,79 +4815,122 @@ static inline const Bm2Cfg &bm2_cfg()
     static bool init = false;
     if (!init) {
         auto geti = [](const char *k, int dflt) { const char *e = getenv(k); return (e && *e) ? (int)strtol(e, nullptr, 0) : dflt; };
-        c.mode[0] = geti("HH_BM2", 0);
-        if (c.mode[0] < 0 || c.mode[0] > 2) c.mode[0] = 0;
-        c.mode[1] = geti("HH_BM2_L1", c.mode[0]);
-        if (c.mode[1] < 0 || c.mode[1] > 2) c.mode[1] = 0;
-        if (!c.mode[0] && !getenv("HH_BM2")) c.mode[1] = 0;   // 总开关:HH_BM2 未设 = 整个特性关
-        c.fx[0] = geti("HH_BM2_FX", 0);  c.cx[0] = geti("HH_BM2_CX", 0);
-        c.fx[1] = geti("HH_BM2_FX1", c.fx[0]); c.cx[1] = geti("HH_BM2_CX1", c.cx[0]);
+        c.mode = geti("HH_BM2", 0);
+        if (c.mode < 0 || c.mode > 2) c.mode = 0;
+        c.leg1 = geti("HH_BM2_L1", 0) > 0 ? 1 : 0;
+        c.fx = geti("HH_BM2_FX", 0);
+        c.cx = geti("HH_BM2_CX", 0);
         c.bins = geti("HH_BM2_BINS", 0x3f0);
         c.binmin = geti("HH_BM2_BINMIN", 0);
-        c.force = geti("HH_BM2_FORCE", 0) > 0 ? 1 : 0;
+        c.p1 = geti("HH_BM2_P1", 0) > 0 ? 1 : 0;
+        c.smx = geti("HH_BM2_SMX", 0);
         c.stat = geti("HH_BM2_STAT", 0) > 0 ? 1 : 0;
         init = true;
     }
     return c;
 }
-// bin→表长图(与 HH_LAUNCH 各发射行的 P_ 同图;只给行门前置核算 SMEM 预算用——核内对标了位的行
-// 仍用自己的模板参复核 hh_bm2_fits,映射不一致只会少走两遍式,不会越界)
-static inline int hh_ht_for_bin(int bi)
+// bin→(表长, 位图词数, 块宽对数):与 HH_LAUNCH 各发射行同图。只用来定两遍式行的 SMEM 预算与块宽;
+// 两遍式核自己按发射时给的字数复核 hh_bm2_fits,映射不一致只会少走两遍式,不会越界。
+__host__ __device__ constexpr int bm2_ht_for_bin(const int bi)
 {
     return (bi == 4) ? 512 : (bi == 5) ? 2048 : (bi == 6) ? 2719 : (bi == 7) ? 4096 : (bi == 8) ? 8192 : 16253;
 }
-// 每行一线程;行集自取(d_sort+bin_off[bi],同 hh_gate_census_off_kernel)。计数按 warp 归约后一次原子
-// (逐行同址原子在百万行 bin 上是毫秒级,binning 的 333SP 教训)。out[bi*8+…]:0 行数 1 Σflop
-// 2/3 位图形态合格行数/Σflop 4/5 legacy 形态合格行数/Σflop。
-static __global__ void hh_bm2_gate_kernel(const int *d_sort, const int *bin_off, int bi,
+__host__ __device__ constexpr int bm2_bmw_for_bin(const int bi)
+{
+    return (bi == 8) ? 4096 : (bi == 9) ? 8192 : 2048;
+}
+__host__ __device__ constexpr int bm2_budget_words(const int bi, const int smx)
+{
+    return smx > 0 ? smx : hh_smem_words(bm2_ht_for_bin(bi), bm2_bmw_for_bin(bi), 0, 0);
+}
+#define BM2_NOUT 8   // 每 bin 的计数槽:0 行数 1 Σflop 2 合格行数 3 合格Σflop 4 合格行 SMEM 需求上界(int 字)
+// 行表划分核:一次发射覆盖 bin4..9(它们在 d_sort 里连续)。线程 t ↔ 位置 bin_off[4]+t。
+// 每个 HH bin 段内:合格行从段首往后填、其余行从段尾往前填(各一个原子游标;warp 内同 bin 时一次预留、
+// 按 lane 序落位,所以两段内部都近似保持原行序,相邻块仍读相邻的 B 行)。
+static __global__ void hh_bm2_part_kernel(const int *d_sort, const int *bin_off,
                                           const int *d_span_len, const int *d_flop, const long long *d_off,
-                                          int ht, int totw, int vm0, int vm1, int fx0, int cx0, int fx1, int cx1,
-                                          int *take, long long *out)
+                                          int bins_mask, int vmode, int fx, int cx, int smx,
+                                          int *d_sort2, int *cur /* [2*N_BINS],已清零 */, long long *out /* [BM2_NOUT*N_BINS],已清零 */)
 {
     const int t = blockIdx.x * blockDim.x + threadIdx.x;
-    const int n = bin_off[bi + 1] - bin_off[bi];
-    long long v_fl = 0, v_f0 = 0, v_f1 = 0;
-    int v_r = 0, v_r0 = 0, v_r1 = 0;
-    if (t < n) {
-        const int i = d_sort[bin_off[bi] + t];
-        const int sl = d_span_len[i];
-        const int cw = (int)(((unsigned)sl + 31u) >> 5);
-        const int cap = (int)(d_off[i + 1] - d_off[i]);
-        const long long fl = (long long)d_flop[i];
-        int f = 0;
-        if (sl > 0) {
-            if (vm0 && hh_bm2_fits(cw, cap, totw, vm0)
-                && (fx0 <= 0 || fl * 100LL <= (long long)fx0 * ht)
-                && (cx0 <= 0 || (long long)cw * 100LL <= (long long)cx0 * ht)) f |= 1;
-            if (vm1 && hh_bm2_fits(cw, cap, totw, vm1)
-                && (fx1 <= 0 || fl * 100LL <= (long long)fx1 * ht)
-                && (cx1 <= 0 || (long long)cw * 100LL <= (long long)cx1 * ht)) f |= 2;
+    const unsigned lane = threadIdx.x & 31u;
+    const int p = bin_off[4] + t;
+    int bi = -1, i = 0, take = 0, need = 0;
+    long long fl = 0;
+    if (p < bin_off[10]) {
+        bi = 4;
+        while (bi < 9 && p >= bin_off[bi + 1]) bi++;
+        if ((bins_mask >> bi) & 1) {
+            i = d_sort[p];
+            const int sl = d_span_len[i];
+            const int cw = (int)(((unsigned)sl + 31u) >> 5);
+            const int cap = (int)(d_off[i + 1] - d_off[i]);
+            const int ht = bm2_ht_for_bin(bi);
+            fl = (long long)d_flop[i];
+            if (sl > 0 && hh_bm2_fits(cw, cap, bm2_budget_words(bi, smx), vmode)
+                && (fx <= 0 || fl * 100LL <= (long long)fx * ht)
+                && (cx <= 0 || (long long)cw * 100LL <= (long long)cx * ht)) {
+                take = 1;
+                need = hh_bm2_sv_off(cw) + ((vmode == 1) ? 2 * cap : 0);
+            }
+        } else bi = -1;
+    }
+    const unsigned mv = __ballot_sync(0xffffffffu, bi >= 0);
+    if (mv == 0u) return;                                   // 整个 warp 都不在被启用的 HH bin 里(全 warp 一致)
+    const int lead = __ffs((int)mv) - 1;
+    const int bl = __shfl_sync(0xffffffffu, bi, lead);
+    const unsigned same = __ballot_sync(0xffffffffu, bi == bl);
+    const unsigned mt = __ballot_sync(0xffffffffu, bi >= 0 && take);
+    if (same == mv) {                                       // 常态:warp 内有效行同属一个 bin → 一次预留
+        const unsigned mr = mv & ~mt;
+        int base_t = 0, base_r = 0;
+        if ((int)lane == lead) {
+            if (mt) base_t = atomicAdd(&cur[2 * bl], __popc(mt));
+            if (mr) base_r = atomicAdd(&cur[2 * bl + 1], __popc(mr));
         }
-        take[i] = f;
-        v_r = 1; v_fl = fl;
-        if (f & 1) { v_r0 = 1; v_f0 = fl; }
-        if (f & 2) { v_r1 = 1; v_f1 = fl; }
-    }
-    for (int off = 16; off; off >>= 1) {
-        v_r  += __shfl_down_sync(0xffffffffu, v_r, off);
-        v_r0 += __shfl_down_sync(0xffffffffu, v_r0, off);
-        v_r1 += __shfl_down_sync(0xffffffffu, v_r1, off);
-        v_fl += __shfl_down_sync(0xffffffffu, v_fl, off);
-        v_f0 += __shfl_down_sync(0xffffffffu, v_f0, off);
-        v_f1 += __shfl_down_sync(0xffffffffu, v_f1, off);
-    }
-    if ((threadIdx.x & 31) == 0 && v_r > 0) {
-        unsigned long long *o = (unsigned long long *)(out + bi * 8);
-        atomicAdd(&o[0], (unsigned long long)v_r);
-        atomicAdd(&o[1], (unsigned long long)v_fl);
-        if (v_r0) { atomicAdd(&o[2], (unsigned long long)v_r0); atomicAdd(&o[3], (unsigned long long)v_f0); }
-        if (v_r1) { atomicAdd(&o[4], (unsigned long long)v_r1); atomicAdd(&o[5], (unsigned long long)v_f1); }
+        base_t = __shfl_sync(0xffffffffu, base_t, lead);
+        base_r = __shfl_sync(0xffffffffu, base_r, lead);
+        long long s_fl = (bi >= 0) ? fl : 0LL, s_tf = (bi >= 0 && take) ? fl : 0LL;
+        int s_need = need;
+        for (int off = 16; off; off >>= 1) {
+            s_fl += __shfl_down_sync(0xffffffffu, s_fl, off);
+            s_tf += __shfl_down_sync(0xffffffffu, s_tf, off);
+            const int o = __shfl_down_sync(0xffffffffu, s_need, off);
+            s_need = o > s_need ? o : s_need;
+        }
+        if (bi >= 0) {
+            const unsigned below = (1u << lane) - 1u;
+            if (take) d_sort2[bin_off[bl] + base_t + __popc(mt & below)] = i;
+            else      d_sort2[bin_off[bl + 1] - 1 - (base_r + __popc(mr & below))] = i;
+        }
+        if (lane == 0u) {                                   // 归约结果在 lane 0
+            unsigned long long *o = (unsigned long long *)(out + bl * BM2_NOUT);
+            atomicAdd(&o[0], (unsigned long long)__popc(mv));
+            atomicAdd(&o[1], (unsigned long long)s_fl);
+            if (mt) {
+                atomicAdd(&o[2], (unsigned long long)__popc(mt));
+                atomicAdd(&o[3], (unsigned long long)s_tf);
+                atomicMax((long long *)&o[4], (long long)s_need);
+            }
+        }
+    } else if (bi >= 0) {                                   // bin 边界上的 warp(每次发射至多 5 个):逐 lane 原子
+        if (take) d_sort2[bin_off[bi] + atomicAdd(&cur[2 * bi], 1)] = i;
+        else      d_sort2[bin_off[bi + 1] - 1 - atomicAdd(&cur[2 * bi + 1], 1)] = i;
+        unsigned long long *o = (unsigned long long *)(out + bi * BM2_NOUT);
+        atomicAdd(&o[0], 1ull);
+        atomicAdd(&o[1], (unsigned long long)fl);
+        if (take) {
+            atomicAdd(&o[2], 1ull);
+            atomicAdd(&o[3], (unsigned long long)fl);
+            atomicMax((long long *)&o[4], (long long)need);
+        }
     }
 }
-// 行门前置的宿主侧结果与行标志指针(file-scope:binning lambda 写入 / ctx 初始化读取跨作用域;每 run 覆写)
-static long long bm2c_host[8 * N_BINS] = {0};
-static int *bm2_take_host = nullptr;
+// 划分核的宿主侧结果与划分后行表(file-scope:binning lambda 写入 / ctx 初始化读取跨作用域;每 run 覆写)
+static long long bm2c_host[BM2_NOUT * N_BINS] = {0};
+static int *bm2_rows2_host = nullptr;
 
+struct HashAccumCtx {
 struct HashAccumCtx {
     const int *dA_rp; const int *dA_ci; const double *dA_val;
     const int *dB_rp; const int *dB_ci; const double *dB_val;
@@ -4892,15 +4948,36 @@ struct HashAccumCtx {
     cudaStream_t cur_s; const char *tag;
     int upper_tri, A_rows, A_cols, g_llb, g_hyb_tier, g_priv, PRIV_W;
     bool att;
-    // 想法二 v2(追加在尾部:TU-90 的聚合初始化不动,这两项构造后单独赋值;未赋值=空=BM2 不启用)
-    const long long *h_bm2c;   // 行门前置核的宿主侧计数 [bi*8+…];null=本 run 没跑行门
-    int *d_bm2_take;           // 行标志数组(设备侧)
+    // 想法二 v3(追加在尾部:TU-90 的聚合初始化不动,这两项构造后单独赋值;未赋值=空=两遍式不启用)
+    const long long *h_bm2c;   // 划分核的宿主侧计数 [bi*BM2_NOUT+…];null=本 run 没跑划分
+    const int *rows2;          // 本 bin 划分后的行表(设备侧;前 h_bm2c[..+2] 行=合格行,其后=其余行);null=不启用
 };
 void hash_accum_c61(HashAccumCtx &c, int bi);   // TU-61(spgemm_kernel_hash_c61.o)提供
 #if HASH_TB == 61
 // TU-61 大表/托付形态发射器:generic-else 内部原文移入(仅删 bi2/3 分支保实例集不相交)
 // Gv4.2:门普查内核/判据已上提至 TU 共享区(struct HashAccumCtx 前)——发射批在
 // hash_product 的 scatter 后既有 D2H 批,零新增同步;结果经 ctx.h_gfall 传入。
+
+// 想法二 v3:两遍式独立核的发射(运行时的 B16 有无/值区模式/Pass1 来源经 if/else 落到模板实参)
+template<int LNT>
+static void bm2_launch(HashAccumCtx &c, const int *rows, const int nb, const int vm, const int p1, const int totw)
+{
+    const size_t bsm = (size_t)totw * sizeof(int);
+#define BM2_GO(B16_, VM_, P1_) do { \
+    CHECK_CUDA(cudaFuncSetAttribute((const void *)hash_bm2_kernel<LNT, B16_, VM_, P1_>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bsm)); \
+    hash_bm2_kernel<LNT, B16_, VM_, P1_><<<nb, (1 << LNT), bsm, c.cur_s>>>( \
+        c.dA_rp, c.dA_ci, c.dA_val, c.dB_rp, c.dB_ci, c.dB_val, (B16_) ? c.dB16 : nullptr, rows, c.d_off, \
+        c.d_tmp_key, c.d_tmp_val, c.d_row_nnz, c.d_overflow, c.d_ovf_rows, c.d_ovf_cnt, c.d_row_ovf, \
+        c.d_flop, c.d_maxbl, c.d_rt, c.d_span_lo, c.d_span_len, totw); } while (0)
+    if (c.dB16) {
+        if (vm == 2) { if (p1) BM2_GO(1, 2, 1); else BM2_GO(1, 2, 0); }
+        else         { if (p1) BM2_GO(1, 1, 1); else BM2_GO(1, 1, 0); }
+    } else {
+        if (vm == 2) BM2_GO(0, 2, 0); else BM2_GO(0, 1, 0);
+    }
+#undef BM2_GO
+    CHECK_CUDA(cudaGetLastError());
+}
 
 void hash_accum_c61(HashAccumCtx &c, int bi) {
     // v1.4:无序标志指针每 run 装载(arena 地址随 run 变;加载本 TU 的符号副本)
@@ -5135,61 +5212,63 @@ void hash_accum_c61(HashAccumCtx &c, int bi) {
                     }
                     c.hh_used = (hh_elig && !hh_leg) ? 1 : 0;   // Gv4 出参:本 bin 实际走位图有序直写?
                     c.hh_flip = hh_leg ? ((bi == 4 || bi == 5) ? 2 : 1) : 0;   // Gv4.1/Gv5a:1=legacy+载体;2=fused 排序直写(bins4/5,study/69 刀一)→compact 走 copy
-                    // 想法二(study/69 §二十六/§二十七):HH_BM2 两遍式位图累积,opt-in。HH_BM2 未设/0(默认)= 原实例逐位。
-                    // env:HH_BM2(位图形态 bin 的值区模式 1/2)、HH_BM2_L1(legacy 形态 bin 的模式,默认同 HH_BM2,0=不开)、
-                    //     HH_BM2_FX/CX(+ _FX1/_CX1:legacy 形态)行门、HH_BM2_BINS、HH_BM2_BINMIN、HH_BM2_FORCE、HH_BM2_STAT。
-                    // 行门已由 hash_product 在 binning 后算好(c.d_bm2_take / c.h_bm2c);这里只做 bin 级取舍:
-                    // 本 bin 在当前形态(hh_leg)下的合格 Σflop 占比够,才发射 BM2 实例,否则就是改动前的原实例。
-                    const Bm2Cfg &bc = bm2_cfg();
-                    int bm2_sel = 0;
-                    if (hh_elig && c.d_bm2_take && c.h_bm2c && !att && !g_s99och && ((bc.bins >> bi) & 1)) {
-                        static int *s_take_loaded = nullptr;   // 行标志指针:地址变了才重装(本 TU cubin 的符号副本)
-                        if (c.d_bm2_take != s_take_loaded) {
-                            CHECK_CUDA(cudaMemcpyToSymbol(g_bm2_take_d, &c.d_bm2_take, sizeof(int *)));
-                            s_take_loaded = c.d_bm2_take;
-                        }
-                        const int lg = hh_leg ? 1 : 0;
-                        const long long b_ar = c.h_bm2c[bi * 8 + 0], b_af = c.h_bm2c[bi * 8 + 1];
-                        const long long b_tr = c.h_bm2c[bi * 8 + 2 + 2 * lg], b_tf = c.h_bm2c[bi * 8 + 3 + 2 * lg];
-                        if (bc.mode[lg] && (bc.force || (b_tr > 0 && b_tf * 100 >= (long long)bc.binmin * b_af)))
-                            bm2_sel = bc.mode[lg];
+                    // 想法二 v3(study/69 §二十八):两遍式独立核,opt-in。HH_BM2 未设/0(默认)时 c.rows2 为空,本段不执行,
+                    // 下面的 hash_heavy 发射与改动前逐字相同。划分已由 hash_product 在 binning 后做好(c.rows2:本 bin 的
+                    // 行表,前 b_tr 行=合格行);这里只做 bin 级取舍:当前形态允许(位图形态;或 HH_BM2_L1=1 时的 legacy
+                    // 形态)且合格 Σflop 占比够 → 合格行交 hash_bm2_kernel(SMEM 按合格行的实际需求给),其余行仍由
+                    // 原样的 hash_heavy 实例处理(只是行表换成 rows2 的后段)。输出契约同 Gv4 位图行,compact 侧不变。
+                    if (hh_elig && c.rows2 && c.h_bm2c && !att && !g_s99och) {
+                        const Bm2Cfg &bc = bm2_cfg();
+                        const long long b_ar = c.h_bm2c[bi * BM2_NOUT + 0], b_af = c.h_bm2c[bi * BM2_NOUT + 1];
+                        const long long b_tr = c.h_bm2c[bi * BM2_NOUT + 2], b_tf = c.h_bm2c[bi * BM2_NOUT + 3];
+                        const long long b_need = c.h_bm2c[bi * BM2_NOUT + 4];
+                        const int bw = (int)((b_need + 255) & ~255LL);                 // 发射 SMEM(int 字),1KB 取整
+                        const bool bm2_on = ((bc.bins >> bi) & 1) && (!hh_leg || bc.leg1)
+                                            && b_ar == (long long)n                    // 划分核看到的行数须与本 bin 一致
+                                            && b_tr > 0 && bw > 0 && bw <= bm2_budget_words(bi, bc.smx) + 255
+                                            && b_tf * 100 >= (long long)bc.binmin * b_af;
                         if (bc.stat)
-                            fprintf(stderr, "[bm2-stat] bin=%d mode=%d leg=%d rows=%d taken_rows=%lld taken_flop=%lld skip_rows=%lld skip_flop=%lld ovf_rows=0 elig_rows=%lld elig_flop=%lld\n",
-                                    bi, bm2_sel, hh_leg, n, bm2_sel ? b_tr : 0LL, bm2_sel ? b_tf : 0LL,
-                                    bm2_sel ? b_ar - b_tr : b_ar, bm2_sel ? b_af - b_tf : b_af, b_tr, b_tf);
+                            fprintf(stderr, "[bm2-stat] bin=%d mode=%d leg=%d rows=%d taken_rows=%lld taken_flop=%lld skip_rows=%lld skip_flop=%lld ovf_rows=0 elig_rows=%lld elig_flop=%lld smem_words=%d\n",
+                                    bi, bm2_on ? bc.mode : 0, hh_leg, n, bm2_on ? b_tr : 0LL, bm2_on ? b_tf : 0LL,
+                                    bm2_on ? b_ar - b_tr : b_ar, bm2_on ? b_af - b_tf : b_af, b_tr, b_tf, bw);
+                        if (bm2_on) {
+                            const int bm2_n = (int)b_tr;
+                            if (bi == 4)                 bm2_launch<7>(c, c.rows2, bm2_n, bc.mode, bc.p1, bw);
+                            else if (bi == 5)            bm2_launch<8>(c, c.rows2, bm2_n, bc.mode, bc.p1, bw);
+                            else if (bi == 6 || bi == 7) bm2_launch<9>(c, c.rows2, bm2_n, bc.mode, bc.p1, bw);
+                            else                         bm2_launch<10>(c, c.rows2, bm2_n, bc.mode, bc.p1, bw);
+                            rows_ptr = c.rows2 + bm2_n;                                // 其余行:原实例吃 rows2 的后段
+                            n -= bm2_n;
+                        }
                     }
                     if (hh_elig) {
-#define HH_LAUNCH2(LNT_, P_, BM_, OCH_, LO_, HI_, ROT_, LEG_, FUS_, BM2_) do { \
-    const size_t hhsm = (size_t)hh_smem_words((P_), (BM_), (FUS_), (BM2_) ? 0 : (LEG_)) * sizeof(int);   /* BM2=0:表区 + (LEG ? (FUS ? 384×12B : 0) : BM×4B),同改动前;BM2≠0:恒为表区+位图尾区(块/SM 与位图形态相同) */ \
-    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1, (OCH_), (BM_), (FUS_), (BM2_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
-    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 0, (OCH_), (BM_), (FUS_), (BM2_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
-    if (dB16) hash_heavy_kernel<(LNT_), (P_), 1, (OCH_), (BM_), (FUS_), (BM2_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
+#define HH_LAUNCH2(LNT_, P_, BM_, OCH_, LO_, HI_, ROT_, LEG_, FUS_) do { \
+    const size_t hhsm = (size_t)(((P_) + 1) & ~1) * sizeof(int) + (size_t)(P_) * sizeof(double) + ((LEG_) ? ((FUS_) ? (size_t)384 * 12 : 0) : (size_t)(BM_) * sizeof(unsigned)); \
+    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 1, (OCH_), (BM_), (FUS_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
+    CHECK_CUDA(cudaFuncSetAttribute(hash_heavy_kernel<(LNT_), (P_), 0, (OCH_), (BM_), (FUS_)>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)hhsm)); \
+    if (dB16) hash_heavy_kernel<(LNT_), (P_), 1, (OCH_), (BM_), (FUS_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, dB16, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_), (ROT_), d_span_lo, d_span_len, (LEG_)); \
-    else      hash_heavy_kernel<(LNT_), (P_), 0, (OCH_), (BM_), (FUS_), (BM2_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
+    else      hash_heavy_kernel<(LNT_), (P_), 0, (OCH_), (BM_), (FUS_)><<<n, (1 << (LNT_)), hhsm, cur_s>>>( \
         dA_rp, dA_ci, dA_val, dB_rp, dB_ci, dB_val, nullptr, rows_ptr, n, d_off, \
         d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf, \
         d_flop, d_maxbl, d_rt, d_est, (LO_), (HI_), (ROT_), d_span_lo, d_span_len, (LEG_)); } while (0)
-// 想法二:bm2_sel(宿主 env HH_BM2,默认 0)选 BM2 模板实例——运行时值经 if/else 落到字面量实参
-// (同 g_s99och 手法;OCH=1 的 A/B 实例不配 BM2)。bm2_sel=0 走的就是改动前的同一实例。
-#define HH_LAUNCH(LNT_, P_, BM_, LEG_, FUS_) do { \
-    if (g_s99och)          HH_LAUNCH2((LNT_), (P_), (BM_), 1, 0, 0, g_s99rot, (LEG_), (FUS_), 0); \
-    else if (bm2_sel == 1) HH_LAUNCH2((LNT_), (P_), (BM_), 0, 0, 0, g_s99rot, (LEG_), (FUS_), 1); \
-    else if (bm2_sel == 2) HH_LAUNCH2((LNT_), (P_), (BM_), 0, 0, 0, g_s99rot, (LEG_), (FUS_), 2); \
-    else                   HH_LAUNCH2((LNT_), (P_), (BM_), 0, 0, 0, g_s99rot, (LEG_), (FUS_), 0); } while (0)
+#define HH_LAUNCH(LNT_, P_, BM_, LEG_, FUS_) do { if (g_s99och) HH_LAUNCH2((LNT_), (P_), (BM_), 1, 0, 0, g_s99rot, (LEG_), (FUS_)); else HH_LAUNCH2((LNT_), (P_), (BM_), 0, 0, 0, g_s99rot, (LEG_), (FUS_)); } while (0)
                         // 刀6:pow2 档终极 A/B(4096/8192=hash_spa 同表经济,mask 1 条 vs magic-div 6 条)——
                         // 隔离 3 栅栏结构 vs 18 栅栏的净价值;刀5 素数版(4111/8209)留 git 史
                         // Gv4 BM_WORDS(位图词数→列门):bin4-7=2048(64K列)/bin8=4096(128K)/bin9=8192(256K,
                         // 195+32KB=227.8≤232448B 极限压线,单块/SM 本就如此);occupancy:bin4 6+8=14KB
                         // →16 块=线程帽不降,bin7 56KB/4 块、bin8 112KB/2 块皆不变(电池复核)
                         // Gv4.1:hh_leg=1 时发射免位图 smem(=原几何,与基线逐位同形态)
+                        if (n > 0) {   // 想法二 v3:合格行全被两遍式核吃完时 n=0,不发射空网格(默认路径 n 恒 >0)
                         if (bi == 7)      HH_LAUNCH(9, 4096, 2048, hh_leg, 0);
                         else if (bi == 8) HH_LAUNCH(10, 8192, 4096, hh_leg, 0);
                         else if (bi == 9) HH_LAUNCH(10, 16253, 8192, hh_leg, 0);   // 刀①:bin9 素数紧档(195KB≤227KB,opt-in 随宏;1024T 同 bin8 几何)
                         else if (bi == 6) HH_LAUNCH(9, 2719, 2048, hh_leg, 0);     // 刀①:bin6 素数档(32.6KB 免 opt-in;512T 同 bin7 几何)
                         else if (bi == 5) HH_LAUNCH(8, 2048, 2048, hh_leg, 1);   // 刀G:bin5 ht=2048 档 256T×8/SM
                         else              HH_LAUNCH(7, 512, 2048, hh_leg, 1);   // 刀E1:bin4 ht=512 pow2(deployed 形态同款),128T=16 块/SM
+                        }
 #undef HH_LAUNCH
 #undef HH_LAUNCH2
                         CHECK_CUDA(cudaGetLastError());
@@ -5833,24 +5912,28 @@ static void hash_product(
                     (unsigned)(hh_bm_words_for_bin(cbi) * 32), d_gfall);
             CHECK_CUDA(cudaMemcpyAsync(hh_gfall_host, d_gfall, 2 * N_BINS * sizeof(long long), cudaMemcpyDeviceToHost));
         }
-        // 想法二 v2(study/69 §二十七):行门前置——HH bin 逐行算"走不走两遍式"的标志 + 每 bin 合格计数,
-        // 与上面的门普查同一发射批、同一 D2H 批(零新增同步)。HH_BM2 未开时整段不执行。
-        bm2_take_host = nullptr;
-        if (bm2_cfg().mode[0] || bm2_cfg().mode[1]) {
+        // 想法二 v3(study/69 §二十八):HH bin 行表划分(合格行靠前)+ 每 bin 合格计数,与上面的门普查同批发射、
+        // 同一 D2H 批(零新增同步)。缓冲是进程级静态(预热轮分配一次,计时轮零分配)。HH_BM2 未开时整段不执行。
+        bm2_rows2_host = nullptr;
+        if (bm2_cfg().mode && !att) {
             const Bm2Cfg &bc = bm2_cfg();
-            if (!att) {
-                int *d_take = decltype(d_take)(dev_alloc((size_t)A_rows * sizeof(int)));
-                long long *d_bm2c = decltype(d_bm2c)(dev_alloc(8 * N_BINS * sizeof(long long)));
-                CHECK_CUDA(cudaMemsetAsync(d_bm2c, 0, 8 * N_BINS * sizeof(long long)));
-                for (int cbi = 4; cbi <= 9 && cbi < N_BINS - 1; cbi++)
-                    if ((bc.bins >> cbi) & 1)
-                        hh_bm2_gate_kernel<<<(A_rows + 255) / 256, 256>>>(
-                            d_sort, d_offb, cbi, d_span_len, d_flop, d_off,
-                            hh_ht_for_bin(cbi), hh_smem_words(hh_ht_for_bin(cbi), hh_bm_words_for_bin(cbi), 0, 0),
-                            bc.mode[0], bc.mode[1], bc.fx[0], bc.cx[0], bc.fx[1], bc.cx[1], d_take, d_bm2c);
-                CHECK_CUDA(cudaMemcpyAsync(bm2c_host, d_bm2c, 8 * N_BINS * sizeof(long long), cudaMemcpyDeviceToHost));
-                bm2_take_host = d_take;
+            static int *s_sort2 = nullptr; static size_t s_sort2_cap = 0;
+            static char *s_ctr = nullptr;
+            const size_t ctr_bytes = (size_t)BM2_NOUT * N_BINS * sizeof(long long) + (size_t)2 * N_BINS * sizeof(int);
+            if ((size_t)A_rows > s_sort2_cap) {
+                if (s_sort2) CHECK_CUDA(cudaFree(s_sort2));
+                CHECK_CUDA(cudaMalloc((void **)&s_sort2, (size_t)A_rows * sizeof(int)));
+                s_sort2_cap = (size_t)A_rows;
             }
+            if (!s_ctr) CHECK_CUDA(cudaMalloc((void **)&s_ctr, ctr_bytes));
+            long long *d_bm2c = (long long *)s_ctr;
+            int *d_cur = (int *)(s_ctr + (size_t)BM2_NOUT * N_BINS * sizeof(long long));
+            CHECK_CUDA(cudaMemsetAsync(s_ctr, 0, ctr_bytes));
+            hh_bm2_part_kernel<<<(A_rows + 255) / 256, 256>>>(
+                d_sort, d_offb, d_span_len, d_flop, d_off,
+                bc.bins & 0x3f0, bc.mode, bc.fx, bc.cx, bc.smx, s_sort2, d_cur, d_bm2c);
+            CHECK_CUDA(cudaMemcpyAsync(bm2c_host, d_bm2c, (size_t)BM2_NOUT * N_BINS * sizeof(long long), cudaMemcpyDeviceToHost));
+            bm2_rows2_host = s_sort2;
         }
         // 3 个 D2H 合并:async + 单 sync(省 2 同步点;total_est 从 est_scan 延后到此)
         CHECK_CUDA(cudaMemcpyAsync(h_cnt, d_cnt,  N_BINS * sizeof(int), cudaMemcpyDeviceToHost));
@@ -6871,8 +6954,8 @@ static void hash_product(
         d_off, d_tmp_key, d_tmp_val, d_row_nnz, d_overflow, d_ovf_rows, d_ovf_cnt, d_row_ovf,
         d_flop, d_maxbl, d_rt, d_est, d_span_lo, d_span_len, 0, 0, hh_gfall_host, d_fus_unsort, d_phist, dB16, d_gv_bins, cur_s, tag,
         upper_tri, A_rows, A_cols, g_llb, g_hyb_tier, g_priv, PRIV_W, att };
-                        c61.h_bm2c = bm2_take_host ? bm2c_host : nullptr;   // 想法二 v2:行门前置结果(本 run 没跑行门则为空)
-                        c61.d_bm2_take = bm2_take_host;
+                        c61.h_bm2c = bm2_rows2_host ? bm2c_host : nullptr;   // 想法二 v3:行表划分结果(本 run 没跑划分则为空)
+                        c61.rows2 = bm2_rows2_host ? bm2_rows2_host + h_off[bi] : nullptr;
                         hash_accum_c61(c61, bi);
                         h_hh_used[bi] = c61.hh_used;   // Gv4:记录实际路径(普查退 LHT 的 bin,compact 不可再直拷)
                         h_hh_flip[bi] = c61.hh_flip;   // Gv4:记录普查翻(bins4/5 回 FLAT 原生形态)

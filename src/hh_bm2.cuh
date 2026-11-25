@@ -36,7 +36,9 @@ __host__ __device__ constexpr bool hh_bm2_fits(const int cw, const int cap, cons
 }
 
 // 返回:n(行内 distinct 数,已写出)或 −1(n>cap,已注册 ovf,未写输出)。块内所有线程返回值相同。
-template<int LOG_NTHR, int B16ON, int VMODE>
+// P1SRC:Pass1 的列号来源。0=B_ci(4B/乘积的独立流);1=B16 的列字段(与 Pass2 同一条流——B 超出 L2 的大阵上
+//        Pass1 顺手把 Pass2 要读的行拉进缓存,不多读一路数据;仅 B16ON=1 时有效,否则回落 B_ci)。
+template<int LOG_NTHR, int B16ON, int VMODE, int P1SRC = 0>
 __device__ __forceinline__ int hh_bm2_row(
     const int *__restrict__ A_rp, const int *__restrict__ A_ci, const double *__restrict__ A_val,
     const int *__restrict__ B_rp, const int *__restrict__ B_ci, const double *__restrict__ B_val,
@@ -86,12 +88,13 @@ __device__ __forceinline__ int hh_bm2_row(
     const int my_group = tid >> lg;
     const int my_id = tid & (group_size - 1);
 
-    // ── Pass 1:标记。只读 B 的列号流(4B/乘积);先读后 or——dup 行多数乘积只付一次普通读 ──
+    // ── Pass 1:标记。只读列号(P1SRC 选流);先读后 or——dup 行多数乘积只付一次普通读 ──
     for (int p = rs + my_group; p < re; p += num_groups) {
         const int k = A_ci[p];
         const int ks = B_rp[k], ke = B_rp[k + 1];
         for (int q = ks + my_id; q < ke; q += group_size) {
-            const unsigned b = (unsigned)(B_ci[q] - cbase);
+            const int j1 = (P1SRC && B16ON) ? (int)B16[q].x : B_ci[q];
+            const unsigned b = (unsigned)(j1 - cbase);
             const unsigned bit = 1u << (b & 31u);
             unsigned *wp = bmw + 2u * (b >> 5);
             if (!(*wp & bit)) atomicOr(wp, bit);
