@@ -63,3 +63,13 @@
 | 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
 |---|---|---|---|---|
 | GaAsH6 | m2 | 37611445 | 25720 / 0 | PASS col_mismatch=0 unordered=0 text_diff=3904276 worst_rel_vs_global=7.850e-16 |
+| Ga3As3H12 | m2 | 62181563 | 30211 / 0 | PASS col_mismatch=0 unordered=0 text_diff=11354395 worst_rel_vs_global=1.176e-15 |
+
+- bin9 探查(阵:走了两遍式的臂=bin9 行数;m2 = 生产可达形态,m2X = 强制形态): H2O:无 GaAsH6:m2=967 Si34H36:无 Ga3As3H12:m2=2691;做了值级的 2 个
+- S4 主线: green | 宽跨度封条(m2X): green | bin9: 生产可达形态 green / 强制形态 green
+
+## K3 ncu 硬件计数(hash_heavy 对 hash_bm2:缓存命中、显存吞吐、指令数、占用;尽力而为)
+- ncu: /usr/bin/ncu / Version 2022.4.1.0 (build 32308335) (public-release)
+- ncu 试点 4 种组合都没产出报告(各组的 rc 与报错行在 k3_pilot.log),K3 跳过
+
+## T0 负载门
