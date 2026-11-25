@@ -1,0 +1,68 @@
+nvcc -O3 -arch=sm_90 -std=c++14 -lineinfo   -Iinclude -I/usr/local/cuda/include -c src/main.cu -o src/main.o
+nvcc -O3 -arch=sm_90 -std=c++14 -lineinfo   -Iinclude -I/usr/local/cuda/include -c src/matrix_utils.cu -o src/matrix_utils.o
+nvcc -O3 -arch=sm_90 -std=c++14 -lineinfo   -Iinclude -I/usr/local/cuda/include -c src/spgemm_kernel_cusparse.cu -o src/spgemm_kernel_cusparse.o
+nvcc -O3 -arch=sm_90 -std=c++14 -lineinfo   -Iinclude -I/usr/local/cuda/include -c src/spgemm_kernel_manual.cu -o src/spgemm_kernel_manual.o
+src/main.cu(196): warning #177-D: variable "C_row_ptr" was declared but never referenced
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+src/main.cu(197): warning #177-D: variable "C_col_idx" was declared but never referenced
+
+src/main.cu(198): warning #177-D: variable "C_val" was declared but never referenced
+
+src/main.cu(241): warning #177-D: variable "C_row_ptr" was declared but never referenced
+
+src/main.cu(242): warning #177-D: variable "C_col_idx" was declared but never referenced
+
+src/main.cu(243): warning #177-D: variable "C_val" was declared but never referenced
+
+src/main.cu(284): warning #177-D: variable "C_row_ptr" was declared but never referenced
+
+src/main.cu(285): warning #177-D: variable "C_col_idx" was declared but never referenced
+
+src/main.cu(286): warning #177-D: variable "C_val" was declared but never referenced
+
+src/main.cu(326): warning #177-D: variable "C_row_ptr" was declared but never referenced
+
+src/main.cu(327): warning #177-D: variable "C_col_idx" was declared but never referenced
+
+src/main.cu(328): warning #177-D: variable "C_val" was declared but never referenced
+
+nvcc -O3 -arch=sm_90 -std=c++14 -lineinfo   -Iinclude -I/usr/local/cuda/include -c src/spgemm_kernel_formulations.cu -o src/spgemm_kernel_formulations.o
+nvcc -O3 -arch=sm_90 -std=c++14 -lineinfo   -Iinclude -I/usr/local/cuda/include -DHASH_TB=90 -c src/spgemm_kernel_hash.cu -o src/spgemm_kernel_hash.o
+nvcc -O3 -arch=sm_90 -std=c++14 -lineinfo   -Iinclude -I/usr/local/cuda/include -c src/spgemm_adaptive.cu -o src/spgemm_adaptive.o
+src/spgemm_adaptive.cu(26): warning #177-D: function "env_int" was declared but never referenced
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+src/spgemm_adaptive.cu(31): warning #177-D: function "env_double" was declared but never referenced
+
+nvcc -O3 -arch=sm_90 -std=c++14 -lineinfo   -Iinclude -I/usr/local/cuda/include -c src/spgemm_merge.cu -o src/spgemm_merge.o
+src/spgemm_kernel_hash.cu(4937): error: declaration of a member with the same name as its class
+
+At end of source: error: expected a "}"
+src/spgemm_kernel_hash.cu(4936): note #3196-D: to match this "{"
+
+src/spgemm_kernel_hash.cu(6956): error: too many initializer values
+
+src/spgemm_kernel_hash.cu(6960): error: class "HashAccumCtx" has no member "h_bm2c"
+
+src/spgemm_kernel_hash.cu(6961): error: class "HashAccumCtx" has no member "rows2"
+
+src/spgemm_kernel_hash.cu(6962): error: a nonstatic member reference must be relative to a specific object
+
+src/spgemm_kernel_hash.cu(6963): error: class "HashAccumCtx" has no member "hh_used"
+
+src/spgemm_kernel_hash.cu(6964): error: class "HashAccumCtx" has no member "hh_flip"
+
+At end of source: error: expected a ";"
+
+9 errors detected in the compilation of "src/spgemm_kernel_hash.cu".
+make: *** [Makefile:24: src/spgemm_kernel_hash.o] Error 2
+make: *** Waiting for unfinished jobs....
+src/spgemm_kernel_formulations.cu(480): warning #177-D: function "dpi" was declared but never referenced
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+src/spgemm_kernel_formulations.cu(481): warning #177-D: function "dcpi" was declared but never referenced
+
