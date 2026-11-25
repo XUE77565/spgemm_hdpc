@@ -71,3 +71,4 @@
 
 | 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
 |---|---|---|---|---|
+| ldoor | m1L | 145422935 | 103481 / 846041 | PASS col_mismatch=0 unordered=0 text_diff=50165648 worst_rel_vs_global=3.141e-16 |
