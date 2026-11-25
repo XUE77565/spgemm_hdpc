@@ -139,3 +139,11 @@
 
 | 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
 |---|---|---|---|---|
+| pre2 | m2L | 323445872 | 121999 / 23205 | PASS col_mismatch=0 unordered=0 text_diff=279322 worst_rel_vs_global=1.365e-27 |
+
+- S8: green
+
+## 结束
+- 结论: S1-S4、S8 全绿;S5 标定、S6/S7 的读数见各段与对应 txt/csv
+- 磁盘: /dev/sdb1        15T  8.4T  5.4T  61% /home
+- 结束时间: 2026-11-25T07:27:40Z,总用时 252 分钟
