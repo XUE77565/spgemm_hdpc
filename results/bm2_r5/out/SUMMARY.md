@@ -47,3 +47,27 @@
 | s3dkq4m2 | off | 13282553 | 0 / 0 | - | 0 / 0 / 88427 | 88427(=) | 6.528503e-16 | 对照 |
 | s3dkq4m2 | m1 | 13282553 | 88410 / 0 | PASS col_mismatch=0 unordered=0 text_diff=4211252 worst_rel_vs_global=4.853e-16 | 0 / 0 / 88308 | 88308(=) | 6.640253e-16 | 绿 |
 | s3dkq4m2 | m2 | 13282553 | 88410 / 0 | PASS col_mismatch=0 unordered=0 text_diff=5204041 worst_rel_vs_global=4.853e-16 | 0 / 0 / 88570 | 88570(=) | 8.164730e-16 | 绿 |
+| s3dkq4m2 | m2p | 13282553 | 88410 / 0 | PASS col_mismatch=0 unordered=0 text_diff=5306041 worst_rel_vs_global=4.853e-16 | 0 / 0 / 88682 | 88682(=) | 7.145776e-16 | 绿 |
+
+- 交叉标定(官方 L3 错行数 对 l3_diag 重算):20 组里不等的 0 组
+- 并排清单(前 60 条):s4_l3diag_<阵>.txt / .csv;按行聚合全量:s4_l3rows_<阵>.csv.gz;官方三判原文尾:s4_truth_<阵>_<臂>.txt
+- 条目级全量清单(阵 条数 字节 sha256 C上路径;≤1.5MB 的同时在 OUT_DIR 的 s4_l3full_<阵>.csv.gz):
+    bcsstk17 31404 1649093 c0f691232f0e526ee3f988d2486cf9cd4cb485d3a63df9ae6a8c179c8ee092fb /home/xueyizhou/exp-runs/bm2_r5/keep/l3full_bcsstk17.csv.gz
+    msc10848 12 762 b327e2d4c2de2cec9d43fc5a455029d936dd29b02adcc23e891fc09039daebb4 /home/xueyizhou/exp-runs/bm2_r5/keep/l3full_msc10848.csv.gz
+    s3dkq4m2 1278118 76145127 16de26babcbd5b748a676ae1fad26b9eff7b8fa7c6df6a682b2d2147b118c3af /home/xueyizhou/exp-runs/bm2_r5/keep/l3full_s3dkq4m2.csv.gz
+    s3dkq4m2 按行聚合清单超 1.9MB,改留 /home/xueyizhou/exp-runs/bm2_r5/keep/s4_l3rows_s3dkq4m2.csv.gz
+
+## S4b 值级:HH_BM2=1/2 对 =0 的差分门 + 三臂对 scipy 真值的归一误差(不跑官方逐行三判:这几阵 4-6 千万 nnz,python 逐行太慢)
+
+判法:差分门 PASS ∧ nnz 同 off ∧(l3_diag 有输出时)该臂 nerr 最大值 ≤ 1e-10。
+
+| 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) | 官方口径错行(仅参考) | nerr 最大 | 本作业判 |
+|---|---|---|---|---|---|---|---|
+| TSOPF_RS_b678_c2 | off | 40139105 | 0 / 0 | - | 0 | 4.399041e-16 | 对照 |
+| TSOPF_RS_b678_c2 | m1 | 40139105 | 17002 / 0 | PASS col_mismatch=0 unordered=0 text_diff=785087 worst_rel_vs_global=9.934e-19 | 0 | 4.399041e-16 | 绿 |
+| TSOPF_RS_b678_c2 | m2 | 40139105 | 17002 / 0 | PASS col_mismatch=0 unordered=0 text_diff=778663 worst_rel_vs_global=9.934e-19 | 0 | 4.399041e-16 | 绿 |
+
+### ldoor(翻 bin 家族:legacy 形态也交两遍式独立核的 m1L/m2L 臂;1.45 亿 nnz,只跑差分门)
+
+| 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
+|---|---|---|---|---|
