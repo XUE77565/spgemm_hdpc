@@ -43,3 +43,9 @@
 | GaAsH6 | cm2 | 37611445 | 25720 / 0 | PASS col_mismatch=0 unordered=0 text_diff=3916538 worst_rel_vs_global=9.158e-16 |
 | web-Google | cen | 29710164 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 |
 | pre2 | cen | 323445872 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=246781 worst_rel_vs_global=1.092e-27 |
+| pre2 | cm2L | 323445872 | 121999 / 23205 | PASS col_mismatch=0 unordered=0 text_diff=278385 worst_rel_vs_global=1.501e-27 |
+
+- S4b: green;走两遍式的行数合计 358885(GaAsH6 是 bin9 有行的阵;cm2L 是合一 + legacy 形态,只验值)
+
+## K2 逐 kernel 的 GPU 侧累计时长(nsys;设备侧时间戳,不吃主机 CPU 争用)
+- nsys: NVIDIA Nsight Systems version 2024.6.2.225-246235244400v0;臂: off cen m2 cm2 ;22 阵 × 2 轮,WARMUP_N=1
