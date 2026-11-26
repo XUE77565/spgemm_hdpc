@@ -20,3 +20,7 @@
 
 ## S3 冒烟(各臂 1 发:nnz 与失败检查;单发的时间比不作读数)
 - G1 两遍式(宏重构后的回归)off/m2/m2p/m2L/m2e,6 阵 → green;走两遍式的行数合计 = 317379
+- G2 单发射普查 off/cen/cenm2,7 阵 → green;走两遍式的行数合计 = 48845
+- G3 普查 + 划分合一 off/cm2/cm2L,7 阵 → green;走两遍式的行数合计 = 219689
+
+## S4a 门普查行为保持([census-stat] 行 = 每个 bin 的 rows / gated / total,连同结果 nnz;三种模式逐行比对)

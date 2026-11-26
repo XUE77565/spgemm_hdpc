@@ -15,3 +15,42 @@
     web-Google cen        r0 co=7.013 acc=2.808 cs=1.978 retry=0.557 nnz=29710164
     web-Google cenm2      r0 co=7.045 acc=2.812 cs=1.979 retry=0.578 nnz=29710164
          TSOPF cenm2      STAT taken_rows=17002 skip_rows=0 taken_flop=51148008 skip_flop=0 total_flop=69226453 a_rows=35696 nnz=40139105
+         TSOPF off        r0 co=6.490 acc=4.831 cs=1.044 retry=0.000 nnz=40139105
+         TSOPF cen        r0 co=6.448 acc=4.819 cs=1.049 retry=0.000 nnz=40139105
+         TSOPF cenm2      r0 co=5.925 acc=4.269 cs=1.047 retry=0.000 nnz=40139105
+            F2 cenm2      STAT taken_rows=19026 skip_rows=0 taken_flop=8353025 skip_flop=0 total_flop=9996480 a_rows=23560 nnz=2432504
+            F2 off        r0 co=0.654 acc=0.316 cs=0.095 retry=0.000 nnz=2432504
+            F2 cen        r0 co=0.631 acc=0.318 cs=0.096 retry=0.000 nnz=2432504
+            F2 cenm2      r0 co=0.569 acc=0.238 cs=0.092 retry=0.000 nnz=2432504
+          c-64 cenm2      STAT taken_rows=3616 skip_rows=0 taken_flop=9679869 skip_flop=0 total_flop=1212176699 a_rows=51035 nnz=155006041
+          c-64 off        r0 co=19.751 acc=0.723 cs=0.555 retry=0.239 nnz=155006041
+          c-64 cen        r0 co=19.635 acc=0.751 cs=0.551 retry=0.287 nnz=155006041
+          c-64 cenm2      r0 co=19.062 acc=0.573 cs=0.522 retry=0.169 nnz=155006041
+          pre2 cenm2      STAT taken_rows=0 skip_rows=0 taken_flop=0 skip_flop=0 total_flop=417565877 a_rows=659033 nnz=323445872
+          pre2 off        r0 co=25.273 acc=14.311 cs=8.188 retry=0.973 nnz=323445872
+          pre2 cen        r0 co=25.099 acc=14.361 cs=8.339 retry=1.017 nnz=323445872
+          pre2 cenm2      r0 co=25.198 acc=14.325 cs=8.474 retry=1.007 nnz=323445872
+
+===== 判读:cen / off(逐阵中位比;测量分级)=====
+           mat     off_ms     cen_ms    ratio      级    acc_off   acc_cen     acc比    flop占比       行占比  备注
+      bcsstk17      0.936      0.829   0.8857      微      0.435     0.401   0.9218         -         -  微级不作单阵裁决
+         case9      8.546      8.513   0.9961      中      6.277     6.275   0.9997         -         -  
+    web-Google      7.093      7.013   0.9887      中      2.806     2.808   1.0007         -         -  
+         TSOPF      6.490      6.448   0.9935      中      4.831     4.819   0.9975         -         -  
+            F2      0.654      0.631   0.9648      微      0.316     0.318   1.0063         -         -  微级不作单阵裁决
+          c-64     19.751     19.635   0.9941      稳      0.723     0.751   1.0387         -         -  
+          pre2     25.273     25.099   0.9931      稳     14.311    14.361   1.0035         -         -  
+GM(cen/off) = 0.9730 | 非微级最差 = 0.9961 | nnz 异常/实验臂缺数据阵 = 0 | 微级 2 阵 | 有效 7 阵
+裁定: 绿(GM≤1.02 且无非微级阵>1.10 且 nnz 全同)
+
+===== 判读:cenm2 / off(逐阵中位比;测量分级)=====
+           mat     off_ms   cenm2_ms    ratio      级    acc_off acc_cenm2     acc比    flop占比       行占比  备注
+      bcsstk17      0.936      0.796   0.8504      微      0.435     0.359   0.8253     96.7%     83.8%  微级不作单阵裁决
+         case9      8.546      8.505   0.9952      中      6.277     6.276   0.9998      0.0%      0.0%  
+    web-Google      7.093      7.045   0.9932      中      2.806     2.812   1.0021      0.0%      0.0%  
+         TSOPF      6.490      5.925   0.9129      中      4.831     4.269   0.8837     73.9%     47.6%  Δ>5%
+            F2      0.654      0.569   0.8700      微      0.316     0.238   0.7532     83.6%     80.8%  微级不作单阵裁决
+          c-64     19.751     19.062   0.9651      稳      0.723     0.573   0.7925      0.8%      7.1%  
+          pre2     25.273     25.198   0.9970      稳     14.311    14.325   1.0010      0.0%      0.0%  
+GM(cenm2/off) = 0.9388 | 非微级最差 = 0.9970 | nnz 异常/实验臂缺数据阵 = 0 | 微级 2 阵 | 有效 7 阵
+裁定: 绿(GM≤1.02 且无非微级阵>1.10 且 nnz 全同)
