@@ -26,3 +26,9 @@
 - # shadow_sum: 清单内 8 阵,基线臂有数据的 8 阵;失败发 0;臂: off aa cen cm2 # 分级:微 8 / 中 0 / 稳 0;nnz 各臂各轮不全同的阵 0 个;签名不全同的阵 0 个(有签名的 8 阵) 
 
 ## O1 发射清单比对(nsys;核名含模板实参 + 发射次数;基线源码件 base 对 本件开关全关 off)
+- 采数 44 发(22 阵 × 2 件),失败 0 发;LAUNCH_DIFF_N 22;LAUNCH_DIFF_MATS 0;LAUNCH_DIFF_VERDICT same;(明细 o1_launch_diff.txt)
+    # 臂 base 对臂 off:比对 22 阵;臂 base 的发射总次数 2062(含预热轮)
+    设备侧 Σkernel:GM_KERN(off/base) = 0.9996 | 阵数 22 | 最差 1.0094 | 有两遍式发射的阵 0 个,其 GM = -
+
+## O2 官方 ab_pair 16×9(参考轨:两个二进制、无对照臂;按 dialog/qa-008 只入档,不作裁定;裁定以上一轮 T2 的带对照臂版为准)
+- 主机(O2 前): load=20.84 14.11 12.29 外来>50%CPU进程数=5 卡=0, 14 MiB, 0 %;1, 80825 MiB, 100 %;
