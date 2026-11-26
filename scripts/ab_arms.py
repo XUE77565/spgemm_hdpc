@@ -17,6 +17,8 @@ accumulate / compact+sort / retry / dense_direct。
   ab_arms.py --bin ./spgemm_x --out PREFIX --arm off: --arm m1:HH_BM2=1 --arm m2:HH_BM2=2
              [--rounds 3] [--gpu 0] [--only bcsstk17,Bump] [--extra name=path:method ...]
              [--no-battery] [--stat]
+  臂里的特殊键 AB_BIN=路径:这一臂换用另一个二进制(例:--arm base:AB_BIN=./spgemm_base),其余口径不变;
+          用来把"基线源码件对本件"的无侵入对照放进同一个交错电池,与 A/A 对照臂同批。
   --stat:每阵对每个含 HH_BM2= 的臂加发一次诊断跑(HH_BM2_STAT=1、WARMUP_N=0,不计时),
           把 [bm2-stat] 行(每 bin 走/未走两遍式的行数与 Σflop)写进 PREFIX_stat.csv。
 输出:PREFIX.csv(逐发)、PREFIX.txt(判读)、PREFIX_stat.csv、PREFIX_fail.log(失败发的输出尾)。
@@ -50,6 +52,7 @@ def run_one(binary, path, method, gpu, arm_env, warm="3", extra=None, timeout=90
     env.update(arm_env)
     if extra:
         env.update(extra)
+    binary = env.pop("AB_BIN", binary)   # 臂级二进制覆盖(无侵入对照:--arm base:AB_BIN=./spgemm_base);不传给被测程序
     try:
         r = subprocess.run([binary, path], env=env, capture_output=True, text=True, timeout=timeout)
     except Exception as ex:   # 超时等
