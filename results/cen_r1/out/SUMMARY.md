@@ -24,3 +24,19 @@
 - G3 普查 + 划分合一 off/cm2/cm2L,7 阵 → green;走两遍式的行数合计 = 219689
 
 ## S4a 门普查行为保持([census-stat] 行 = 每个 bin 的 rows / gated / total,连同结果 nnz;三种模式逐行比对)
+- 比对了 24 阵(另有 0 阵基线模式没跑出结果、0 阵基线模式自己两遍就不同,都不计入);其中非空的 (阵,bin) 组合 75 个
+- **不一致的阵: 0 个**
+- 合一形态已一并比对
+
+## S4b 值级:各臂对 off 的差分门
+
+| 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
+|---|---|---|---|---|
+| bcsstk17 | m2 | 1406936 | 9201 / 0 | PASS col_mismatch=0 unordered=0 text_diff=507408 worst_rel_vs_global=1.824e-16 |
+| bcsstk17 | m2e | 1406936 | 9201 / 0 | PASS col_mismatch=0 unordered=0 text_diff=504754 worst_rel_vs_global=1.824e-16 |
+| bcsstk17 | cen | 1406936 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=372101 worst_rel_vs_global=1.824e-16 |
+| bcsstk17 | cm2 | 1406936 | 9201 / 0 | PASS col_mismatch=0 unordered=0 text_diff=505667 worst_rel_vs_global=1.824e-16 |
+| cfd2 | m2 | 13418644 | 90070 / 0 | PASS col_mismatch=0 unordered=0 text_diff=1799057 worst_rel_vs_global=4.353e-16 |
+| cfd2 | cen | 13418644 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=1368125 worst_rel_vs_global=3.265e-16 |
+| cfd2 | cm2 | 13418644 | 90070 / 0 | PASS col_mismatch=0 unordered=0 text_diff=1795979 worst_rel_vs_global=4.353e-16 |
+| msc10848 | cm2 | 6185646 | 3423 / 0 | PASS col_mismatch=0 unordered=0 text_diff=2702503 worst_rel_vs_global=1.900e-16 |
