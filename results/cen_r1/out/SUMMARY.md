@@ -1,0 +1,5 @@
+# cen_r1 汇总(门普查单发射版与普查+划分合一:行为保持 → 设备侧时长 → A/A 认证的电池、小阵探针、带对照臂的无侵入)
+
+## S0 环境
+- 主机: H100-187  开始: 2026-11-26T00:36:14Z  快照: /home/xueyizhou/exp-runs/cen_r1/code  nproc=32
+- nvcc(PATH): /usr/bin/nvcc / Build cuda_12.0.r12.0/compiler.32267302_0
