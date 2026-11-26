@@ -42,3 +42,4 @@
 | msc10848 | cm2 | 6185646 | 3423 / 0 | PASS col_mismatch=0 unordered=0 text_diff=2702503 worst_rel_vs_global=1.900e-16 |
 | GaAsH6 | cm2 | 37611445 | 25720 / 0 | PASS col_mismatch=0 unordered=0 text_diff=3916538 worst_rel_vs_global=9.158e-16 |
 | web-Google | cen | 29710164 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 |
+| pre2 | cen | 323445872 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=246781 worst_rel_vs_global=1.092e-27 |
