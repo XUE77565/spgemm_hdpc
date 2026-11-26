@@ -40,3 +40,5 @@
 | cfd2 | cen | 13418644 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=1368125 worst_rel_vs_global=3.265e-16 |
 | cfd2 | cm2 | 13418644 | 90070 / 0 | PASS col_mismatch=0 unordered=0 text_diff=1795979 worst_rel_vs_global=4.353e-16 |
 | msc10848 | cm2 | 6185646 | 3423 / 0 | PASS col_mismatch=0 unordered=0 text_diff=2702503 worst_rel_vs_global=1.900e-16 |
+| GaAsH6 | cm2 | 37611445 | 25720 / 0 | PASS col_mismatch=0 unordered=0 text_diff=3916538 worst_rel_vs_global=9.158e-16 |
+| web-Google | cen | 29710164 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 |
