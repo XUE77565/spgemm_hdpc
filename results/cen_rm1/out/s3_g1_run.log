@@ -1,0 +1,50 @@
+# ab_arms: bin=./spgemm_m1 gpu=0 rounds=1
+#   arm off        (无额外 env)
+#   arm cen        HH_CENSUS=1
+#   arm cm2        HH_BM2=2 HH_BM2_LAZY=2 HH_CENSUS=1
+      bcsstk17 cm2        STAT taken_rows=9201 skip_rows=0 taken_flop=18712858 skip_flop=0 total_flop=19350466 a_rows=10974 nnz=1406936
+      bcsstk17 off        r0 co=0.786 acc=0.387 cs=0.149 retry=0.000 nnz=1406936
+      bcsstk17 cen        r0 co=0.734 acc=0.383 cs=0.139 retry=0.000 nnz=1406936
+      bcsstk17 cm2        r0 co=0.749 acc=0.356 cs=0.140 retry=0.000 nnz=1406936
+         case9 cm2        STAT taken_rows=0 skip_rows=0 taken_flop=0 skip_flop=0 total_flop=161640248 a_rows=14454 nnz=52372050
+         case9 off        r0 co=8.639 acc=6.265 cs=1.153 retry=0.000 nnz=52372050
+         case9 cen        r0 co=8.486 acc=6.282 cs=1.128 retry=0.000 nnz=52372050
+         case9 cm2        r0 co=8.533 acc=6.274 cs=1.132 retry=0.000 nnz=52372050
+    web-Google cm2        STAT taken_rows=0 skip_rows=46058 taken_flop=0 skip_flop=14618936 total_flop=60687836 a_rows=916428 nnz=29710164
+    web-Google off        r0 co=7.157 acc=2.811 cs=1.983 retry=0.568 nnz=29710164
+    web-Google cen        r0 co=7.061 acc=2.812 cs=2.003 retry=0.580 nnz=29710164
+    web-Google cm2        r0 co=7.051 acc=2.822 cs=1.986 retry=0.572 nnz=29710164
+         TSOPF cm2        STAT taken_rows=17002 skip_rows=0 taken_flop=51148008 skip_flop=0 total_flop=69226453 a_rows=35696 nnz=40139105
+         TSOPF off        r0 co=6.485 acc=4.821 cs=1.048 retry=0.000 nnz=40139105
+         TSOPF cen        r0 co=6.534 acc=4.854 cs=1.056 retry=0.000 nnz=40139105
+         TSOPF cm2        r0 co=5.943 acc=4.287 cs=1.052 retry=0.000 nnz=40139105
+            F2 cm2        STAT taken_rows=19026 skip_rows=0 taken_flop=8353025 skip_flop=0 total_flop=9996480 a_rows=23560 nnz=2432504
+            F2 off        r0 co=0.679 acc=0.321 cs=0.098 retry=0.000 nnz=2432504
+            F2 cen        r0 co=0.635 acc=0.319 cs=0.096 retry=0.000 nnz=2432504
+            F2 cm2        r0 co=0.580 acc=0.250 cs=0.093 retry=0.000 nnz=2432504
+          c-64 cm2        STAT taken_rows=3616 skip_rows=0 taken_flop=9679869 skip_flop=0 total_flop=1212176699 a_rows=51035 nnz=155006041
+          c-64 off        r0 co=19.316 acc=0.672 cs=0.555 retry=0.182 nnz=155006041
+          c-64 cen        r0 co=19.250 acc=0.660 cs=0.524 retry=0.173 nnz=155006041
+          c-64 cm2        r0 co=19.301 acc=0.604 cs=0.518 retry=0.176 nnz=155006041
+
+===== 判读:cen / off(逐阵中位比;测量分级)=====
+           mat     off_ms     cen_ms    ratio      级    acc_off   acc_cen     acc比    flop占比       行占比  备注
+      bcsstk17      0.786      0.734   0.9338      微      0.387     0.383   0.9897         -         -  微级不作单阵裁决
+         case9      8.639      8.486   0.9823      中      6.265     6.282   1.0027         -         -  
+    web-Google      7.157      7.061   0.9866      中      2.811     2.812   1.0004         -         -  
+         TSOPF      6.485      6.534   1.0076      中      4.821     4.854   1.0068         -         -  
+            F2      0.679      0.635   0.9352      微      0.321     0.319   0.9938         -         -  微级不作单阵裁决
+          c-64     19.316     19.250   0.9966      稳      0.672     0.660   0.9821         -         -  
+GM(cen/off) = 0.9732 | 非微级最差 = 1.0076 | nnz 异常/实验臂缺数据阵 = 0 | 微级 2 阵 | 有效 6 阵
+裁定: 绿(GM≤1.02 且无非微级阵>1.10 且 nnz 全同)
+
+===== 判读:cm2 / off(逐阵中位比;测量分级)=====
+           mat     off_ms     cm2_ms    ratio      级    acc_off   acc_cm2     acc比    flop占比       行占比  备注
+      bcsstk17      0.786      0.749   0.9529      微      0.387     0.356   0.9199     96.7%     83.8%  微级不作单阵裁决
+         case9      8.639      8.533   0.9877      中      6.265     6.274   1.0014      0.0%      0.0%  
+    web-Google      7.157      7.051   0.9852      中      2.811     2.822   1.0039      0.0%      0.0%  
+         TSOPF      6.485      5.943   0.9164      中      4.821     4.287   0.8892     73.9%     47.6%  Δ>5%
+            F2      0.679      0.580   0.8542      微      0.321     0.250   0.7788     83.6%     80.8%  微级不作单阵裁决
+          c-64     19.316     19.301   0.9992      稳      0.672     0.604   0.8988      0.8%      7.1%  
+GM(cm2/off) = 0.9479 | 非微级最差 = 0.9992 | nnz 异常/实验臂缺数据阵 = 0 | 微级 2 阵 | 有效 6 阵
+裁定: 绿(GM≤1.02 且无非微级阵>1.10 且 nnz 全同)
