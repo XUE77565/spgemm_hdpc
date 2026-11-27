@@ -68,3 +68,15 @@
 
 bottleneck 排行榜入 dialog(相位 × 阵 × 指标 × 离峰距离 × 建议刀型),按可回收 ms 排序;
 P1 先行(P2/P3 的选靶依赖它)。profiling 作业不计时敏感,卡位自调,但一样单任务串行。
+
+## 报备(快速通道;外部模型追加)
+
+- **2026-11-27 · 翻默认 `HH_CENSUS` = 1(门普查单发射 + warp 归约;`HH_CENSUS=0` 回原样)· commit 4e2fe66**
+  - 值级 / 行为保持:[census-stat] 签名与 nnz 全 428 阵新旧模式全同(results/prof_p1/out/p1_shadow_sum.txt);差分门全 PASS、发射清单除普查核外逐名相同
+    (results/cen_r1/out/SUMMARY.md、k2_kern_long.csv.gz);基线件对开关全关逐项相同(results/prof_p1/out/o1_launch_diff.txt)。
+  - 电池(A/A 认证,A/A 0.9960):cen/off GM 0.9706,非微级最差 1.022(results/cen_r1/out/t1_battery.txt、t1_aa.txt);小阵探针 0.919(t1b_probe2.txt)。
+  - 无侵入:带对照臂 base/off 1.0007(results/cen_r1/out/t2_noint.txt);官方 ab_pair 16×9 0.9985(results/prof_p1/out/o2_ab_verdict.txt)。
+  - 影子 428(A/A 1.0013 / 1.0026,干净):cen/off GM 0.9925、非微级 0.9889;16 个待复测阵逐阵复判全部放行
+    (results/cen_rm1/out/r1_remeasure.txt + results/cen_rm2/out/r1_all_remeasure.txt;判法 dialog/qa-011)。
+  - 入档的未解项:METHOD=hash 入口下 msc10848 慢 3%(生产入口 0.98);circuit_4 复测中位比 1.05(A/A 1.03)。
+  - 翻默认后的自检作业 `flip_s1`(默认形态的发射清单 = 显式 HH_CENSUS=1;签名与 nnz 三臂一致)出结果后在 dialog/qa-011 回填。confirm20 归本机侧。
