@@ -1,0 +1,117 @@
+# kern_sum: 读到 48 个文件,有表的 48 个,读不出表的 0 个
+# nsys 表头: Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+
+===== ① 逐阵:Σkernel GPU 时长(ms,各轮中位;含预热轮)与对 off 之比;括号里是两遍式相关核族(hash_heavy_kernel + hash_bm2_kernel + hh_bm2_part_kernel)的比 =====
+mat                    off_ms    轮间%            cm2/off(核族比)
+Ga41As41H72            85.169    nan        1.1008 (1.1488)*
+Si41Ge41H72            73.503    nan        1.1518 (1.2031)*
+TSOPF_FS_b9_c6         14.677    nan        0.7142 (0.4929)*
+bloweybq               24.528    nan        0.7147 (0.4937)*
+case9                  15.111    nan        0.6951 (0.4735)*
+conf5_4-8x8-15          4.537    nan        0.7062 (0.6551)*
+fem_filter              6.737    nan        1.4979 (1.7448)*
+filter3D                6.885    nan        0.6446 (0.5224)*
+hangGlider_3           19.940    nan        0.6901 (0.4815)*
+hangGlider_4           47.920    nan        0.6624 (0.5073)*
+hangGlider_5           50.485    nan        0.6585 (0.5045)*
+nd12k                  64.735    nan        1.2444 (1.2786)*
+nd24k                 132.104    nan        1.2305 (1.2607)*
+nemeth22                2.789    nan        1.1555 (1.2272)*
+nemeth23                3.088    nan        1.1319 (1.2644)*
+nemeth24                3.090    nan        1.1250 (1.2689)*
+nemeth25                3.083    nan        1.1239 (1.2623)*
+net100                 22.053    nan        0.6986 (0.5182)*
+net50                   9.031    nan        0.6234 (0.4916)*
+net75                  14.750    nan        0.6771 (0.5726)*
+pattern1              149.601    nan        1.2283 (1.6894)*
+pkustk12              139.981    nan        0.6078 (0.4976)*
+rajat25                98.856    nan        1.2167 (0.9607)*
+torso1                 63.209    nan        1.4523 (1.4833)*
+(* = 该臂在这阵上确有 hash_bm2_kernel 发射)
+GM_KERN(cm2/off) = 0.9049 | 阵数 24 | 最差 1.4979 | 有两遍式发射的阵 24 个,其 GM = 0.9049
+
+===== ② 核族累计 GPU 时长排行(臂 off,24 阵相加;含预热轮)=====
+核族                                           ms     占比%      实例数
+hash_heavy_kernel                       670.035   63.46        5
+hash_dense_direct_kernel                152.417   14.44        1
+hash_compact_copy_warp_kernel            85.298    8.08        1
+mh_merge_kernel                          36.380    3.45        1
+hash_dense_count_kernel                  26.118    2.47        1
+hash_dense_window_kernel                 22.380    2.12        1
+hash_spa_kernel                          18.484    1.75        3
+csort_counting_kernel                    12.809    1.21        2
+count_flop_tiny_kernel                    8.887    0.84        1
+hash_global_kernel                        4.085    0.39        1
+b_interleave_kernel                       3.799    0.36        1
+count_flop_span_kernel                    2.738    0.26        1
+hh_gate_census_off_kernel                 2.566    0.24        1
+mh_construct_kernel                       2.452    0.23        1
+hash_compact_sort_kernel                  1.560    0.15        1
+hash_spa_batched_kernel                   1.161    0.11        2
+hash_compact_copy_thread_kernel           0.833    0.08        1
+cub::CUB_200700_900_NS::DeviceScan        0.794    0.08        4
+hash_compact_copy_kernel                  0.646    0.06        1
+cub::CUB_200700_900_NS::DeviceScan        0.378    0.04        2
+dense_sum_kernel                          0.361    0.03        1
+thrust::THRUST_200700_900_NS::cuda        0.323    0.03        3
+hash_esc_kernel                           0.312    0.03        3
+compute_bucket_kernel                     0.236    0.02        1
+scatter_rows_kernel                       0.178    0.02        1
+cub::CUB_200700_900_NS::DeviceRedu        0.129    0.01        1
+cub::CUB_200700_900_NS::DeviceRedu        0.105    0.01        1
+margin_kernel                             0.104    0.01        1
+binning_zero2_kernel                      0.078    0.01        1
+k_count_copy_entries                      0.052    0.00        1
+fus_gather_kernel                         0.035    0.00        1
+retry_prep_kernel                         0.030    0.00        1
+alen_gather_kernel                        0.021    0.00        1
+span_row_est_gather_kernel                0.017    0.00        1
+gather_flop_kernel                        0.017    0.00        1
+retry_slot_kernel                         0.017    0.00        1
+scatter_alen_kernel                       0.011    0.00        1
+zero_est_kernel                           0.011    0.00        1
+
+===== ③ 逐实例排行(臂 off,前 40;被发射过的实例共 54 个)=====
+          ms     占比%    阵数     发射次数  实例
+     353.262   33.46    14       28  void hash_heavy_kernel<(int)10, (int)8192, (int)1, (int)0, (int)4096, (int)0>(const int *, const int *, const double *, const int *, const int *, cons
+     278.490   26.38    15       30  void hash_heavy_kernel<(int)10, (int)16253, (int)1, (int)0, (int)8192, (int)0>(const int *, const int *, const double *, const int *, const int *, con
+     152.417   14.44     3        6  hash_dense_direct_kernel(const int *, const int *, const double *, const int *, const int *, const double *, int, int, int, const int *, int *, double
+      85.298    8.08    24      168  hash_compact_copy_warp_kernel(const int *, int, const long long *, const int *, const int *, const unsigned long long *, const double *, int *, double
+      36.380    3.45    24       48  void mh_merge_kernel<(int)4, (bool)1>(const int *, const int *, int, const unsigned int *, const int *, double, int *, int, const int *, double, doubl
+      26.118    2.47     3        6  hash_dense_count_kernel(const int *, const int *, const int *, const int *, int, int, int, int *, const int *, const int *, const int *, const int *, 
+      22.380    2.12     7       14  hash_dense_window_kernel(const int *, const int *, const double *, const int *, const int *, const double *, int, int, int, const long long *, const i
+      17.960    1.70    15       30  void hash_heavy_kernel<(int)8, (int)2048, (int)1, (int)0, (int)2048, (int)1>(const int *, const int *, const double *, const int *, const int *, const
+      17.282    1.64    17       34  void hash_spa_kernel<(int)0, (int)1, (int)0, (int)0, (int)11, (int)0, (int)0, (int)0, (int)61>(const int *, const int *, const double *, const int *, 
+      16.998    1.61    12       24  void hash_heavy_kernel<(int)9, (int)4096, (int)1, (int)0, (int)2048, (int)0>(const int *, const int *, const double *, const int *, const int *, const
+       8.887    0.84     2        4  count_flop_tiny_kernel(const int *, const int *, int, const int *, const int *, int *, int *, int *, int *)
+       8.698    0.82    17       42  void csort_counting_kernel<(int)256, (int)2048, (int)1024>(const int *, const long long *, const int *, const int *, const unsigned long long *, const
+       4.111    0.39     6       12  void csort_counting_kernel<(int)512, (int)4096, (int)1024>(const int *, const long long *, const int *, const int *, const unsigned long long *, const
+       4.085    0.39     4        8  hash_global_kernel(const int *, const int *, const double *, const int *, const int *, const double *, int, const int *, int, const long long *, const
+       3.799    0.36    24       48  b_interleave_kernel(const int *, const double *, int, uint4 *)
+       3.325    0.31    15       30  void hash_heavy_kernel<(int)7, (int)512, (int)1, (int)0, (int)2048, (int)1>(const int *, const int *, const double *, const int *, const int *, const 
+       2.738    0.26    22       44  count_flop_span_kernel(const int *, const int *, int, const int *, const int *, int *, int *, int *, int *)
+       2.566    0.24    24      288  hh_gate_census_off_kernel(const int *, const int *, int, int, const int *, const int *, unsigned int, long long *)
+       2.452    0.23    24       48  mh_construct_kernel(const int *, const int *, int, int, unsigned int *, int, const int *)
+       1.560    0.15     4        8  void hash_compact_sort_kernel<(int)256, (int)64>(const int *, int, const long long *, const int *, const int *, const unsigned long long *, const doub
+       1.033    0.10     8       22  void hash_spa_kernel<(int)0, (int)1, (int)0, (int)0, (int)0, (int)0, (int)0, (int)-1, (int)61>(const int *, const int *, const double *, const int *, 
+       0.852    0.08     8       16  void hash_spa_batched_kernel<(int)128, (int)8>(const int *, const int *, const double *, const int *, const int *, const double *, int, const int *, i
+       0.833    0.08     8       46  hash_compact_copy_thread_kernel(const int *, int, const long long *, const int *, const int *, const unsigned long long *, const double *, int *, doub
+       0.646    0.06     7       14  hash_compact_copy_kernel(const int *, int, const long long *, const int *, const int *, const unsigned long long *, const double *, int *, double *, c
+       0.438    0.04    24      110  void cub::CUB_200700_900_NS::DeviceScanKernel<cub::CUB_200700_900_NS::DeviceScanPolicy<long long, thrust::THRUST_200700_900_NS::plus<void>>::Policy900
+       0.361    0.03    10       26  dense_sum_kernel(const int *, int, const int *, const int *, const int *, unsigned long long *, unsigned long long *)
+       0.309    0.03     8       16  void hash_spa_batched_kernel<(int)64, (int)8>(const int *, const int *, const double *, const int *, const int *, const double *, int, const int *, in
+       0.236    0.02    24       48  compute_bucket_kernel(const int *, const int *, int, int, const int *, int, const int *, int *, int *, int, int, int, int, int, int, int, int, int, in
+       0.205    0.02    24      122  void cub::CUB_200700_900_NS::DeviceScanInitKernel<cub::CUB_200700_900_NS::ScanTileState<long long, (bool)1>>(T1, int)
+       0.186    0.02    24       48  void cub::CUB_200700_900_NS::DeviceScanKernel<cub::CUB_200700_900_NS::DeviceScanPolicy<int, thrust::THRUST_200700_900_NS::plus<void>>::Policy900, thru
+       0.185    0.02     6       12  void hash_esc_kernel<(int)32>(const int *, const int *, const double *, const int *, const int *, const double *, int, const int *, int, const long lo
+       0.178    0.02    24       48  scatter_rows_kernel(const int *, int, const int *, int *, int *)
+       0.174    0.02    24      102  void cub::CUB_200700_900_NS::DeviceScanInitKernel<cub::CUB_200700_900_NS::ScanTileState<int, (bool)1>>(T1, int)
+       0.168    0.02     2        4  void hash_spa_kernel<(int)0, (int)1, (int)0, (int)0, (int)0, (int)0, (int)0, (int)-1, (int)0>(const int *, const int *, const double *, const int *, c
+       0.143    0.01    24       54  void cub::CUB_200700_900_NS::DeviceScanKernel<cub::CUB_200700_900_NS::DeviceScanPolicy<int, thrust::THRUST_200700_900_NS::plus<void>>::Policy900, thru
+       0.137    0.01    24       48  void thrust::THRUST_200700_900_NS::cuda_cub::core::_kernel_agent<thrust::THRUST_200700_900_NS::cuda_cub::__reduce::ReduceAgent<thrust::THRUST_200700_9
+       0.129    0.01    24       48  void cub::CUB_200700_900_NS::DeviceReduceKernel<cub::CUB_200700_900_NS::DeviceReducePolicy<long long, unsigned int, thrust::THRUST_200700_900_NS::plus
+       0.114    0.01    24       48  void thrust::THRUST_200700_900_NS::cuda_cub::core::_kernel_agent<thrust::THRUST_200700_900_NS::cuda_cub::__reduce::ReduceAgent<thrust::THRUST_200700_9
+       0.105    0.01    24       48  void cub::CUB_200700_900_NS::DeviceReduceSingleTileKernel<cub::CUB_200700_900_NS::DeviceReducePolicy<long long, unsigned int, thrust::THRUST_200700_90
+       0.104    0.01    24       48  margin_kernel(const long long *, const int *, int, long long *)
+
+# 仅在实验臂出现的实例数(按核族): hash_bm2_kernel=4, hh_census_part_kernel=1

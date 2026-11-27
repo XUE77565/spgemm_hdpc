@@ -131,3 +131,36 @@ REMEASURE_RED cen 0
 2026-11-27T11:59:23Z
 
 ## R3 合一形态(cm2)在生产入口下的输家 / 赢家画像(只作画像;428 是测试账,不据此定门值)
+- 逐 bin 普查([bm2-stat]:每个 bin 走 / 未走两遍式的行数与 Σflop、SMEM 字数):r3_bm2stat.txt(71 行)
+- nsys 设备侧(off 对 cm2,METHOD=adaptive,各 1 轮):48 发,失败 0 发;全文 r3_kern.txt,长表 r3_kern_long.csv.gz
+```
+===== ① 逐阵:Σkernel GPU 时长(ms,各轮中位;含预热轮)与对 off 之比;括号里是两遍式相关核族(hash_heavy_kernel + hash_bm2_kernel + hh_bm2_part_kernel)的比 =====
+mat                    off_ms    轮间%            cm2/off(核族比)
+Ga41As41H72            85.169    nan        1.1008 (1.1488)*
+Si41Ge41H72            73.503    nan        1.1518 (1.2031)*
+TSOPF_FS_b9_c6         14.677    nan        0.7142 (0.4929)*
+bloweybq               24.528    nan        0.7147 (0.4937)*
+case9                  15.111    nan        0.6951 (0.4735)*
+conf5_4-8x8-15          4.537    nan        0.7062 (0.6551)*
+fem_filter              6.737    nan        1.4979 (1.7448)*
+filter3D                6.885    nan        0.6446 (0.5224)*
+hangGlider_3           19.940    nan        0.6901 (0.4815)*
+hangGlider_4           47.920    nan        0.6624 (0.5073)*
+hangGlider_5           50.485    nan        0.6585 (0.5045)*
+nd12k                  64.735    nan        1.2444 (1.2786)*
+nd24k                 132.104    nan        1.2305 (1.2607)*
+nemeth22                2.789    nan        1.1555 (1.2272)*
+nemeth23                3.088    nan        1.1319 (1.2644)*
+nemeth24                3.090    nan        1.1250 (1.2689)*
+nemeth25                3.083    nan        1.1239 (1.2623)*
+net100                 22.053    nan        0.6986 (0.5182)*
+net50                   9.031    nan        0.6234 (0.4916)*
+net75                  14.750    nan        0.6771 (0.5726)*
+pattern1              149.601    nan        1.2283 (1.6894)*
+pkustk12              139.981    nan        0.6078 (0.4976)*
+rajat25                98.856    nan        1.2167 (0.9607)*
+torso1                 63.209    nan        1.4523 (1.4833)*
+(* = 该臂在这阵上确有 hash_bm2_kernel 发射)
+GM_KERN(cm2/off) = 0.9049 | 阵数 24 | 最差 1.4979 | 有两遍式发射的阵 24 个,其 GM = 0.9049
+
+```
