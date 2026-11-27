@@ -64,3 +64,7 @@ REMEASURE_RED cen 0
 
 | 阵 | 臂 | nnz | 走两遍式行 / 未走 | 差分门(对 off) |
 |---|---|---|---|---|
+| case9 | cen | 52372050 | 0 / 0 | PASS col_mismatch=0 unordered=0 text_diff=4355 worst_rel_vs_global=1.195e-16 |
+| case9 | cm2 | 52372050 | 7217 / 0 | PASS col_mismatch=0 unordered=0 text_diff=4873 worst_rel_vs_global=7.294e-21 |
+| bloweybq | cm2 | 100020001 | 10000 / 0 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 |
+| net50 | cm2 | 40622452 | 15355 / 0 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 |
