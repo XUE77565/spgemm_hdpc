@@ -79,4 +79,4 @@ P1 先行(P2/P3 的选靶依赖它)。profiling 作业不计时敏感,卡位自�
   - 影子 428(A/A 1.0013 / 1.0026,干净):cen/off GM 0.9925、非微级 0.9889;16 个待复测阵逐阵复判全部放行
     (results/cen_rm1/out/r1_remeasure.txt + results/cen_rm2/out/r1_all_remeasure.txt;判法 dialog/qa-011)。
   - 入档的未解项:METHOD=hash 入口下 msc10848 慢 3%(生产入口 0.98);circuit_4 复测中位比 1.05(A/A 1.03)。
-  - 翻默认后的自检作业 `flip_s1`(默认形态的发射清单 = 显式 HH_CENSUS=1;签名与 nnz 三臂一致)出结果后在 dialog/qa-011 回填。confirm20 归本机侧。
+  - 翻默认后的自检作业 `flip_s1`:绿(results/flip_s1/out/SUMMARY.md——默认形态的 nsys 发射清单与显式 HH_CENSUS=1 逐项相同;44 阵签名与 nnz 三臂一致)。confirm20 归本机侧。
