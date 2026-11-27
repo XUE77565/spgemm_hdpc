@@ -68,3 +68,5 @@ REMEASURE_RED cen 0
 | case9 | cm2 | 52372050 | 7217 / 0 | PASS col_mismatch=0 unordered=0 text_diff=4873 worst_rel_vs_global=7.294e-21 |
 | bloweybq | cm2 | 100020001 | 10000 / 0 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 |
 | net50 | cm2 | 40622452 | 15355 / 0 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 |
+| hangGlider_4 | cm2 | 191342279 | 13830 / 0 | PASS col_mismatch=0 unordered=0 text_diff=6234 worst_rel_vs_global=1.486e-16 |
+| filter3D | cm2 | 20161619 | 98949 / 0 | PASS col_mismatch=0 unordered=0 text_diff=2168888 worst_rel_vs_global=1.647e-16 |
