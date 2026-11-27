@@ -12,7 +12,9 @@
 #   G2     真实训练池同样做一遍(与 cen_rm1 的 R4 同法,同一个二进制同一场)→ g2_cal*;两者在 flop/HT 1–8 的重叠段应当接得上
 #   G3     交点:scripts/bm2_fx_cross.py 出各模式各 bin 的 R(flop/HT) 曲线、R=1 交点、建议门值(0.65 × 最小交点)
 #   G4     合成阵上的值级(生产入口转储,m2 / cm2 对 off 的差分门)
-# 全程不做墙钟计时判读(逐行周期是 GPU 侧计数),不碰 428 / flex142 / external_72。单卡;每个 GPU 进程都在 `timeout -k 30` 里。
+# 全程不做墙钟计时判读(逐行周期是 GPU 侧计数),不碰 428 / flex142 / external_72。
+# 卡:**钉死 GPU 1**(dialog/qa-014:GPU 0 归 B 端的 confirm20);GPU 1 被占就等,等不到就不跑,绝不回落到 GPU 0。
+# 每个 GPU 进程都在 `timeout -k 30` 里;$JOB_DIR/HEARTBEAT 每一发覆写(当前是哪一发、何时开始)。
 # 估计 70–90 分钟。回传:OUT_DIR/SUMMARY.md + g0_* / g1_* / g2_* / g3_fx.txt。
 set -u
 ROOT=$(pwd)
@@ -111,27 +113,20 @@ say "- python3: $(python3 --version 2>&1) / $(tail -1 "$OUT/s0_py.log")"
 HAVE_PATCH=0; command -v patch >/dev/null && HAVE_PATCH=1
 say "- 磁盘: $(df -h "$JD" | tail -1)"
 
-pick_gpu() {
-  local g uuid n
-  for g in 0 1; do
-    uuid=$(nvidia-smi -i $g --query-gpu=uuid --format=csv,noheader 2>/dev/null) || continue
-    [ -n "$uuid" ] || continue
-    n=$(nvidia-smi --query-compute-apps=gpu_uuid --format=csv,noheader 2>/dev/null | grep -c "$uuid")
-    [ "$n" = 0 ] && { echo $g; return 0; }
-  done
-  return 1
-}
-GPU=""; SHARED=0
+# dialog/qa-014:GPU 0 归 B 端的 confirm20(计时作业),本作业钉死 GPU 1;GPU 1 被占就等,等不到就不跑,任何情况下不回落到 GPU 0。
+GPU=1; SHARED=0
 for try in $(seq 1 30); do
-  GPU=$(pick_gpu) && break
-  echo "两张卡都有计算进程,等 60s($try/30)"; sleep 60
+  [ "$(apps_on 1)" = 0 ] && break
+  echo "GPU 1 上有别的计算进程,等 60s($try/30)"; sleep 60
 done
-if [ -z "$GPU" ]; then
-  GPU=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | sort -t, -k2 -n | head -1 | cut -d, -f1 | tr -d ' ')
-  SHARED=1
+if [ "$(apps_on 1)" != 0 ]; then
+  say "- **GPU 1 等了 30 分钟仍有别的计算进程;本作业不用 GPU 0,不跑**"
+  finish 19 "未跑:GPU 1 被占;GPU 0 归 confirm20,不碰"
 fi
-export CUDA_VISIBLE_DEVICES=$GPU
-say "- **用卡: GPU $GPU**$([ $SHARED = 1 ] && echo '(⚠ 等了 30 分钟仍有别的计算进程,与人共卡)')"
+export CUDA_VISIBLE_DEVICES=1
+say "- **用卡: GPU 1(钉死,CUDA_VISIBLE_DEVICES=1;GPU 0 归 B 端的 confirm20,本作业的任何进程都看不到它)**"
+hb() { echo "$* start=$(date -u +%FT%TZ)" > "$JD/HEARTBEAT" 2>/dev/null; }   # 心跳:当前在做哪一发 / 哪一步,何时开始
+say "- 心跳文件: $JD/HEARTBEAT(每一发、每一步覆写;要判断是不是挂了看它的开始时刻,单发上限 900 秒、转储 1800 秒)"
 say "- 主机(开跑时): $(host_line)"
 
 ln -sfn "$DATA" "$ROOT/data"
@@ -225,7 +220,8 @@ stage "G0 生成合成训练阵"
 say ""; say "## G0 合成训练阵(tools/train_synth/gen_synth.py;固定种子;只在作业目录里)"
 SYN="$JD/train_synth"
 T0=$(date +%s)
-python3 tools/train_synth/gen_synth.py --out "$SYN" > "$OUT/g0_gen.log" 2>&1
+hb "G0 生成合成阵(Python,不用 GPU;预计几分钟)"
+timeout -k 30 3600 python3 tools/train_synth/gen_synth.py --out "$SYN" > "$OUT/g0_gen.log" 2>&1
 RC=$?
 cp "$SYN/MANIFEST.tsv" "$OUT/g0_manifest.tsv" 2>/dev/null
 NSYN=$(ls "$SYN"/*.mtx 2>/dev/null | wc -l)
@@ -240,6 +236,7 @@ cal_run() {   # $1=标定目录 $2=清单文件(每行 "名字 路径")→ 逐�
     [ -n "$b" ] || continue
     for arm in off m1 m2; do
       case $arm in off) e="HH_BM2=0";; m1) e="HH_BM2=1 HH_BM2_LAZY=0";; *) e="HH_BM2=2 HH_BM2_LAZY=0";; esac
+      hb "标定 $(basename "$dir") $b $arm shot#$((nrun + 1)) timeout=900s"
       env $RUNENV METHOD=adaptive WARMUP_N=1 $e HH_BM2_STAT=1 HASH_ROWTIME="$dir/$b.$arm.rt" timeout -k 30 900 "$BIN" "$f" < /dev/null > "$dir/$b.$arm.out" 2> "$dir/$b.$arm.log"
       rc=$?; nrun=$((nrun + 1))
       if [ $rc != 0 ] || [ ! -s "$dir/$b.$arm.rt" ]; then
@@ -252,6 +249,7 @@ cal_run() {   # $1=标定目录 $2=清单文件(每行 "名字 路径")→ 逐�
   echo "$nrun $nfail"
 }
 stage "G1 合成阵标定"
+hb "G1 合成阵标定 开始"
 say ""; say "## G1 合成阵逐行配对标定(METHOD=adaptive;off / m1=值在 SMEM / m2=值直写全局;同批划分)"
 ls "$SYN"/*.mtx | while read -r f; do echo "$(basename "$f" .mtx) $f"; done > "$JD/syn_list.txt"
 set -- $(cal_run "$JD/cal_syn" "$JD/syn_list.txt" 2> "$OUT/g1_cal_skips.log")
@@ -396,6 +394,7 @@ vl_dump_ad() {   # $1=name $2=path $3=臂名 → $JD/vl/<name>_<臂名>.mtx;回�
   local name=$1 path=$2 tag=$3 log
   log="$JD/vl/${name}_${tag}.log"
   rm -f "results/matrices/$name/self_product_adaptive.mtx"
+  hb "值级转储 $name $tag timeout=1800s" >&2
   env $RUNENV METHOD=adaptive WARMUP_N=0 $(arm_env "$tag") HH_BM2_STAT=1 timeout -k 30 1800 ./spgemm_y1w "$path" > "$log" 2>&1
   local rc=$?
   if [ $rc != 0 ] || [ ! -s "results/matrices/$name/self_product_adaptive.mtx" ]; then

@@ -35,4 +35,4 @@
 | qa-011-shadow428-readings-and-remeasure.md | 影子 428 读数;待复测阵的逐阵判法;翻 HH_CENSUS 的回执 | 16 阵复测全部放行;**HH_CENSUS 已翻默认(commit 4e2fe66)**,报备在 BRIEF-2025-11-25 末尾;自检作业 flip_s1 绿(默认形态的发射清单 = 显式 HH_CENSUS=1,签名与 nnz 三臂一致)。**confirm20 可以开**(本机侧)。无待答 |
 | qa-012-r1-hang-incident.md | 本机通报:cen_rm1 的 R1 疑似一发挂死 3h44m,结束驱动后 R1 停在第 8 阵 | 外部模型已答:没有挂死(3h44m 是驱动进程的年龄;rajat 族每发 41 秒,被结束前 29 分钟里 rajat20 照常做了 42 发),是我把时长估错了;驱动脚本已统一 `timeout -k`、加心跳文件与逐发秒数;补测作业 cen_rm2 已排队。**无待答** |
 | qa-013-cm2-gate-next-step.md | 两遍式(cm2)的门:训练池量程只到 flop/HT≈8、428 输家在 10–175;合成训练阵可否 | 本机已答:合成阵合规,批准方案 A(生成器与参数入库 data/train_synth/、过值级差分门、FX 注释写明出处链);真实阵不等;全局一个 FX,取 R=1 交点的 0.6–0.7 倍、两种值区模式取更紧的;定向复验(计时)排在 confirm20 之后。外部模型已收,下一步做 A;**无待答** |
-| qa-014-syn-c1-go.md | 合成阵标定作业 syn_c1 已写好,放在 jobs_pending/(未入队);生成器在 tools/train_synth/ | **待本机答(必答)**:① confirm20 是否在跑、哪张卡、何时结束;② syn_c1 现在入队还是等 confirm20 跑完(可由本机直接 git mv 到 jobs/) |
+| qa-014-syn-c1-go.md | 合成阵标定作业 syn_c1 的放行 | 本机已答:confirm20 在 GPU 0 跑到约 04:30(本地);syn_c1 即刻入队、钉 GPU 1;主机侧风险接受;G2 重叠段核对与 G3 门值公式背书。外部模型已收:**syn_c1 已入队,钉死 GPU 1**。无待答 |
