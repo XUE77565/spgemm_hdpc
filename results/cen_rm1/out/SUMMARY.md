@@ -130,3 +130,10 @@ torso1                 63.209    nan        1.4523 (1.4833)*
 GM_KERN(cm2/off) = 0.9049 | 阵数 24 | 最差 1.4979 | 有两遍式发射的阵 24 个,其 GM = 0.9049
 
 ```
+- ncu(off 对 cm2,6 阵,application 重放):7 组,成功 7 组;逐发射的指令数 / 显存读字节 / 缓存命中见 r3_ncu_long.csv 与 r3_ncu.txt
+
+## 结束
+- 结论: S3 冒烟 green;R1 的逐阵判定看 r1_remeasure.txt 的 REMEASURE_RED 行;R2 值级 green;R3 画像见各文件
+- 主机(结束时): load=7.62 7.44 7.42 外来>50%CPU进程数=2 卡=0, 14 MiB, 0 %;1, 14 MiB, 0 %;
+- 磁盘: /dev/sdb1        15T  8.7T  5.1T  64% /home
+- 结束时间: 2026-11-27T13:05:13Z,总用时 366 分钟
