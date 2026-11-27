@@ -73,3 +73,11 @@ REMEASURE_RED cen 0
 | pkustk12 | cm2 | 474804911 | 89517 / 1538 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 |
 | fem_filter | cm2 | 8424292 | 14006 / 0 | PASS col_mismatch=0 unordered=0 text_diff=937523 worst_rel_vs_global=2.532e-16 |
 | nd12k | cm2 | 90906894 | 35955 / 0 | PASS col_mismatch=0 unordered=0 text_diff=50391947 worst_rel_vs_global=6.731e-16 |
+| Si41Ge41H72 | cm2 | 173776869 | 32640 / 69058 | PASS col_mismatch=0 unordered=0 text_diff=28409447 worst_rel_vs_global=1.448e-15 |
+
+- R2: green;走两遍式的行数合计 317469
+
+## R4 行门标定·生产入口(只用 data/train_disp;METHOD=adaptive;逐行配对周期;位图形态,off / m1 / m2)
+- 出处:bm2_r5 的标定是在 METHOD=hash 下做的(位图形态 34 阵全部 R<1,不需要门)。生产入口把密行也送进哈希梯,影子里输的那类行当时没进 HH bin。
+  这里换成生产入口重做,看训练池里有没有会输的行、(FX, CX) 门能不能把它们分出来——门值只能从这里或物理式来,不看 428。
+- 训练池候选 49 阵(1MB-800MB,非测试账同名,不含 af23560)
