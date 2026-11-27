@@ -4811,7 +4811,7 @@ struct Bm2Cfg {
                      // (dialog/qa-004 的矩阵级 L2 轴;属 L1 分发层,门值待判别实验/粗标定定)
     int stat;        // 1=每 bin 打一行 [bm2-stat]
     int lazy;        // 行表划分的时机:1(默认)=binning 的既有同步点之后、只在确有 HH 行且形态允许时才划分(v3.1);
-                     // 0=门普查之后单独一次发射、每次都划分(v3 原样);2=并进门普查的那一次发射(需 HH_CENSUS=1,否则退回 1)。
+                     // 0=门普查之后单独一次发射、每次都划分(v3 原样);2=并进门普查的那一次发射(需门普查走单发射版,即 HH_CENSUS≠0;否则退回 1)。
                      // 见 hash_product 里 BM2_PART 处的说明
 };
 static inline const Bm2Cfg &bm2_cfg()
@@ -4851,14 +4851,14 @@ __host__ __device__ constexpr int bm2_budget_words(const int bi, const int smx)
 {
     return smx > 0 ? smx : hh_smem_words(bm2_ht_for_bin(bi), bm2_bmw_for_bin(bi), 0, 0);
 }
-// ===== 门普查单发射版(study/69 §三十一;opt-in:HH_CENSUS=1,默认 0 = 原样逐 bin 发射)=====
+// ===== 门普查单发射版(study/69 §三十一;**默认开**,2026-11-27 翻默认,证据见 study/69 §三十三–§三十六;HH_CENSUS=0 = 原样逐 bin 发射,逃生门)=====
 // 出处:prof_k1 的 nsys 逐核账——hh_gate_census_off_kernel 在大阵上占设备侧 Σkernel 的 4-7%(cage15 7.0ms/run)。
 // 原核每行 1-2 次 atomicAdd 直打同一个 bin 的计数地址、无 warp 归约,且 bin4..9 各发射一次、每次铺满 A_rows 个线程。
 // 这里:一次发射盖 bin4..9(它们在 d_sort 里连续;线程 t ↔ 位置 bin_off[4]+t),warp 内归约后每 warp 至多两次原子加。
 // 结果与原核逐位相同(都是 64 位整数和):out[bi*2+1] = 该 bin 全部行的 Σflop;out[bi*2] = 其中列跨度超过
 // 该 bin 位图列域(hh_bm_words_for_bin(bi)*32;bm2_bmw_for_bin 是它的设备侧同图)的行的 Σflop。
 struct HhCensusCfg {
-    int mode;   // 0 = 原样(hh_gate_census_off_kernel × 6);1 = 单发射 + warp 归约
+    int mode;   // 1 = 单发射 + warp 归约(默认;HH_CENSUS 未设或 >0);0 = 原样(hh_gate_census_off_kernel × 6;HH_CENSUS=0)
     int stat;   // 1 = binning 同步点之后把 bin4..9 的普查结果打到 stderr([census-stat] 行;两种模式逐行比对用)
 };
 static inline const HhCensusCfg &hh_census_cfg()
@@ -4867,7 +4867,7 @@ static inline const HhCensusCfg &hh_census_cfg()
     static bool init = false;
     if (!init) {
         const char *e = getenv("HH_CENSUS");
-        c.mode = (e && *e && atoi(e) > 0) ? 1 : 0;
+        c.mode = (e && *e) ? (atoi(e) > 0 ? 1 : 0) : 1;   // 未设 = 1(默认开);HH_CENSUS=0 才回原样逐 bin 发射
         e = getenv("HH_CENSUS_STAT");
         c.stat = (e && *e && atoi(e) > 0) ? 1 : 0;
         init = true;
@@ -4992,7 +4992,7 @@ static __global__ void hh_bm2_part_kernel(const int *d_sort, const int *bin_off,
         }
     }
 }
-// 门普查 + 行表划分 合一(study/69 §三十二;HH_CENSUS=1 且 HH_BM2 开且 HH_BM2_LAZY=2):一次发射同时出
+// 门普查 + 行表划分 合一(study/69 §三十二;门普查走单发射版(默认)且 HH_BM2 开且 HH_BM2_LAZY=2):一次发射同时出
 //   ① 门普查结果 gf[bi*2] / gf[bi*2+1](bin4..9 全部;与 hh_gate_census1_kernel、进而与原样的逐 bin 普查逐位相同);
 //   ② bins_mask 内各 bin 的行表划分与合格计数(判式、输出布局与 hh_bm2_part_kernel 相同)。
 // 这样开 HH_BM2 不多发射也不多同步,相对原样的逐 bin 普查还少 5 次发射。
@@ -6065,7 +6065,7 @@ static void hash_product(
         //       发射 + 清零 + 回传,用不上两遍式的小阵白付这笔固定成本);
         //   1 = 默认(v3.1):等下面那个既有同步点之后——宿主已知各 bin 行数与门普查结果——只在"确有 HH 行且形态
         //       允许"时才划分,网格只盖 HH 行段。多出的一次同步只落在用得上两遍式的阵上;
-        //   2 = 并进门普查的那一次发射(需 HH_CENSUS=1,否则退回 1):hh_census_part_kernel 一次出普查结果和划分,
+        //   2 = 并进门普查的那一次发射(需门普查走单发射版,即 HH_CENSUS≠0;否则退回 1):hh_census_part_kernel 一次出普查结果和划分,
         //       不多发射、不多同步,相对原样的逐 bin 普查还少 5 次发射。
         bm2_rows2_host = nullptr;
         const bool bm2_want = bm2_cfg().mode && !att && (bm2_cfg().nnzmax <= 0 || A_nnz <= bm2_cfg().nnzmax);
@@ -6098,12 +6098,12 @@ static void hash_product(
         {
             long long *d_gfall = decltype(d_gfall)(dev_alloc(2 * N_BINS * sizeof(long long)));
             CHECK_CUDA(cudaMemsetAsync(d_gfall, 0, 2 * N_BINS * sizeof(long long)));
-            if (bm2_when == 2)               // HH_CENSUS=1 且 HH_BM2_LAZY=2:门普查 + 行表划分合一(普查结果逐位相同)
+            if (bm2_when == 2)               // 单发射门普查 + HH_BM2_LAZY=2:门普查 + 行表划分合一(普查结果逐位相同)
                 hh_census_part_kernel<<<(A_rows + 255) / 256, 256>>>(
                     d_sort, d_offb, d_span_len, d_flop, d_off,
                     bm2_cfg().bins & 0x3f0, bm2_cfg().mode, bm2_cfg().fx, bm2_cfg().cx, bm2_cfg().smx,
                     s_bm2_sort2, (int *)(s_bm2_ctr + BM2_CNT_BYTES), (long long *)s_bm2_ctr, d_gfall);
-            else if (hh_census_cfg().mode)   // HH_CENSUS=1:单发射 + warp 归约(结果逐位相同);默认 0 走下面的原样逐 bin 发射
+            else if (hh_census_cfg().mode)   // 默认:单发射 + warp 归约(结果与原样逐位相同);HH_CENSUS=0 走下面的原样逐 bin 发射
                 hh_gate_census1_kernel<<<(A_rows + 255) / 256, 256>>>(d_sort, d_offb, d_span_len, d_flop, d_gfall);
             else
             for (int cbi = 4; cbi <= 9 && cbi < N_BINS - 1; cbi++)
