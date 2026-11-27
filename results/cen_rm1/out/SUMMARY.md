@@ -70,3 +70,6 @@ REMEASURE_RED cen 0
 | net50 | cm2 | 40622452 | 15355 / 0 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 |
 | hangGlider_4 | cm2 | 191342279 | 13830 / 0 | PASS col_mismatch=0 unordered=0 text_diff=6234 worst_rel_vs_global=1.486e-16 |
 | filter3D | cm2 | 20161619 | 98949 / 0 | PASS col_mismatch=0 unordered=0 text_diff=2168888 worst_rel_vs_global=1.647e-16 |
+| pkustk12 | cm2 | 474804911 | 89517 / 1538 | PASS col_mismatch=0 unordered=0 text_diff=0 worst_rel_vs_global=0.000e+00 |
+| fem_filter | cm2 | 8424292 | 14006 / 0 | PASS col_mismatch=0 unordered=0 text_diff=937523 worst_rel_vs_global=2.532e-16 |
+| nd12k | cm2 | 90906894 | 35955 / 0 | PASS col_mismatch=0 unordered=0 text_diff=50391947 worst_rel_vs_global=6.731e-16 |
