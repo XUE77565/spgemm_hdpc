@@ -25,3 +25,25 @@
 - C2: green
 
 ## C3 发射清单(nsys;核名 + 发射次数)
+- def 对 c1(显式 HH_CENSUS=1):比对 4 阵,same(same = 默认形态的发射清单与显式开完全一致)
+- def 对 c0(显式 HH_CENSUS=0)的差异项(应只有门普查核:原样的 hh_gate_census_off_kernel 多、单发射的 hh_gate_census1_kernel 少):
+    == bcsstk17
+            2 → 0      hh_gate_census1_kernel(const int *, const int *, const int *, const int *, long long *)
+            0 → 12     hh_gate_census_off_kernel(const int *, const int *, int, int, const int *, const int *, unsigned int, long long *)
+    == cfd2
+            2 → 0      hh_gate_census1_kernel(const int *, const int *, const int *, const int *, long long *)
+            0 → 12     hh_gate_census_off_kernel(const int *, const int *, int, int, const int *, const int *, unsigned int, long long *)
+    == ldoor
+            2 → 0      hh_gate_census1_kernel(const int *, const int *, const int *, const int *, long long *)
+            0 → 12     hh_gate_census_off_kernel(const int *, const int *, int, int, const int *, const int *, unsigned int, long long *)
+    == web-Google
+            2 → 0      hh_gate_census1_kernel(const int *, const int *, const int *, const int *, long long *)
+            0 → 12     hh_gate_census_off_kernel(const int *, const int *, int, int, const int *, const int *, unsigned int, long long *)
+- def 对 c0:门普查核之外的差异项 0 条;hh_gate_census1_kernel 出现在差异里的阵次 4
+- C3: green
+
+## 结束
+- 结论: 绿:默认形态走单发射普查(发射清单与显式 HH_CENSUS=1 相同),签名与 nnz 三臂一致
+- 主机(结束时): load=9.85 8.71 8.23 外来>50%CPU进程数=3 卡=0, 14 MiB, 0 %;1, 10970 MiB, 0 %;
+- 磁盘: /dev/sdb1        15T  8.7T  5.1T  64% /home
+- 结束时间: 2026-11-27T15:46:23Z,总用时 21 分钟
