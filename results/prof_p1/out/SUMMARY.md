@@ -124,3 +124,11 @@ retry                     72.65        72.49        72.48        66.75
 ```
 
 ## P2 地图对齐发(off 臂单发,HASH_LHT23=0:对齐 scripts/phase_decomp_current.sh 的旧口径,只为与本机侧 atlas 对照;不是生产默认)
+- shadow428 rc=0;# 完成:428 阵,428 发,失败 0 发,用时 64 分钟
+- 旧口径地图 p2_lht0_map.txt / p2_lht0_map.csv.gz(长表 mat,arm,phase,ms)
+
+## 结束
+- 结论: S3 冒烟 green;P0 试跑通;O1/O2/O3、K3 见各段;P1 影子的裁定看 p1_shadow_sum.txt 里的 AA_VERDICT 与各臂的裁定行;P2 旧口径地图已出
+- 主机(结束时): load=6.82 7.08 7.90 外来>50%CPU进程数=2 卡=0, 14 MiB, 0 %;1, 14 MiB, 0 %;
+- 磁盘: /dev/sdb1        15T  8.7T  5.1T  64% /home
+- 结束时间: 2026-11-27T06:44:34Z,总用时 1120 分钟
