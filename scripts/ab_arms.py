@@ -53,9 +53,10 @@ def run_one(binary, path, method, gpu, arm_env, warm="3", extra=None, timeout=90
     if extra:
         env.update(extra)
     binary = env.pop("AB_BIN", binary)   # 臂级二进制覆盖(无侵入对照:--arm base:AB_BIN=./spgemm_base);不传给被测程序
-    try:
-        r = subprocess.run([binary, path], env=env, capture_output=True, text=True, timeout=timeout)
-    except Exception as ex:   # 超时等
+    try:   # 外层 coreutils timeout(ps 里看得见;到点 TERM,30 秒后 KILL);Python 侧多留 90 秒作兜底
+        r = subprocess.run(["timeout", "-k", "30", str(int(timeout)), binary, path], env=env,
+                           capture_output=True, text=True, timeout=timeout + 90)
+    except Exception as ex:   # 兜底超时等
         return None, "EXC %r" % (ex,)
     out = r.stdout + r.stderr
     tot = RE_TOT.findall(out); h = RE_H2D.findall(out); d = RE_D2H.findall(out)
