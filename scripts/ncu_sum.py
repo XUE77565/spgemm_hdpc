@@ -20,7 +20,8 @@ PICK = [
 
 
 def family(name):
-    m = re.match(r"[A-Za-z_][A-Za-z0-9_:]*", name.strip())
+    name = re.sub(r"^(static\s+)?void\s+", "", name.strip())
+    m = re.match(r"[A-Za-z_][A-Za-z0-9_:]*", name)
     return m.group(0) if m else name[:40]
 
 

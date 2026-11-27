@@ -688,3 +688,32 @@ bin 的计数地址上,无 warp 归约;bin4–9 各发射一次、每次铺满 A
 
 **影子绿之后**(BRIEF 快速通道):先翻 `HH_CENSUS` 默认 1,再按 cm2 的读数决定 `HH_BM2=2` + `HH_BM2_LAZY=2`;两步分开提交;
 翻之前做 routing_table.h 的菜单注册;翻完在 BRIEF 文件报备,confirm20 归 B 端。
+
+## 三十四、全 428 影子(prof_p1):门普查在全集上行为保持、收益成立但被双峰阵卡住;两遍式有真回归,不翻(11-27,外部模型)
+
+**prof_p1(exit 0;影子段 868 分钟、5972 发、0 失败;env = confirm20 口径:METHOD=adaptive WARMUP_N=3 USE_MEMPOOL=1 MP_HOST_MB=8192 D6EXP=0)**
+- 正确性:nnz 各臂各轮逐阵相同;门普查签名([census-stat] 行的 md5)428 阵各臂全同。
+- A/A:全体 GM 1.0013、非微级 1.0026;非微级超 ±5% 的 6 阵(1.8% ≤ 2%)→ 干净。
+- **cen/off**:GM 0.9925(非微级 0.9889;小/中/大文件档 1.003 / 0.991 / 0.980;非微级分位 p5 0.958 / p50 0.987 / p95 1.013)。
+  按写定判据是**红**:可裁决阵 rajat16 1.267;不裁决阵 rajat25 1.331、rajat17 1.281、rajat28 1.142。rajat 族是基线自身双峰
+  (rajat16 四条臂的单发都在约 49 与约 63 ms 之间跳,差在 dense_direct 相位),三发中位落在哪个峰是抽签;cm2 臂(同样单发射普查)在 rajat16 上是 0.984。
+  去掉 rajat 族,cen 非微级 GM 0.9858,最差 circuit_4 1.044。
+- **cm2/off**:GM 0.9490(非微级 0.9365;148 个非微级阵快 5% 以上:pkustk12 0.61、net50 0.65、filter3D 0.67、hangGlider 0.68–0.70、case9 0.71、bloweybq 0.72)。
+  **红,而且是真的**:11 个可裁决阵 >1.10(fem_filter 1.45、torso1 1.42、nd12k 1.24、pattern1 1.23、nd24k 1.22、nemeth22–25 1.12–1.16、
+  Si41Ge41H72 1.16、Ga41As41H72 1.10),都是 accumulate 相位变慢。
+- 补账:发射清单(基线件对开关全关,22 阵)逐项相同;官方 ab_pair 16×9 GM 0.9985(参考轨,绿);msc10848 在 METHOD=hash 下 cen 1.030
+  (21 轮,A/A 0.997,accumulate 相位 +6%——真的,机理未明;生产入口下它是 0.980)。
+- ncu(2025.1.1)逐发射:hash_heavy → hash_bm2 **指令数 −33~−50%,显存读字节 +3~+59%**(cfd2 bin4:6.78e8 → 3.54e8 条、212 → 327 MB;
+  s3dkq4m2 bin4:1.01e9 → 6.82e8 条、348 → 509 MB)。两遍式是拿带宽换算力。
+- 默认形态相位地图(428 阵各相位中位求和,ms):accumulate 2992、dense_direct 1700、compact+sort 761、mh_merge+dense_count 574、binning 130
+  (cen 下 54);各池前 20 阵合计 3375。全文 results/prof_p1/out/p1_shadow_sum.txt。
+
+**两条此前没看到的事实**
+1. 生产入口的 dispatcher 给 hash 路径设了 `DITER_MIN_FLOP=999999999`:密行不走 dense-iter,全进哈希梯。HH 行人口比 METHOD=hash 的电池
+   大得多(case9、bloweybq 在电池里两遍式一行不收,影子里 accumulate 省 40% 以上)。所以:(a) 电池低估了两遍式的覆盖面,也没见到它输的人口;
+   (b) r5 的行门标定(METHOD=hash)结论"位图形态不需要门"在生产入口下不成立;(c) 两遍式的值级此前都在 METHOD=hash 下做,生产入口下要补。
+2. 门值不能看着 428 的输家来定(那是在主账上标定)。出处只能是物理式(带宽项 + 算力项,ncu 给系数)或 train_disp 上按生产入口的逐行标定。
+
+**决定**:没有翻任何默认。cen 等加轮复测与 B 端对双峰阵判法的确认(dialog/qa-011);cm2 等门。
+**作业 `cen_rm1`**:R1 16 阵 × 21 发复测(稳定阵看中位比 ≤1.10;双峰阵看最小值 / 下四分位 / 上四分位三档比 ≤1.05 / 1.05 / 1.10)→
+R2 生产入口下的值级(赢家输家共 9 阵)→ R4 train_disp 按生产入口重做逐行标定 → R3 输家 / 赢家各 12 阵的画像(逐 bin 普查、nsys、ncu;只作画像)。
