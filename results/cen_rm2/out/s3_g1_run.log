@@ -1,0 +1,20 @@
+# ab_arms: bin=./spgemm_m2 gpu=0 rounds=1
+#   arm off        (无额外 env)
+#   arm cen        HH_CENSUS=1
+      bcsstk17 off        r0 co=0.862 acc=0.418 cs=0.160 retry=0.000 nnz=1406936
+      bcsstk17 cen        r0 co=0.992 acc=0.438 cs=0.160 retry=0.000 nnz=1406936
+         case9 off        r0 co=8.501 acc=6.247 cs=1.139 retry=0.000 nnz=52372050
+         case9 cen        r0 co=8.480 acc=6.234 cs=1.132 retry=0.000 nnz=52372050
+            F2 off        r0 co=0.661 acc=0.316 cs=0.095 retry=0.000 nnz=2432504
+            F2 cen        r0 co=0.634 acc=0.314 cs=0.096 retry=0.000 nnz=2432504
+          c-64 off        r0 co=19.167 acc=0.660 cs=0.550 retry=0.179 nnz=155006041
+          c-64 cen        r0 co=19.014 acc=0.635 cs=0.520 retry=0.160 nnz=155006041
+
+===== 判读:cen / off(逐阵中位比;测量分级)=====
+           mat     off_ms     cen_ms    ratio      级    acc_off   acc_cen     acc比    flop占比       行占比  备注
+      bcsstk17      0.862      0.992   1.1508      微      0.418     0.438   1.0478         -         -  微级不作单阵裁决
+         case9      8.501      8.480   0.9975      中      6.247     6.234   0.9979         -         -  
+            F2      0.661      0.634   0.9592      微      0.316     0.314   0.9937         -         -  微级不作单阵裁决
+          c-64     19.167     19.014   0.9920      稳      0.660     0.635   0.9621         -         -  
+GM(cen/off) = 1.0223 | 非微级最差 = 0.9975 | nnz 异常/实验臂缺数据阵 = 0 | 微级 2 阵 | 有效 4 阵
+裁定: 红
