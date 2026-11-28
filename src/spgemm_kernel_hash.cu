@@ -4820,10 +4820,15 @@ static inline const Bm2Cfg &bm2_cfg()
     static bool init = false;
     if (!init) {
         auto geti = [](const char *k, int dflt) { const char *e = getenv(k); return (e && *e) ? (int)strtol(e, nullptr, 0) : dflt; };
-        c.mode = geti("HH_BM2", 0);
+        // 想法二翻转(study/69 §三十八,2026-11-28):默认开 cm2 形态(值直写全局 + 按需划分 + FX 门)。
+        // 用户授权本机侧代行(外部模型周限额;证据链:影子428(prof_p1)+B验证(qa-016,11输家全回1.0-1.03,
+        // nnz 全同,A/A 净)+值级三处(cen_rm1 R2 生产入口 31.7万行)。
+        // FX=131 出处:syn_c1 合成标定 bin8 交点 2.02×0.65(取紧);B 实测空带 (2.4,10),保守取 1.31。
+        // 逃生门:HH_BM2=0 关闭,恢复原哈希形态。
+        c.mode = geti("HH_BM2", 2);
         if (c.mode < 0 || c.mode > 2) c.mode = 0;
         c.leg1 = geti("HH_BM2_L1", 0) > 0 ? 1 : 0;
-        c.fx = geti("HH_BM2_FX", 0);
+        c.fx = geti("HH_BM2_FX", 131);
         c.cx = geti("HH_BM2_CX", 0);
         c.bins = geti("HH_BM2_BINS", 0x3b0);     // bin4/5/7/8/9;bin6 默认不走 hash_heavy(HASH_H69=2 时自行加上 0x40)
         c.binmin = geti("HH_BM2_BINMIN", 0);
@@ -4831,7 +4836,7 @@ static inline const Bm2Cfg &bm2_cfg()
         c.smx = geti("HH_BM2_SMX", 0);
         c.nnzmax = geti("HH_BM2_NNZMAX", 0);
         c.stat = geti("HH_BM2_STAT", 0) > 0 ? 1 : 0;
-        c.lazy = geti("HH_BM2_LAZY", 1);
+        c.lazy = geti("HH_BM2_LAZY", 2);   // 翻转配套:按需划分(合一形态)为默认
         if (c.lazy < 0 || c.lazy > 2) c.lazy = 1;
         init = true;
     }
